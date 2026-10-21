@@ -4,7 +4,7 @@
 Write actors. Get exact replay.
 
 lockstep is an actor runtime where every message delivery, timer, and I/O event goes
-through the runtime. In production it's a fast actor system. In tests, the same
+through the runtime. In production it's a concurrent actor runtime. In tests, the same
 code runs on a seeded simulation — partitions, drops, reordering, crashes — and any
 failure replays exactly from its seed.
 
@@ -32,9 +32,9 @@ lockstep's simulation mode has the same properties:
 
 **What it doesn't mean:** in games, lockstep peers wait for each other every tick.
 lockstep is **not** a game-sync library, and its **production mode does not run in
-lockstep**: actors run concurrently at full speed. The lockstep behavior applies to
-**simulation mode**, where a single seeded scheduler steps every actor in a fixed,
-replayable order.
+lockstep**: actors run concurrently and don't wait for each other. The lockstep
+behavior applies to **simulation mode**, where a single seeded scheduler steps every
+actor in a fixed, replayable order.
 
 ## Relationship with faultline
 
