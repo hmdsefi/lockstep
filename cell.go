@@ -40,7 +40,7 @@ const (
 	cellStarting cellState = iota // begin not processed yet: user messages wait (ACT-340)
 	cellRunning                   // the incarnation accepts user messages (ENG-310 step 2)
 	cellFailed                    // a handler failed: no further user message is popped
-	cellStopping                  // the stop sequence runs (1.2-11): no user message is popped
+	cellStopping                  // the stop sequence runs (SUP-060): no user message is popped
 	cellStopped                   // the final stop completed; the queues are closed
 )
 
@@ -155,7 +155,7 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 
 // closeQueues closes both queues for the final stop and empties them (SUP-060 step 5): it
 // returns the Sent entries of the user mailbox in queue order, for dead letters, and discards the
-// Self entries and every system message (MBX-160, ruling B8). Later enqueues are refused.
+// Self entries and every system message (MBX-160). Later enqueues are refused.
 func (c *cell[M]) closeQueues() []entry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
