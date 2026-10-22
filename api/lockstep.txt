@@ -1,0 +1,50 @@
+pkg github.com/hmdsefi/lockstep, const StopFailed = 2
+pkg github.com/hmdsefi/lockstep, const StopFailed StopKind
+pkg github.com/hmdsefi/lockstep, const StopNoActor = 6
+pkg github.com/hmdsefi/lockstep, const StopNoActor StopKind
+pkg github.com/hmdsefi/lockstep, const StopNormal = 1
+pkg github.com/hmdsefi/lockstep, const StopNormal StopKind
+pkg github.com/hmdsefi/lockstep, const StopParentStopping = 3
+pkg github.com/hmdsefi/lockstep, const StopParentStopping StopKind
+pkg github.com/hmdsefi/lockstep, const StopRestarting = 5
+pkg github.com/hmdsefi/lockstep, const StopRestarting StopKind
+pkg github.com/hmdsefi/lockstep, const StopShutdown = 4
+pkg github.com/hmdsefi/lockstep, const StopShutdown StopKind
+pkg github.com/hmdsefi/lockstep, func Failed(error) StopReason
+pkg github.com/hmdsefi/lockstep, func PIDAt[M any](string, string) PID[M]
+pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
+pkg github.com/hmdsefi/lockstep, method (Address) IsZero() bool
+pkg github.com/hmdsefi/lockstep, method (Address) Node() string
+pkg github.com/hmdsefi/lockstep, method (Address) Path() string
+pkg github.com/hmdsefi/lockstep, method (Address) String() string
+pkg github.com/hmdsefi/lockstep, method (Address) UID() uint64
+pkg github.com/hmdsefi/lockstep, method (PID[M]) Address() Address
+pkg github.com/hmdsefi/lockstep, method (PID[M]) IsZero() bool
+pkg github.com/hmdsefi/lockstep, method (PID[M]) String() string
+pkg github.com/hmdsefi/lockstep, method (StopKind) String() string
+pkg github.com/hmdsefi/lockstep, method (StopReason) String() string
+pkg github.com/hmdsefi/lockstep, type Address struct
+pkg github.com/hmdsefi/lockstep, type PID[M any] struct
+pkg github.com/hmdsefi/lockstep, type Signal interface { unexported methods }
+pkg github.com/hmdsefi/lockstep, type StopKind uint8
+pkg github.com/hmdsefi/lockstep, type StopReason struct
+pkg github.com/hmdsefi/lockstep, type StopReason struct, Err error
+pkg github.com/hmdsefi/lockstep, type StopReason struct, Kind StopKind
+pkg github.com/hmdsefi/lockstep, type Terminated struct
+pkg github.com/hmdsefi/lockstep, type Terminated struct, Addr Address
+pkg github.com/hmdsefi/lockstep, type Terminated struct, Reason StopReason
+pkg github.com/hmdsefi/lockstep, var ErrAwaitInActor error
+pkg github.com/hmdsefi/lockstep, var ErrInvalidName error
+pkg github.com/hmdsefi/lockstep, var ErrInvalidOption error
+pkg github.com/hmdsefi/lockstep, var ErrNameTaken error
+pkg github.com/hmdsefi/lockstep, var ErrNotFound error
+pkg github.com/hmdsefi/lockstep, var ErrNotLocal error
+pkg github.com/hmdsefi/lockstep, var ErrOverloaded error
+pkg github.com/hmdsefi/lockstep, var ErrStopped error
+pkg github.com/hmdsefi/lockstep, var ErrTerminated error
+pkg github.com/hmdsefi/lockstep, var ErrTimeout error
+pkg github.com/hmdsefi/lockstep, var ErrWrongType error
+pkg github.com/hmdsefi/lockstep, var NoActor StopReason
+pkg github.com/hmdsefi/lockstep, var Normal StopReason
+pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
+pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
