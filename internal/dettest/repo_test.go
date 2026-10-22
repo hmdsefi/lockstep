@@ -24,12 +24,15 @@ const (
 	lockstepModule = "github.com/hmdsefi/lockstep"
 	faultlineMod   = "github.com/hmdsefi/faultline"
 	gographMod     = "github.com/hmdsefi/gograph"
+	goleakMod      = "go.uber.org/goleak"
 
 	// pinnedFaultline is the faultline version of the root go.mod (REP-135). Upgrading faultline
 	// changes this constant, go.mod, go.sum and REP-010 in one change.
 	pinnedFaultline = "v0.1.2"
 	// faultlineGograph is the gograph version the pinned faultline requires (REP-135).
 	faultlineGograph = "v0.8.2"
+	// pinnedGoleak is the goleak version of the root go.mod (REP-010).
+	pinnedGoleak = "v1.3.0"
 
 	goVersion = "1.26.0"
 )
@@ -114,9 +117,9 @@ func goModViolations(t *testing.T, path string) []string {
 		lines = append(lines, fmt.Sprintf("go.mod: retract [%s, %s] is not allowed", r.Low, r.High))
 	}
 
-	// The root module requires faultline and gograph only. go.uber.org/goleak joins them in the
-	// change that adds dettest.Main (REP-010); until then it is a violation like any other.
-	want := map[string]string{faultlineMod: pinnedFaultline, gographMod: faultlineGograph}
+	// The root module requires faultline, gograph and goleak only, each at the version REP-010
+	// pins (goleak is there for dettest.Main).
+	want := map[string]string{faultlineMod: pinnedFaultline, gographMod: faultlineGograph, goleakMod: pinnedGoleak}
 	seen := map[string]bool{}
 	for _, r := range m.Require {
 		seen[r.Path] = true
@@ -130,7 +133,7 @@ func goModViolations(t *testing.T, path string) []string {
 			lines = append(lines, fmt.Sprintf("go.mod: requires %s %s, want %s", r.Path, r.Version, v))
 		}
 	}
-	for _, p := range []string{faultlineMod, gographMod} {
+	for _, p := range []string{faultlineMod, gographMod, goleakMod} {
 		if !seen[p] {
 			lines = append(lines, fmt.Sprintf("go.mod: missing requirement %s %s", p, want[p]))
 		}
@@ -162,9 +165,16 @@ func TestGoMod(t *testing.T) {
 			want:   []string{"golang.org/x/tools"},
 		},
 		{
-			name:   "goleak before the change that adds dettest.Main",
-			change: func(s string) string { return s + "\nrequire go.uber.org/goleak v1.3.0\n" },
-			want:   []string{"go.uber.org/goleak"},
+			name:   "goleak removed",
+			change: func(s string) string { return dropRequire(s, goleakMod) },
+			want:   []string{"missing", goleakMod, pinnedGoleak},
+		},
+		{
+			name: "goleak at another version",
+			change: func(s string) string {
+				return strings.Replace(s, goleakMod+" "+pinnedGoleak, goleakMod+" v1.2.0", 1)
+			},
+			want: []string{"requires " + goleakMod + " v1.2.0, want " + pinnedGoleak},
 		},
 		{
 			name: "faultline at another version",
@@ -215,11 +225,9 @@ func TestGoMod(t *testing.T) {
 			want: []string{"example.com/lockstep", lockstepModule},
 		},
 		{
-			name: "faultline removed",
-			change: func(s string) string {
-				return strings.Replace(s, "require "+faultlineMod+" "+pinnedFaultline, "", 1)
-			},
-			want: []string{"missing", faultlineMod},
+			name:   "faultline removed",
+			change: func(s string) string { return dropRequire(s, faultlineMod) },
+			want:   []string{"missing", faultlineMod},
 		},
 	}
 	for _, tc := range tests {
@@ -237,6 +245,12 @@ func TestGoMod(t *testing.T) {
 			t.Errorf("no line contains all of %q; got:\n  %s", tc.want, strings.Join(lines, "\n  "))
 		})
 	}
+}
+
+// dropRequire removes the requirement of module from a go.mod text, in a require block or alone.
+func dropRequire(gomod, module string) string {
+	re := regexp.MustCompile(`(?m)^(require\s+|\s+)` + regexp.QuoteMeta(module) + ` .*\n`)
+	return re.ReplaceAllString(gomod, "")
 }
 
 func containsAll(s string, subs []string) bool {
