@@ -49,15 +49,12 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	sys, fromAddr, fromRef := s.sendOrigin() // panics for a Context outside its turn (ACT-120)
 
 	// 2. Options, in argument order: the last WithTimeout wins.
-	cfg := askConfig{timeout: defaultAskTimeout}
-	for _, o := range opts {
-		o(&cfg)
-	}
+	cfg, err := applyAskOptions(opts)
 
 	// 3. Failures before sending: nothing is built, allocated or recorded. The stopped-system check
 	// (ErrStopped) arrives with Shutdown (1.2-12).
-	if cfg.timeout <= 0 {
-		return resolvedReply[R](sys, fmt.Errorf("%w: WithTimeout(%s): timeout must be positive", ErrInvalidOption, cfg.timeout))
+	if err != nil {
+		return resolvedReply[R](sys, err)
 	}
 	if to.IsZero() {
 		return resolvedReply[R](sys, fmt.Errorf("%w: %s", ErrNotFound, to.addr))
@@ -65,13 +62,13 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 
 	// 4. The ask address and the table entry.
 	r := newReply[R](sys)
-	p := sys.newAsk(fromAddr, to.addr, cfg.timeout, r.resolve)
+	p := sys.newAsk(fromAddr, to.addr, cfg.timeout, r)
 
 	// 5. The request; a panic of build removes the entry and propagates.
 	msg := buildRequest(sys, p, build)
 
 	// 6. Timer, record, routing exactly as Send's, with the ask address in the mailbox entry.
-	sys.asks.arm(p, sys.eng.Clock.AfterFunc(cfg.timeout, askTimeoutLabel, func() { sys.askTimedOut(p) }))
+	sys.armTimeout(p)
 	sys.recordAsk(fromAddr, p, msg)
 	o := sys.route(routeRequest{
 		from:    fromAddr,
@@ -103,4 +100,53 @@ func buildRequest[M, R any](sys *System, p *pendingAsk, build func(ReplyTo[R]) M
 	msg := build(ReplyTo[R]{addr: p.addr})
 	built = true
 	return msg
+}
+
+// NewReply creates an ask without a target: a pending reply on from's system with Ask's timeout
+// and exactly-once resolution, and the ReplyTo that answers it. The caller builds and sends the
+// request itself with Send (cluster.Ask does, VAC). An error from that Send (for example
+// ErrMailboxFull) does not resolve the reply; the caller resolves it, for example with
+// rt.Fail(from, err), as cluster.Ask does. A request that a DropNewest or DropOldest mailbox drops
+// is not reported, so the reply resolves at its timeout (MSG-390). An invalid option value
+// returns the zero ReplyTo and a reply resolved with an error wrapping ErrInvalidOption. NewReply
+// panics if from is nil, an option is nil, or from is a Context outside its turn. (addition)
+func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
+	// MSG-380's checks, in its order: from nil, a Context outside its turn (ACT-120), a nil option.
+	sys, fromAddr, _ := mustSender(from).sendOrigin()
+	for _, o := range opts {
+		if o == nil {
+			panic("lockstep: nil AskOption")
+		}
+	}
+	// An invalid option value: the zero ReplyTo and a resolved reply, with nothing allocated or
+	// recorded. The stopped-system check (ErrStopped) arrives with Shutdown (1.2-12).
+	cfg, err := applyAskOptions(opts)
+	if err != nil {
+		return ReplyTo[R]{}, resolvedReply[R](sys, err)
+	}
+	// MSG-300 step 4 with the zero target, then the timer and the record. No actor tracks the ask
+	// (MSG-390): it resolves by a reply attempt, its timeout or its system stopping.
+	r := newReply[R](sys)
+	p := sys.newAsk(fromAddr, Address{}, cfg.timeout, r)
+	sys.armTimeout(p)
+	sys.recordAsk(fromAddr, p, nil)
+	return ReplyTo[R]{addr: p.addr}, r
+}
+
+// applyAskOptions applies opts, which hold no nil option, in argument order, so the last
+// WithTimeout wins, and validates the result: a timeout <= 0 is MSG-700's ErrInvalidOption error.
+func applyAskOptions(opts []AskOption) (askConfig, error) {
+	cfg := askConfig{timeout: defaultAskTimeout}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.timeout <= 0 {
+		return cfg, fmt.Errorf("%w: WithTimeout(%s): timeout must be positive", ErrInvalidOption, cfg.timeout)
+	}
+	return cfg, nil
+}
+
+// armTimeout starts p's timeout timer on the engine clock (MSG-320, ENG-070).
+func (s *System) armTimeout(p *pendingAsk) {
+	s.asks.arm(p, s.eng.Clock.AfterFunc(p.timeout, askTimeoutLabel, func() { s.askTimedOut(p) }))
 }

@@ -203,18 +203,24 @@ func (s *System) sendRemote(r routeRequest) outcome {
 
 // deadRequest makes r a dead letter with reason (MBX-150). The request of an ask whose asker is
 // this system resolves that ask with ErrTerminated, for every reason (MSG-310, ruling B5): before
-// Ask returns, or when the engine offers a request its interposer held. An ask request that
-// arrived from another node is failed back to its asker by MSG-350 (1.2-08).
+// Ask returns, or when the engine offers a request its interposer held. For an ask request that
+// arrived from another node, the system issues Fail(ErrTerminated) from the target address,
+// which travels back to the asker like any reply attempt (MSG-350).
 func (s *System) deadRequest(r routeRequest, reason string) outcome {
 	s.deadLetter(r.to, reason, r.msg)
-	if !r.ask.IsZero() && r.ask.node == s.node {
+	switch {
+	case r.ask.IsZero():
+	case r.ask.node == s.node:
 		s.settle(r.ask, resolution{how: byRouting, from: r.to, err: fmt.Errorf("%w: %s", ErrTerminated, r.to)})
+	default:
+		s.replyAttempt(r.ask, r.to, nil, fmt.Errorf("%w: %s", ErrTerminated, r.to))
 	}
 	return outcome{kind: routeDead, reason: reason}
 }
 
 // deadLetter is the one place a message that cannot be delivered goes (MBX-150): to is the
-// address it was sent to, reason one of the reason constants, msg the M value. Plan 1.3 records
+// address it was sent to, reason one of the reason constants, msg the M value (for a reply
+// attempt to another node without a transport, its replyPayload). Plan 1.3 records
 // lockstep.deadletter and counts it; until then a dead letter is dropped.
 //
 //nolint:unparam // plan 1.3's seam: the arguments are what its record and counter need

@@ -14,6 +14,7 @@ pkg github.com/hmdsefi/lockstep, func Ask[M any, R any](Sender, PID[M], func(Rep
 pkg github.com/hmdsefi/lockstep, func Failed(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Lookup[M any](*System, string) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func New(...Option) *System
+pkg github.com/hmdsefi/lockstep, func NewReply[R any](Sender, ...AskOption) (ReplyTo[R], *Reply[R])
 pkg github.com/hmdsefi/lockstep, func PIDAt[M any](string, string) PID[M]
 pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Send[M any](Sender, PID[M], M) error

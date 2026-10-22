@@ -5,6 +5,8 @@ package lockstep
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sync/atomic"
 )
 
@@ -65,8 +67,8 @@ func resolvedReply[R any](sys *System, err error) *Reply[R] {
 
 // resolve sets r's result, v asserted to R (a nil v, or one with a non-nil err, is the zero R),
 // and closes done. It reports whether this call resolved r; a later call changes nothing
-// (MSG-430). It is the untyped resolver of r's table entry, called by settle under the table's
-// lock.
+// (MSG-430). It is the resolver of r's table entry, called by settle under the table's lock,
+// which has already turned a v that is not an R into an ErrWrongType error (wrongType).
 func (r *Reply[R]) resolve(v any, err error) bool {
 	if r.resolved.Load() {
 		return false
@@ -78,6 +80,17 @@ func (r *Reply[R]) resolve(v any, err error) bool {
 	r.resolved.Store(true)
 	close(r.done)
 	return true
+}
+
+// wrongType returns MSG-420's error for an answer v whose dynamic type is not R (a ReplyTo
+// converted between instantiations, or a remote reply from other code), and nil for an R or a nil
+// v. Type names are reflect's String, as in ACT's ErrWrongType texts.
+func (r *Reply[R]) wrongType(ask Address, v any) error {
+	if _, ok := v.(R); ok || v == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: reply to %s: got %s, want %s",
+		ErrWrongType, ask, reflect.TypeOf(v).String(), reflect.TypeFor[R]().String())
 }
 
 // Await waits for the ask to resolve and returns its value or error. If ctx ends first it returns
