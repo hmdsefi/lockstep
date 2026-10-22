@@ -154,7 +154,7 @@ func TestATACT03WatchGuardian(t *testing.T) {
 	}
 }
 
-// AT-ACT-29 (b), ACT-630, SUP-335, m21: Unwatch right after a not-alive Watch suppresses the
+// AT-ACT-29 (b), ACT-630, ACT-660, SUP-335: Unwatch right after a not-alive Watch suppresses the
 // queued Terminated, and records the unwatch because the address was in the watched set.
 func TestATACT29UnwatchQueued(t *testing.T) {
 	sys, eng := newManualSystem(t)
