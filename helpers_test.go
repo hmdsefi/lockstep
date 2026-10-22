@@ -49,7 +49,7 @@ func newLocalSystem(t *testing.T, opts ...Option) *System {
 }
 
 // stopEngineAtEnd stops sys's engine when the test ends, so goleak finds no engine goroutine. Until
-// Shutdown exists (1.2-12) this is the only way to stop a local system.
+// System has a Shutdown method this is the only way to stop a local system.
 func stopEngineAtEnd(t *testing.T, sys *System) {
 	t.Helper()
 	t.Cleanup(func() {

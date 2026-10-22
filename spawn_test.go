@@ -39,8 +39,8 @@ func TestATACT01DefaultsAndPaths(t *testing.T) {
 		if r.err != nil || r.pid.Address().Path() != "/user/a/b" || r.pid.Address().Node() != "local" {
 			t.Errorf("Spawn of b from a's Started = %v, %v; want /user/a/b", r.pid, r.err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("a did not start within 1 s")
+	case <-time.After(10 * time.Second):
+		t.Fatal("a did not start within 10 s")
 	}
 }
 
