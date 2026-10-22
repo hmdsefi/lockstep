@@ -29,8 +29,9 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 	if addr.node != sys.node {
 		return fmt.Errorf("%w: %s", ErrNotLocal, addr)
 	}
-	// Hook for 1.2-11: the watching incarnation stopping returns fmt.Errorf("%w: %s", ErrStopped,
-	// c.addr) here, after the locality check and before the self check.
+	if c.stopping() { // only Stopped runs in a turn of a stopping incarnation
+		return fmt.Errorf("%w: %s", ErrStopped, c.addr)
+	}
 	if addr == c.addr {
 		return nil
 	}

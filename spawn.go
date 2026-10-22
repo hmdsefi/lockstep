@@ -49,6 +49,10 @@ type spawnParent interface {
 	// spawnParent returns the system, the parent's address, and the cell whose turn spawns (nil
 	// for a System). It panics for a Context outside its turn (ACT-120).
 	spawnParent() (sys *System, parent Address, from engine.ActorRef)
+	// parentStopping reports whether the parent's incarnation is stopping (SUP-090): an actor
+	// whose stop has started, in its Stopped hook. A System reports false; Shutdown has its own
+	// flag (closing). Spawn calls it after spawnParent, so a Context is in its turn.
+	parentStopping() bool
 }
 
 func (s *System) nilSpawner() bool { return s == nil }
@@ -57,6 +61,8 @@ func (s *System) nilSpawner() bool { return s == nil }
 //
 //nolint:unparam // implements spawnParent, whose Context implementation returns the spawning cell
 func (s *System) spawnParent() (*System, Address, engine.ActorRef) { return s, s.user, nil }
+
+func (*System) parentStopping() bool { return false }
 
 // Spawn creates a child of parent named name and returns its PID. name "" asks for a generated
 // name "$<n>". factory is called at every start and restart, never by Spawn itself.
@@ -76,7 +82,7 @@ func Spawn[M any](parent Spawner, name string, factory func() Actor[M], opts ...
 		panic("lockstep: Spawn with nil factory")
 	}
 	sys, parentAddr, from := p.spawnParent()
-	return spawn(sys, parentAddr, from, name, factory, cfg)
+	return spawn(sys, parentAddr, from, p.parentStopping(), name, factory, cfg)
 }
 
 // spawnSystem spawns a child of the system guardian, under /system (ACT-030). Only lockstep's own
@@ -86,15 +92,15 @@ func spawnSystem[M any](sys *System, name string, factory func() Actor[M], opts 
 	if factory == nil {
 		panic("lockstep: Spawn with nil factory")
 	}
-	return spawn(sys, sys.system, nil, name, factory, cfg)
+	return spawn(sys, sys.system, nil, false, name, factory, cfg)
 }
 
-// spawn runs ACT-300 from step 3 on: it checks the name, the options, the system's state, the
-// name's availability and admission, in that order, then registers the child, records the spawn,
-// pushes begin and schedules the child (ACT-340, ENG-350). from is the cell whose turn spawns, or
-// nil.
-func spawn[M any](sys *System, parent Address, from engine.ActorRef, name string, factory func() Actor[M],
-	cfg *spawnConfig,
+// spawn runs ACT-300 from step 3 on: it checks the name, the options, the system's and the
+// parent's state, the name's availability and admission, in that order, then registers the child,
+// records the spawn, pushes begin and schedules the child (ACT-340, ENG-350). from is the cell
+// whose turn spawns, or nil; stopping reports that it is the parent and is stopping (SUP-090).
+func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bool, name string,
+	factory func() Actor[M], cfg *spawnConfig,
 ) (PID[M], error) {
 	typ := reflect.TypeFor[M]().String()
 	refuse := func(err error) (PID[M], error) {
@@ -107,9 +113,9 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, name string
 	if cfg.err != nil {
 		return refuse(cfg.err)
 	}
-	// Step 4. Shutdown (1.2-12) sets closing; the parent-incarnation-stopping check (SUP-090)
-	// arrives with the stop sequence (1.2-11) and belongs here too.
-	if sys.closing.Load() {
+	// Step 4. Shutdown (1.2-12) sets closing; a parent whose stop has started takes no child
+	// (SUP-090), so the stop sequence's registry removal never finds one.
+	if sys.closing.Load() || stopping {
 		return refuse(fmt.Errorf("%w: %s", ErrStopped, parent))
 	}
 	nameTaken := func() error { return fmt.Errorf("%w: %q under %s", ErrNameTaken, name, parent) }

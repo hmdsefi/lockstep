@@ -263,17 +263,25 @@ func (s *System) replyRemote(ask, from Address, v any, err error) {
 	_ = tr.Deliver(engine.Envelope{From: from.engine(), To: ask.engine(), Payload: p}) // MSG-410: not returned
 }
 
-// track makes the actor c track ask (MSG-340). The router calls it before it enqueues the
-// request, so a reply attempt that follows the enqueue always finds the entry to remove.
-func (t *askTable) track(ask Address, c actorCell) {
+// track makes the actor c track ask (MSG-340) and reports whether this call added the entry. The
+// router calls it before it enqueues the request, so a reply attempt that follows the enqueue
+// always finds the entry to remove. local tells that ask belongs to this system: such an ask is
+// tracked only while it is pending here, so one that resolved before its request was routed (its
+// builder leaked the ReplyTo) gets no Fail(ErrTerminated), and no late record, at the stop.
+func (t *askTable) track(ask Address, c actorCell, local bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if local {
+		if p := t.pending[ask.path]; p == nil || p.addr.uid != ask.uid {
+			return false
+		}
+	}
 	if t.tracked == nil {
 		t.tracked = make(map[Address]actorCell)
 		t.byActor = make(map[actorCell]*trackList)
 	}
 	if _, dup := t.tracked[ask]; dup {
-		return // a duplicate delivery of the request: tracked once, by the first actor (MSG-340)
+		return false // a duplicate delivery of the request: tracked once, by the first actor (MSG-340)
 	}
 	t.tracked[ask] = c
 	l := t.byActor[c]
@@ -283,15 +291,17 @@ func (t *askTable) track(ask Address, c actorCell) {
 	}
 	l.asks = append(l.asks, ask)
 	l.live++
+	return true
 }
 
-// untrack removes ask from the tracked asks, if it is there (MSG-410, MSG-345).
-func (t *askTable) untrack(ask Address) {
+// untrack removes ask from the tracked asks, if it is there (MSG-410, MSG-345), and reports
+// whether it was.
+func (t *askTable) untrack(ask Address) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	c, ok := t.tracked[ask]
 	if !ok {
-		return
+		return false
 	}
 	delete(t.tracked, ask)
 	l := t.byActor[c]
@@ -302,6 +312,28 @@ func (t *askTable) untrack(ask Address) {
 	case l.live*2 < len(l.asks):
 		l.asks = slices.DeleteFunc(l.asks, func(a Address) bool { return t.tracked[a] != c })
 	}
+	return true
+}
+
+// untrackAll removes every ask c tracks and returns them in tracking order (MSG-340): the final
+// stop of c fails each one. A request offered to c after this finds c's mailbox closed, and the
+// router removes its entry again, so no list for c survives the stop.
+func (t *askTable) untrackAll(c actorCell) []Address {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	l := t.byActor[c]
+	if l == nil {
+		return nil
+	}
+	out := make([]Address, 0, l.live)
+	for _, a := range l.asks {
+		if t.tracked[a] == c {
+			out = append(out, a)
+			delete(t.tracked, a)
+		}
+	}
+	delete(t.byActor, c)
+	return out
 }
 
 // trackedBy returns the asks c tracks, in tracking order (MSG-340).

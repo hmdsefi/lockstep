@@ -18,8 +18,8 @@ type Context[M any] struct {
 	inTurn atomic.Bool // set for the duration of each handler call of this incarnation (ACT-120)
 
 	// watched is the incarnation's watched set (ACT-600). Turn-owned: only Watch, Unwatch and
-	// signal delivery, all in a turn of this incarnation, touch it; so does 1.2-11's stop sequence,
-	// in the turn that ends the incarnation.
+	// signal delivery, all in a turn of this incarnation, touch it; so does the stop sequence,
+	// which clears it in the turn that starts the stop (SUP-060 step 1).
 	watched watchedSet
 }
 
@@ -49,3 +49,7 @@ func (c *Context[M]) spawnParent() (*System, Address, engine.ActorRef) {
 	c.mustInTurn()
 	return c.cell.sys, c.cell.addr, c.cell
 }
+
+// parentStopping reports whether the actor's stop has started (SUP-090). Only Stopped runs in a
+// turn from then on.
+func (c *Context[M]) parentStopping() bool { return c.cell.stopping() }
