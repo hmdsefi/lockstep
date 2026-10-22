@@ -46,9 +46,7 @@ func spawnSigActor(t *testing.T, sys *System, eng *enginetest.Engine, name strin
 // never Receive, before the user messages queued ahead of it and also when it arrives during a turn,
 // before the remaining ones; an actor without SignalReceiver ignores it without a record.
 //
-// The test pushes the Terminated straight to the system queue (pushSignal). Task 1.2-10 changes it
-// to obtain the Terminated through Watch of a not-alive PIDAt address, because ACT-630's skip rule
-// drops a Terminated whose Addr is not in the watched set (ruling B6).
+// The test pushes the Terminated straight to the system queue (pushSignal).
 func TestSignalDelivery(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	eng.SetBudget(32)
