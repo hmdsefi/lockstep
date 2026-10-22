@@ -70,7 +70,7 @@ func (c *cell[M]) hasWork() bool {
 
 // recordTurn emits lockstep.turn for a turn that processed system system messages and u user
 // messages, the first of which was first (ENG-340). shown is false when that message has no
-// description: a discarded or failed piped reply (m20).
+// description: a discarded or failed piped reply.
 func (c *cell[M]) recordTurn(system int, shown bool, u int, first any) {
 	tr := c.sys.eng.Tracer
 	if !tr.Enabled() {
@@ -152,7 +152,7 @@ func (c *cell[M]) callStarted() {
 
 // processUser handles one user message: it hands a Sent entry to Receive and a Self entry to
 // processSelf. It returns the message that the turn's lockstep.turn record describes, and false
-// when there is none (ENG-340, m20).
+// when there is none (ENG-340).
 func (c *cell[M]) processUser(e entry) (msg any, shown bool) {
 	if e.kind == entrySelf {
 		return c.processSelf(e)

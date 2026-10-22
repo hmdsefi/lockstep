@@ -55,8 +55,7 @@ func spawnSigActor(t *testing.T, sys *System, eng *enginetest.Engine, name strin
 // before the remaining ones; an actor without SignalReceiver ignores it without a record.
 //
 // The test obtains its Terminated through Watch of a not-alive PIDAt address, which puts the
-// address in the watched set: ACT-630's skip rule drops a Terminated whose Addr is not in it
-// (ruling B6).
+// address in the watched set: ACT-630's skip rule drops a Terminated whose Addr is not in it.
 func TestSignalDelivery(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	eng.SetBudget(32)

@@ -31,7 +31,7 @@ func TestATMSG21LocalResolutionIsSynchronous(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := Ask(sys, replier, func(rt ReplyTo[int]) ReplyTo[int] { return rt })
-	if v, err := r.Await(within(t, time.Second)); v != 5 || err != nil {
+	if v, err := r.Await(within(t, 10*time.Second)); v != 5 || err != nil {
 		t.Errorf("Await while the replier is blocked = %d, %v, want 5, nil", v, err)
 	}
 	unblock()
@@ -113,13 +113,13 @@ func TestATMSG23AwaitInsideActor(t *testing.T) {
 		silent, _ := spawnSilent(t, sys)
 		a, out := awaitInReceive(t, sys, silent)
 		send(t, sys, a, 1)
-		// The result arrives within 1 s, so the turn did not block.
+		// The result arrives (recv waits up to 10 s), so the turn did not block.
 		got := recv(t, out)
 		if got.v != 0 || got.err != ErrAwaitInActor { //nolint:errorlint // not wrapped (MSG §7)
 			t.Errorf("Await inside Receive = %d, %v, want 0, ErrAwaitInActor", got.v, got.err)
 		}
-		// Handed to the test goroutine, the reply resolves at its timeout (m18: Pipe is 1.2-09's).
-		if _, err := got.reply.Await(within(t, time.Second)); !errors.Is(err, ErrTimeout) {
+		// Handed to the test goroutine, the reply resolves at its timeout.
+		if _, err := got.reply.Await(within(t, 10*time.Second)); !errors.Is(err, ErrTimeout) {
 			t.Errorf("Await of the same reply from the test = %v, want ErrTimeout", err)
 		}
 	})

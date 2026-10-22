@@ -238,8 +238,8 @@ func (s *System) replyAttempt(ask, from Address, v any, err error) {
 		s.recordReply(ask, from, "zero", err, s.describeErr(err))
 		return
 	}
-	// A reply attempt from a stopped system is dropped without a record (MSG-410): with Shutdown,
-	// 1.2-12.
+	// A reply attempt from a stopped system is dropped without a record (MSG-410); that check
+	// arrives with Shutdown.
 	s.asks.untrack(ask)
 	if ask.node != s.node {
 		s.replyRemote(ask, from, v, err)

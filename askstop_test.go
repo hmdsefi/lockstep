@@ -42,7 +42,7 @@ func TestATMSG16TerminatedOnStop(t *testing.T) {
 	sys, rec := newRecordingSystem(t)
 	silent, stored := spawnSilent(t, sys)
 	r := askSilent(sys, silent, WithTimeout(time.Hour))
-	waitFor(t, stored) // silent holds the ReplyTo: the ask is tracked
+	recv(t, stored) // silent holds the ReplyTo: the ask is tracked
 	if err := Stop(sys, silent.Address()); err != nil {
 		t.Fatal(err)
 	}

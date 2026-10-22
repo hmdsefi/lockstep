@@ -48,7 +48,7 @@ func watchFrom(t *testing.T, sys *System, w PID[any], addr Address) {
 // Terminated for addr that arrives within 10 s.
 func awaitTerminated(t *testing.T, p *probe[any], addr Address) Terminated {
 	t.Helper()
-	sig := waitFor(t, p.signals)
+	sig := recv(t, p.signals)
 	term, ok := sig.(Terminated)
 	if !ok || term.Addr != addr {
 		t.Fatalf("signal %#v, want a Terminated for %v", sig, addr)
@@ -92,7 +92,7 @@ func TestATACT32Stop(t *testing.T) {
 		if err := Stop(sys, tp.Address()); err != nil {
 			t.Fatalf("Stop = %v, want nil", err)
 		}
-		if r := waitFor(t, reasons); r != Normal {
+		if r := recv(t, reasons); r != Normal {
 			t.Errorf("Stopped got %v, want Normal", r)
 		}
 		awaitTerminated(t, wp, tp.Address())
@@ -127,7 +127,7 @@ func TestATACT32Stop(t *testing.T) {
 		if err := Stop(sys, tp.Address()); err != nil {
 			t.Fatalf("first Stop = %v", err)
 		}
-		if r := waitFor(t, entered); r != Normal {
+		if r := recv(t, entered); r != Normal {
 			t.Errorf("Stopped got %v, want Normal", r)
 		}
 		if err := Stop(sys, tp.Address()); err != nil {
@@ -160,10 +160,10 @@ func TestATACT32Stop(t *testing.T) {
 		watchFrom(t, sys, w, self.Address())
 		send(t, sys, self, "stop")
 		send(t, sys, self, "after")
-		if err := waitFor(t, stopErr); err != nil {
+		if err := recv(t, stopErr); err != nil {
 			t.Errorf("Stop(ctx, self) = %v, want nil", err)
 		}
-		if r := waitFor(t, reasons); r != Normal {
+		if r := recv(t, reasons); r != Normal {
 			t.Errorf("Stopped got %v, want Normal", r)
 		}
 		awaitTerminated(t, wp, self.Address())
@@ -232,7 +232,7 @@ func TestATACT17NameFreedAtStopCompletion(t *testing.T) {
 	if err := Stop(sys, old.Address()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, entered)
+	recv(t, entered)
 
 	want := `lockstep: name taken: "a" under ` + sys.user.String()
 	if _, err := Spawn(sys, "a", idle[int]()); !errors.Is(err, ErrNameTaken) || err.Error() != want {
@@ -291,7 +291,7 @@ func TestATACT24NoOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, ready)
+	recv(t, ready)
 	if n := sys.reg.Len(); n != before+3 {
 		t.Fatalf("registry holds %d entries with the tree, want %d", n, before+3)
 	}
@@ -351,7 +351,7 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 
 	first := spawnA()
 	send(t, sys, p, 2)
-	if m := waitFor(t, got); m != 2 {
+	if m := recv(t, got); m != 2 {
 		t.Errorf("a received %d, want 2", m)
 	}
 	// Watch(ctx, p) and Stop(sys, p.Address()): the Terminated carries the path address.
@@ -367,7 +367,7 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 		t.Error("the respawned actor has the old PID")
 	}
 	send(t, sys, p, 3)
-	if m := waitFor(t, got); m != 3 {
+	if m := recv(t, got); m != 3 {
 		t.Errorf("the respawned a received %d, want 3", m)
 	}
 	stopAndWait(t, sys, w, wp, p.Address())
