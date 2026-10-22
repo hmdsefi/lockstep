@@ -6,6 +6,7 @@ package lockstep
 import (
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/engine/local"
@@ -20,7 +21,8 @@ type System struct {
 	incarnation uint32 // Engine.Epoch; constant for the system's life (ACT-045)
 
 	reg          *registry.Registry
-	user, system Address // the guardians; neither is registered (ACT-030)
+	user, system Address     // the guardians; neither is registered (ACT-030)
+	closing      atomic.Bool // shutting down or stopped: Spawn returns ErrStopped (ACT-050); set by Shutdown (1.2-12)
 
 	uidMu   sync.Mutex
 	epoch   uint32 // the epoch of the next uid
