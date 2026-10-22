@@ -1,0 +1,419 @@
+// Copyright 2026 Hamed Yousefi
+// SPDX-License-Identifier: MPL-2.0
+
+package registry
+
+import (
+	"fmt"
+	"reflect"
+	"sync"
+	"testing"
+)
+
+func newTestRegistry() *Registry {
+	r := New()
+	r.AddRoot(Addr{Node: "n1", Path: "/user"})
+	r.AddRoot(Addr{Node: "n1", Path: "/system"})
+	return r
+}
+
+func mustAdd(t *testing.T, r *Registry, parent, name string, uid uint64) string {
+	t.Helper()
+	p, ok := r.Add(parent, name, uid, "cell-"+name)
+	if !ok {
+		t.Fatalf("Add(%q, %q) not ok", parent, name)
+	}
+	return p
+}
+
+func w(path string, uid uint64, inc uint32) Watcher {
+	return Watcher{Addr: Addr{Node: "n1", Path: path, UID: uid}, Inc: inc}
+}
+
+func TestAddAndLookup(t *testing.T) {
+	r := newTestRegistry()
+	p := mustAdd(t, r, "/user", "a", 7)
+	if p != "/user/a" {
+		t.Fatalf("path = %q, want /user/a", p)
+	}
+	q := mustAdd(t, r, p, "b", 8)
+	if q != "/user/a/b" {
+		t.Fatalf("path = %q, want /user/a/b", q)
+	}
+	uid, cell, ok := r.Lookup("/user/a")
+	if !ok || uid != 7 || cell != "cell-a" {
+		t.Fatalf("Lookup(/user/a) = %d, %v, %v", uid, cell, ok)
+	}
+	if _, _, ok := r.Lookup("/user/a/b"); !ok {
+		t.Fatal("Lookup(/user/a/b) not found")
+	}
+	for _, path := range []string{"/user", "/system", "/", "", "/user/zz"} {
+		if _, _, ok := r.Lookup(path); ok {
+			t.Fatalf("Lookup(%q) found; roots and unknown paths are not registered", path)
+		}
+	}
+	if r.Len() != 2 {
+		t.Fatalf("Len = %d, want 2", r.Len())
+	}
+	if r.Taken("/user", "zz") || !r.Taken("/user", "a") || !r.Taken("/user/a", "b") {
+		t.Fatal("Taken disagrees with the registered children")
+	}
+}
+
+func TestAddUnknownParentPanics(t *testing.T) {
+	r := newTestRegistry()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Add under an unknown parent did not panic")
+		}
+	}()
+	r.Add("/user/missing", "a", 1, nil)
+}
+
+func TestGeneratedNames(t *testing.T) {
+	r := newTestRegistry()
+	if p := mustAdd(t, r, "/user", "", 1); p != "/user/$1" {
+		t.Fatalf("first generated = %q", p)
+	}
+	if p := mustAdd(t, r, "/user", "", 2); p != "/user/$2" {
+		t.Fatalf("second generated = %q", p)
+	}
+	// Independent counter under another guardian and under an actor.
+	if p := mustAdd(t, r, "/system", "", 3); p != "/system/$1" {
+		t.Fatalf("system generated = %q", p)
+	}
+	a := mustAdd(t, r, "/user", "a", 4)
+	if p := mustAdd(t, r, a, "", 5); p != "/user/a/$1" {
+		t.Fatalf("child generated = %q", p)
+	}
+	// A named spawn consumes no number, and neither does a failed one (ACT-320).
+	mustAdd(t, r, "/user", "named", 6)
+	if _, ok := r.Add("/user", "named", 7, nil); ok {
+		t.Fatal("Add of a taken name succeeded")
+	}
+	if p := mustAdd(t, r, "/user", "", 8); p != "/user/$3" {
+		t.Fatalf("third generated = %q, want /user/$3", p)
+	}
+	// The counter never goes back when a generated child is removed.
+	r.Remove("/user/$3")
+	if p := mustAdd(t, r, "/user", "", 9); p != "/user/$4" {
+		t.Fatalf("after removal generated = %q, want /user/$4", p)
+	}
+}
+
+func TestNameFreedAtRemove(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "a", 1)
+	if _, ok := r.Add("/user", "a", 2, nil); ok {
+		t.Fatal("duplicate name accepted")
+	}
+	// The name stays taken, and the actor found, until Remove (stop started is not removed).
+	if !r.Taken("/user", "a") {
+		t.Fatal("name not taken")
+	}
+	if uid, _, ok := r.Lookup("/user/a"); !ok || uid != 1 {
+		t.Fatal("entry not found before Remove")
+	}
+	r.Remove("/user/a")
+	if r.Taken("/user", "a") {
+		t.Fatal("name still taken after Remove")
+	}
+	if _, _, ok := r.Lookup("/user/a"); ok {
+		t.Fatal("entry found after Remove")
+	}
+	if p, ok := r.Add("/user", "a", 3, "again"); !ok || p != "/user/a" {
+		t.Fatalf("re-Add = %q, %v", p, ok)
+	}
+	if uid, cell, _ := r.Lookup("/user/a"); uid != 3 || cell != "again" {
+		t.Fatalf("Lookup after re-Add = %d, %v", uid, cell)
+	}
+}
+
+func TestRemoveRequiresNoChildren(t *testing.T) {
+	r := newTestRegistry()
+	a := mustAdd(t, r, "/user", "a", 1)
+	mustAdd(t, r, a, "b", 2)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("Remove of a parent with a registered child did not panic")
+			}
+		}()
+		r.Remove(a)
+	}()
+	if !r.Taken("/user", "a") || r.Len() != 2 {
+		t.Fatal("the failed Remove changed the registry")
+	}
+	r.Remove("/user/a/b")
+	r.Remove(a)
+	if r.Len() != 0 {
+		t.Fatalf("Len = %d, want 0", r.Len())
+	}
+	// Removing an unknown path does nothing.
+	if got := r.Remove("/user/a"); got != nil {
+		t.Fatalf("Remove of unknown path = %v", got)
+	}
+}
+
+func TestChildrenOrder(t *testing.T) {
+	r := newTestRegistry()
+	for i, n := range []string{"c", "a", "", "b"} {
+		mustAdd(t, r, "/user", n, uint64(i+1))
+	}
+	paths := func() []string {
+		var out []string
+		for _, c := range r.Children("/user") {
+			out = append(out, c.Path)
+		}
+		return out
+	}
+	want := []string{"/user/c", "/user/a", "/user/$1", "/user/b"}
+	if got := paths(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Children = %v, want %v", got, want)
+	}
+	cs := r.Children("/user")
+	if cs[1] != (Addr{Node: "n1", Path: "/user/a", UID: 2}) {
+		t.Fatalf("child address = %+v", cs[1])
+	}
+	r.Remove("/user/a")
+	want = []string{"/user/c", "/user/$1", "/user/b"}
+	if got := paths(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Children after Remove = %v, want %v", got, want)
+	}
+	// The result is a copy.
+	cs = r.Children("/user")
+	cs[0].Path = "/mutated"
+	if r.Children("/user")[0].Path != "/user/c" {
+		t.Fatal("Children returned the registry's own slice")
+	}
+	if got := r.Children("/system"); len(got) != 0 {
+		t.Fatalf("Children of an empty parent = %v", got)
+	}
+	if got := r.Children("/nowhere"); len(got) != 0 {
+		t.Fatalf("Children of an unknown parent = %v", got)
+	}
+}
+
+func TestWatchAlive(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 5)
+	watcher := w("/user/w", 9, 1)
+
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 5}, watcher); !alive || !added {
+		t.Fatalf("AddWatch registered uid = %v, %v", alive, added)
+	}
+	// A path key (UID 0) is alive when the path is registered, whatever its uid.
+	other := w("/user/w2", 10, 1)
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, other); !alive || !added {
+		t.Fatalf("AddWatch path key = %v, %v", alive, added)
+	}
+	// A different uid at the same path is not alive.
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 4}, w("/user/w3", 11, 1)); alive || added {
+		t.Fatalf("AddWatch stale uid = %v, %v", alive, added)
+	}
+	// Never added, and roots.
+	for _, k := range []Addr{
+		{Node: "n1", Path: "/user/nope", UID: 5},
+		{Node: "n1", Path: "/user/nope"},
+		{Node: "n1", Path: "/user"},
+		{},
+	} {
+		if alive, added := r.AddWatch(k, watcher); alive || added {
+			t.Fatalf("AddWatch(%+v) = %v, %v", k, alive, added)
+		}
+	}
+	// Removed.
+	r.Remove("/user/t")
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 5}, watcher); alive || added {
+		t.Fatalf("AddWatch of removed = %v, %v", alive, added)
+	}
+	if alive, _ := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, watcher); alive {
+		t.Fatal("path key alive after Remove")
+	}
+	if got := r.Watchers("/user/t"); len(got) != 0 {
+		t.Fatalf("Watchers after Remove = %v", got)
+	}
+}
+
+func TestWatchDuplicate(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 5)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 5}
+	watcher := w("/user/w", 9, 1)
+	if alive, added := r.AddWatch(key, watcher); !alive || !added {
+		t.Fatalf("first = %v, %v", alive, added)
+	}
+	if alive, added := r.AddWatch(key, watcher); !alive || added {
+		t.Fatalf("second = %v, %v; want alive and not added", alive, added)
+	}
+	if got := r.Watchers("/user/t"); len(got) != 1 {
+		t.Fatalf("Watchers = %v, want one entry", got)
+	}
+	// Another incarnation of the same actor is another watcher; another key is another entry.
+	if _, added := r.AddWatch(key, w("/user/w", 9, 2)); !added {
+		t.Fatal("new incarnation not added")
+	}
+	if _, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, watcher); !added {
+		t.Fatal("same watcher under the path key not added")
+	}
+	if got := r.Watchers("/user/t"); len(got) != 3 {
+		t.Fatalf("Watchers = %v, want three entries", got)
+	}
+	if !r.RemoveWatch(key, watcher) {
+		t.Fatal("RemoveWatch reported nothing removed")
+	}
+	if r.RemoveWatch(key, watcher) {
+		t.Fatal("second RemoveWatch removed something")
+	}
+	if r.RemoveWatch(Addr{Node: "n1", Path: "/user/t", UID: 6}, w("/user/w", 9, 2)) {
+		t.Fatal("RemoveWatch with a stale uid removed something")
+	}
+	if r.RemoveWatch(Addr{Node: "n1", Path: "/user/none", UID: 6}, watcher) {
+		t.Fatal("RemoveWatch of an unknown target removed something")
+	}
+}
+
+func TestWatcherOrder(t *testing.T) {
+	// AT-ACT-31: W3, W1, W2 spawned in that order watch t in the order W2, W3, W1.
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	w3, w1, w2 := w("/user/w3", 2, 1), w("/user/w1", 3, 1), w("/user/w2", 4, 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	for _, x := range []Watcher{w2, w3, w1} {
+		r.AddWatch(key, x)
+	}
+	order := func() []Watcher {
+		var out []Watcher
+		for _, x := range r.Watchers("/user/t") {
+			out = append(out, x.Watcher)
+		}
+		return out
+	}
+	if got, want := order(), []Watcher{w2, w3, w1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	// W2 unwatches and watches again: it moves to the end.
+	if !r.RemoveWatch(key, w2) {
+		t.Fatal("RemoveWatch(w2) failed")
+	}
+	r.AddWatch(key, w2)
+	if got, want := order(), []Watcher{w3, w1, w2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order after re-watch = %v, want %v", got, want)
+	}
+}
+
+func TestDropWatcher(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t1", 1)
+	mustAdd(t, r, "/user", "t2", 2)
+	k1 := Addr{Node: "n1", Path: "/user/t1", UID: 1}
+	k2 := Addr{Node: "n1", Path: "/user/t2", UID: 2}
+	a, b := w("/user/a", 3, 1), w("/user/b", 4, 1)
+	r.AddWatch(k1, a)
+	r.AddWatch(k1, b)
+	r.AddWatch(k2, a)
+	r.AddWatch(Addr{Node: "n1", Path: "/user/t2"}, a)
+	r.AddWatch(k2, b)
+	r.DropWatcher(a)
+	if got := r.Watchers("/user/t1"); len(got) != 1 || got[0].Watcher != b {
+		t.Fatalf("t1 watchers = %v", got)
+	}
+	if got := r.Watchers("/user/t2"); len(got) != 1 || got[0].Watcher != b {
+		t.Fatalf("t2 watchers = %v", got)
+	}
+	// Dropping a watcher that watches nothing, or twice, is fine; a can watch again.
+	r.DropWatcher(a)
+	r.DropWatcher(w("/user/never", 99, 1))
+	if _, added := r.AddWatch(k1, a); !added {
+		t.Fatal("watch after DropWatcher not added")
+	}
+	// A dropped watcher is not returned by Remove.
+	r.DropWatcher(b)
+	got := r.Remove("/user/t1")
+	if len(got) != 1 || got[0].Watcher != a {
+		t.Fatalf("Remove returned %v", got)
+	}
+	// Only the other incarnation stays.
+	a2 := w("/user/a", 3, 2)
+	r.AddWatch(k2, a2)
+	r.DropWatcher(a)
+	if got := r.Watchers("/user/t2"); len(got) != 1 || got[0].Watcher != a2 {
+		t.Fatalf("t2 watchers = %v", got)
+	}
+}
+
+func TestRemoveReturnsWatchers(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	pathKey := Addr{Node: "n1", Path: "/user/t"}
+	a, b, c := w("/user/a", 2, 1), w("/user/b", 3, 1), w("/user/c", 4, 2)
+	r.AddWatch(key, b)
+	r.AddWatch(pathKey, a)
+	r.AddWatch(key, c)
+	want := []Watch{{b, key}, {a, pathKey}, {c, key}}
+	if got := r.Remove("/user/t"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Remove = %v, want %v", got, want)
+	}
+	if got := r.Watchers("/user/t"); len(got) != 0 {
+		t.Fatalf("Watchers after Remove = %v", got)
+	}
+	// The entry's lists are gone: a re-added target starts empty.
+	mustAdd(t, r, "/user", "t", 9)
+	if got := r.Watchers("/user/t"); len(got) != 0 {
+		t.Fatalf("new entry has watchers %v", got)
+	}
+	if got := r.Remove("/user/t"); len(got) != 0 {
+		t.Fatalf("Remove of fresh entry = %v", got)
+	}
+	// Watchers of a removed target no longer appear in the drop index.
+	r.DropWatcher(a)
+}
+
+func TestWatchRaceWithRemove(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		r := newTestRegistry()
+		mustAdd(t, r, "/user", "t", 1)
+		key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+		watcher := w("/user/w", 2, 1)
+		var (
+			wg      sync.WaitGroup
+			alive   bool
+			removed []Watch
+			start   = make(chan struct{})
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			alive, _ = r.AddWatch(key, watcher)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			removed = r.Remove("/user/t")
+		}()
+		close(start)
+		wg.Wait()
+		found := false
+		for _, x := range removed {
+			if x.Watcher == watcher {
+				found = true
+			}
+		}
+		if alive != found {
+			t.Fatalf("iteration %d: alive = %v but watcher in Remove result = %v", i, alive, found)
+		}
+		if got := r.Watchers("/user/t"); len(got) != 0 {
+			t.Fatalf("iteration %d: leftover watchers %v", i, got)
+		}
+	}
+}
+
+func ExampleRegistry() {
+	r := New()
+	r.AddRoot(Addr{Node: "n1", Path: "/user"})
+	p, _ := r.Add("/user", "", 1, nil)
+	fmt.Println(p)
+	// Output: /user/$1
+}
