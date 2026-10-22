@@ -11,8 +11,8 @@ type host struct{ sys *System }
 
 // Inbound hands an arriving user message to its target, through the engine's interposer first
 // (ENG-150, MBX-120). An envelope that names no live actor is a dead letter. Payloads of other
-// kinds are not handled yet: replies (1.2-08) and remote watches (1.2-09) arrive with their
-// tasks, and anything else is dropped.
+// kinds are not handled yet: replies (MSG-410) and remote watches (ACT-602, Phase 3) are
+// dropped, like anything else.
 func (h host) Inbound(env engine.Envelope) {
 	if p, ok := env.Payload.(userPayload); ok {
 		h.sys.deliverLocal(routeRequest{

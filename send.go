@@ -27,8 +27,8 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
 	}
-	// MSG-100's last check, the sender's system stopped (ErrStopped), arrives with Shutdown
-	// (1.2-12). A system that is only shutting down still sends, so Stopped hooks can send.
+	// MSG-100's last check, the sender's system stopped (ErrStopped), arrives with Shutdown. A
+	// system that is only shutting down still sends, so Stopped hooks can send.
 	sys.recordSend(fromAddr, to.addr, msg)
 	return sys.route(routeRequest{
 		from:    fromAddr,
@@ -84,7 +84,7 @@ const (
 )
 
 // routeRequest is one user message on its way to a mailbox: what Send routes, and what Ask
-// (1.2-07) and Host.Inbound (1.2-06, 1.2-08) route the same way.
+// and Host.Inbound route the same way.
 type routeRequest struct {
 	from    Address         // the sender
 	fromRef engine.ActorRef // the cell whose turn sends, or nil outside any turn
@@ -105,8 +105,8 @@ const (
 	routeHeld                          // the engine's interposer took the message and offers it later (ENG-150)
 )
 
-// outcome is the result of routing one message. Send maps it to MSG-110's result; Ask (1.2-07)
-// maps it to MSG-310: a dead letter resolves the ask with ErrTerminated (ruling B5), an error
+// outcome is the result of routing one message. Send maps it to MSG-110's result; Ask maps
+// it to MSG-310: a dead letter resolves the ask with ErrTerminated, an error
 // resolves it with that error, an enqueued request is tracked at cell.
 type outcome struct {
 	kind   routeKind
