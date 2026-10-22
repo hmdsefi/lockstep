@@ -231,7 +231,7 @@ func TestDirectiveMessages(t *testing.T) {
 	}
 }
 
-// DET-030: a directive that suppresses nothing, and maporder in an engine package.
+// DET-030: a directive that suppresses nothing, and maporder in an engine package, where it is not honored.
 func TestDirectiveClasses(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
@@ -239,7 +239,7 @@ func TestDirectiveClasses(t *testing.T) {
 		"rt/r.go": "package rt\n\n" +
 			"func R() {\n\t//lockstep:blocking nothing blocks here\n\t_ = 0\n}\n",
 		"eng/e.go": "package eng\n\n" +
-			"func E(m map[string]int) {\n\t//lockstep:maporder honored in engine packages\n\tfor range m {\n\t}\n}\n",
+			"func E(m map[string]int) {\n\t//lockstep:maporder not honored in engine packages\n\tfor range m {\n\t}\n}\n",
 		"ex/x.go": "package ex\n\n" +
 			"func X(m map[string]int) {\n\t//lockstep:wallclock gone\n\tfor range m {\n\t}\n}\n",
 	})
@@ -249,8 +249,8 @@ func TestDirectiveClasses(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		// The engine class runs none of DL006, DL009 and DL010, so maporder has nothing to suppress.
-		"eng/e.go:4:2: DL000: //lockstep:maporder suppresses no finding",
+		// maporder is honored in core and runtime packages only.
+		"eng/e.go:4:2: DL000: //lockstep:maporder is not allowed in engine packages",
 		"rt/r.go:4:2: DL000: //lockstep:blocking suppresses no finding",
 	}
 	var got []string
@@ -420,6 +420,27 @@ func TestLintFileClasses(t *testing.T) {
 			map[string]Class{"p/exempt.go": ClassExempt, "p/rt.go": ClassRuntime})
 		if want := []string{"p/core.go:4 DL000"}; !slices.Equal(got, want) {
 			t.Errorf("findings %q, want %q", got, want)
+		}
+	})
+
+	t.Run("maporder in an engine file", func(t *testing.T) {
+		root := t.TempDir()
+		writeTree(t, root, map[string]string{
+			"go.mod": "module example.com/m\n\ngo 1.26\n",
+			// maporder is honored in the core package ...
+			"p/core.go": "package p\n\nfunc A(m map[string]int) {\n\t//lockstep:maporder keys are sorted later\n\tfor range m {\n\t}\n}\n",
+			// ... and not in a file mapped to engine.
+			"p/eng.go": "package p\n\nfunc B(m map[string]int) {\n\t//lockstep:maporder not honored here\n\tfor range m {\n\t}\n}\n",
+		})
+		fs, err := Lint(Module{Root: root, Path: "example.com/m", Classes: map[string]Class{"p": ClassCore},
+			Files: map[string]Class{"p/eng.go": ClassEngine}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []Finding{{File: "p/eng.go", Line: 4, Col: 2, Rule: RuleMeta,
+			Msg: "//lockstep:maporder is not allowed in engine packages"}}
+		if !slices.Equal(fs, want) {
+			t.Errorf("findings:\n  %s\nwant:\n  %s", findingLines(fs), findingLines(want))
 		}
 	})
 

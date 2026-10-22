@@ -70,7 +70,7 @@ func (l *linter) directives(f *ast.File) []*directive {
 func honored(name string, c Class) bool {
 	switch name {
 	case "maporder":
-		return c == ClassCore || c == ClassRuntime || c == ClassEngine
+		return c == ClassCore || c == ClassRuntime
 	case "blocking":
 		return c == ClassRuntime
 	}
