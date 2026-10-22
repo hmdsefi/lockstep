@@ -52,7 +52,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	cfg, err := applyAskOptions(opts)
 
 	// 3. Failures before sending: nothing is built, allocated or recorded. The stopped-system check
-	// (ErrStopped) arrives with Shutdown (1.2-12).
+	// (ErrStopped) arrives with Shutdown.
 	if err != nil {
 		return resolvedReply[R](sys, err)
 	}

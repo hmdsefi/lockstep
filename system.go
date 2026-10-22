@@ -22,7 +22,7 @@ type System struct {
 
 	reg          *registry.Registry
 	user, system Address     // the guardians; neither is registered (ACT-030)
-	closing      atomic.Bool // shutting down or stopped: Spawn returns ErrStopped (ACT-050); set by Shutdown (1.2-12)
+	closing      atomic.Bool // shutting down or stopped: Spawn returns ErrStopped (ACT-050); set by Shutdown
 
 	asks askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
 
