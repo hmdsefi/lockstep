@@ -148,6 +148,44 @@ pkg example.com/generic, type Num interface{~int | ~int64}
 	}
 }
 
+// DET-110 (faultline DET-025 and DET-026): the kind of every untyped constant, names inside every
+// composite type, the direction of a channel, type parameters, an unexported embedded field, a file
+// the host context excludes, and a package listed twice.
+func TestAPIKinds(t *testing.T) {
+	got, err := API(apiTestdata(t), []string{"kinds", "kinds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `pkg example.com/kinds, const Big = 1267650600228229401496703205376
+pkg example.com/kinds, const Big ideal-int
+pkg example.com/kinds, const C = (0 + 2i)
+pkg example.com/kinds, const C ideal-complex
+pkg example.com/kinds, const Half = 3/2
+pkg example.com/kinds, const Half ideal-float
+pkg example.com/kinds, const R = 97
+pkg example.com/kinds, const R ideal-rune
+pkg example.com/kinds, const Re = 3
+pkg example.com/kinds, const Re ideal-float
+pkg example.com/kinds, const Str = "s"
+pkg example.com/kinds, const Str ideal-string
+pkg example.com/kinds, const T = true
+pkg example.com/kinds, const T ideal-bool
+pkg example.com/kinds, type E struct
+pkg example.com/kinds, type E struct, X int
+pkg example.com/kinds, type G[T any, U comparable] struct
+pkg example.com/kinds, type G[T any, U comparable] struct, X T
+pkg example.com/kinds, var A [2]func(int)
+pkg example.com/kinds, var Ch <-chan func(int)
+pkg example.com/kinds, var L []func(string)
+pkg example.com/kinds, var M map[string]func(int) bool
+pkg example.com/kinds, var N func(func(int))
+pkg example.com/kinds, var P *func(int) error
+`
+	if got != want {
+		t.Errorf("API:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // DET-110: receiver type parameter names (renamed, blank, value receiver), a constraint interface
 // with methods and type terms, comparable, interfaces with unexported methods only, and a generic
 // alias.
