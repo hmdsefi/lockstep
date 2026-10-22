@@ -71,11 +71,11 @@ jobs:
       - name: coverage summary
         if: ${{ !cancelled() && matrix.go == '1.26.x' && steps.coverage.outputs.report != '' }}
         env:
-          REPORT: ${{ fromJSON(steps.coverage.outputs.report) }}
+          REPORT_JSON: ${{ steps.coverage.outputs.report }}
         run: |
           {
             echo '```'
-            echo "$REPORT"
+            printf '%s' "$REPORT_JSON" | jq -r . || printf '%s\n' "$REPORT_JSON"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
