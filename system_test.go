@@ -144,7 +144,7 @@ func TestGuardianUIDs(t *testing.T) {
 				t.Errorf("Lookup(%q) found a guardian", p)
 			}
 			// A declared root accepts children; Add panics under an undeclared parent.
-			if _, ok := sys.reg.Add(p, "x", 7, nil); !ok {
+			if _, ok := sys.reg.Add(p, "x", func() uint64 { return 7 }, nil); !ok {
 				t.Errorf("Add under %q failed: guardian is not a registry root", p)
 			}
 		}
