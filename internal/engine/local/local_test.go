@@ -460,3 +460,44 @@ func TestATENG37LocalBundle(t *testing.T) {
 		t.Errorf("Records() = %v, want [{lockstep.turn [{actor x}]}]", got)
 	}
 }
+
+// ENG-135: Wait called from engine context (a turn or a timer function) panics instead of blocking
+// the loop on a done that only the loop could close; outside engine context it still waits.
+func TestLocalWaitFromEngineContext(t *testing.T) {
+	_, b := start(t, local.Config{Node: "a"})
+	const want = "lockstep: local engine: Wait called from engine context"
+	// The deadline makes a Wait that blocks instead of panicking fail the test rather than hang
+	// the loop.
+	waitInside := func() string {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		return panicText(func() { _ = b.Waiter.Wait(ctx, make(chan struct{})) })
+	}
+
+	inTurn := make(chan string, 1)
+	b.Scheduler.Ready(newFake("w", func(int) bool {
+		inTurn <- waitInside()
+		return false
+	}))
+	if got := recv(t, "Wait inside a turn", inTurn); got != want {
+		t.Errorf("Wait inside a turn: panic = %q, want %q", got, want)
+	}
+
+	inTimer := make(chan string, 1)
+	b.Clock.AfterFunc(0, "lockstep/timer", func() { inTimer <- waitInside() })
+	if got := recv(t, "Wait inside a timer", inTimer); got != want {
+		t.Errorf("Wait inside a timer: panic = %q, want %q", got, want)
+	}
+
+	// The loop still runs tasks, and an external Wait returns once a turn closes done.
+	done := make(chan struct{})
+	b.Scheduler.Ready(newFake("closer", func(int) bool {
+		close(done)
+		return false
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	if err := b.Waiter.Wait(ctx, done); err != nil {
+		t.Errorf("Wait outside engine context = %v, want nil", err)
+	}
+}

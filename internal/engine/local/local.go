@@ -91,7 +91,7 @@ func New(cfg Config) (*Engine, error) {
 		Tracer:    tracer,
 		Admission: admitAll{},
 		Failer:    noFailer{},
-		Waiter:    waiter{},
+		Waiter:    waiter{e},
 		Stop:      e.Stop,
 	}
 	ready := make(chan struct{})
@@ -281,10 +281,14 @@ type noFailer struct{}
 func (noFailer) Fail(error) {}
 
 // waiter is the bundle's Waiter (ENG-135).
-type waiter struct{}
+type waiter struct{ e *Engine }
 
-// Wait returns nil once done is closed, or ctx.Err() if ctx ends first.
-func (waiter) Wait(ctx context.Context, done <-chan struct{}) error {
+// Wait returns nil once done is closed, or ctx.Err() if ctx ends first. It panics when called from
+// engine context, where it would block the loop that has to close done (ENG-135).
+func (w waiter) Wait(ctx context.Context, done <-chan struct{}) error {
+	if w.e.inTurn() {
+		panic("lockstep: local engine: Wait called from engine context")
+	}
 	select {
 	case <-done:
 		return nil
