@@ -105,6 +105,9 @@ func (g *gate) hold(t *testing.T, b engine.Engine) {
 	t.Helper()
 	b.Scheduler.Ready(g)
 	recv(t, "the gate turn", g.running)
+	if b.Scheduler.InTurn() {
+		t.Error("InTurn() = true on the test goroutine while the loop runs a turn")
+	}
 }
 
 // AT-ENG-30, ENG-400
@@ -258,10 +261,15 @@ func TestATENG33LocalTimersAndInTurn(t *testing.T) {
 	}
 	close(g.release)
 
+	// Arm AfterFunc(-1) in engine context and set the flag after it returns: fn runs on the loop,
+	// so it can only run once this turn has ended, never inside the AfterFunc call.
 	var armed atomic.Bool
 	fired := make(chan bool, 1)
-	b.Clock.AfterFunc(-1, "lockstep/timer", func() { fired <- armed.Load() })
-	armed.Store(true)
+	b.Scheduler.Ready(newFake("arm", func(int) bool {
+		b.Clock.AfterFunc(-1, "lockstep/timer", func() { fired <- armed.Load() })
+		armed.Store(true)
+		return false
+	}))
 	if !recv(t, "the AfterFunc(-1) timer", fired) {
 		t.Error("AfterFunc(-1) ran fn before AfterFunc returned")
 	}
@@ -306,7 +314,6 @@ func TestATENG36LocalStop(t *testing.T) {
 	t.Run("after", func(t *testing.T) {
 		e, b := start(t, local.Config{Node: "a"})
 		var called atomic.Int32
-		b.Clock.AfterFunc(20*time.Millisecond, "lockstep/timer", func() { called.Add(1) })
 		ctxDone := make(chan (<-chan struct{}), 1)
 		returned := make(chan struct{})
 		b.Effects.Start(engine.EffectRequest{ID: 1, Name: "block", Run: func(ctx context.Context) (any, error) {
@@ -317,6 +324,7 @@ func TestATENG36LocalStop(t *testing.T) {
 		}}, func(any, error) { called.Add(1) })
 		running := recv(t, "the effect to start", ctxDone)
 
+		b.Clock.AfterFunc(20*time.Millisecond, "lockstep/timer", func() { called.Add(1) }) // armed just before Stop
 		e.Stop()
 		e.Stop() // idempotent
 		select {

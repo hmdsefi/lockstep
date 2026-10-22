@@ -97,6 +97,9 @@ func New(cfg Config) (*Engine, error) {
 	ready := make(chan struct{})
 	go e.loop(ready)
 	<-ready // the loop's ID is known before any InTurn call
+	if e.loopID.Load() == 0 {
+		panic("lockstep: local engine: cannot parse the loop goroutine's ID from runtime.Stack")
+	}
 	return e, nil
 }
 

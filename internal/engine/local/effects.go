@@ -44,7 +44,7 @@ func (p *pool) stop() (running, waiting []*effect) {
 // effects is the bundle's Effects (ENG-430).
 type effects struct{ e *Engine }
 
-// Start runs req on a worker goroutine, queues it, or refuses it with ErrOverloaded.
+// Start runs req on a new goroutine, queues it, or refuses it with ErrOverloaded.
 func (x effects) Start(req engine.EffectRequest, done func(v any, err error)) engine.Cancel {
 	e := x.e
 	f := &effect{req: req, done: done}
@@ -99,25 +99,22 @@ func (e *Engine) cancelEffect(f *effect) engine.Cancel {
 	}
 }
 
-// work runs f and then the oldest waiting effect, until none waits.
+// work runs f on its own goroutine and queues the task that calls its done, unless f was
+// cancelled. It then starts the oldest waiting effect on a new goroutine (ENG-430 step 2), so no
+// goroutine state (LockOSThread, pprof labels) carries over from one Run to the next.
 func (e *Engine) work(f *effect) {
-	for f != nil {
-		e.finish(f)
-		f = e.next(f)
-	}
-}
-
-// finish runs f and queues the task that calls its done, unless f was cancelled.
-func (e *Engine) finish(f *effect) {
 	v, err := call(f)
 	f.cancel()
 	if f.state.Load() == pending {
 		e.post(task{fn: func() { e.complete(f, v, err) }})
 	}
+	if g := e.next(f); g != nil {
+		go e.work(g)
+	}
 }
 
-// next retires prev and returns the oldest waiting effect that is not cancelled, now running, or
-// nil when the worker should exit.
+// next retires prev and returns the oldest waiting effect that is not cancelled, now marked
+// running, or nil when none waits or the engine stopped.
 func (e *Engine) next(prev *effect) *effect {
 	e.mu.Lock()
 	defer e.mu.Unlock()
