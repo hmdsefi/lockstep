@@ -25,14 +25,14 @@ type signalMsg struct{ sig Signal }
 func (signalMsg) isSysMsg() {}
 
 // pushSignal appends sig to the system queue and schedules the cell (ENG-350). Signals run before
-// every user message (ENG-310 step 1). Plan 1.3's supervision and 1.2-10's Watch push signals
+// every user message (ENG-310 step 1). Plan 1.3's supervision and Watch (ACT-600) push signals
 // here; neither applies SUP-320's per-state rules before the push.
 func (c *cell[M]) pushSignal(sig Signal) { c.pushSystem(signalMsg{sig: sig}, nil) }
 
 // deliverSignal handles a signal at the head of the system queue (MSG-810). An incarnation that
 // implements SignalReceiver gets it in Signal, during a turn; any other ignores it without a
 // record. Only a running incarnation delivers: the other lifecycle states keep or drop signals by
-// SUP-320's rules, which arrive with 1.2-13.
+// SUP-320's rules, which arrive with plan 1.3.
 //
 // A Terminated whose Addr is not in the incarnation's watched set is skipped, and the address
 // leaves the set when the Terminated is delivered (ACT-630). An actor without SignalReceiver

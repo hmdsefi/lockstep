@@ -66,7 +66,8 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 		return
 	}
 	// A not-alive watch is in the set but on no registry list, so RemoveWatch's result does not
-	// decide the record (m21): the Terminated that Watch queued is skipped at delivery instead.
+	// decide the record (ACT-630, ACT-660): the Terminated that Watch queued is skipped at delivery
+	// instead.
 	c := ctx.cell
 	c.sys.reg.RemoveWatch(registryAddr(addr), registry.Watcher{Addr: registryAddr(c.addr), Inc: ctx.inc})
 	c.sys.recordUnwatch(c.addr, addr)

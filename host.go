@@ -12,8 +12,8 @@ type host struct{ sys *System }
 // Inbound applies an arriving envelope. A user message, or an ask request, goes to its target
 // through the engine's interposer first (ENG-150, MBX-120); one that names no live actor is a
 // dead letter, and an ask request then fails back to its asker (MSG-350). A reply attempt is
-// applied to the system's table (MSG-410, MSG-420). Remote watches arrive with 1.2-09; any other
-// payload is dropped.
+// applied to the system's table (MSG-410, MSG-420). Remote watches (ACT-602, Phase 3) and any other
+// payload are dropped.
 func (h host) Inbound(env engine.Envelope) {
 	switch p := env.Payload.(type) {
 	case userPayload:

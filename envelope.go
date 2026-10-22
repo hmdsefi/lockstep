@@ -5,8 +5,8 @@ package lockstep
 
 import "reflect"
 
-// userPayload is the engine.Envelope.Payload of a user message: a Send, or an Ask request
-// (1.2-07), that crosses to another node. Until REM (Phase 3) encodes messages, it travels by
+// userPayload is the engine.Envelope.Payload of a user message: a Send, or an Ask request,
+// that crosses to another node. Until REM (Phase 3) encodes messages, it travels by
 // reference over the simulated network (MSG-030).
 type userPayload struct {
 	msg any          // the M value, not copied (MSG-010)

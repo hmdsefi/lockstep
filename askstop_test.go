@@ -42,7 +42,7 @@ func TestATMSG16TerminatedOnStop(t *testing.T) {
 	sys, rec := newRecordingSystem(t)
 	silent, stored := spawnSilent(t, sys)
 	r := askSilent(sys, silent, WithTimeout(time.Hour))
-	waitFor(t, stored) // silent holds the ReplyTo: the ask is tracked
+	recv(t, stored) // silent holds the ReplyTo: the ask is tracked
 	if err := Stop(sys, silent.Address()); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestATMSG16TerminatedOnStop(t *testing.T) {
 	}
 }
 
-// MSG-340, ruling B8: an ask whose request is still queued when its target stops fails once,
+// MSG-340, MBX-160: an ask whose request is still queued when its target stops fails once,
 // through the tracked asks, and the request is not delivered.
 func TestStopQueuedAsk(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -169,7 +169,7 @@ func TestATMSG25PipeResolvedReply(t *testing.T) {
 	}
 }
 
-// MSG-610, m23: a continuation that fires after its actor completed its final stop enqueues
+// MSG-610: a continuation that fires after its actor completed its final stop enqueues
 // nothing and records lockstep.pipe.drop.
 func TestPipeAfterStop(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -188,7 +188,7 @@ func TestPipeAfterStop(t *testing.T) {
 	}
 	send(t, sys, a, any("go"))
 	eng.RunUntilIdle()
-	<-stored
+	recv(t, stored)
 	c := cellOf(t, sys, a)
 	if err := Stop(sys, a.Address()); err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestPipeAfterStop(t *testing.T) {
 	}
 }
 
-// MBX-150 (b), carry items 3 and 4: a request offered to a closed mailbox is a dead letter; its
+// MBX-150 (b), MSG-340: a request offered to a closed mailbox is a dead letter; its
 // ask resolves with ErrTerminated and leaves no tracked entry behind.
 func TestOfferClosedMailbox(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -235,7 +235,7 @@ func TestOfferClosedMailbox(t *testing.T) {
 	}
 }
 
-// MSG-340, carry item 4: a request whose ask resolved before it was routed (its builder leaked
+// MSG-340: a request whose ask resolved before it was routed (its builder leaked
 // the ReplyTo) is not tracked, so the target's stop issues no late reply attempt.
 func TestTrackOnlyPendingAsks(t *testing.T) {
 	sys, eng := newManualSystem(t)

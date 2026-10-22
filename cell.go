@@ -40,7 +40,7 @@ const (
 	cellStarting cellState = iota // begin not processed yet: user messages wait (ACT-340)
 	cellRunning                   // the incarnation accepts user messages (ENG-310 step 2)
 	cellFailed                    // a handler failed: no further user message is popped
-	cellStopping                  // the stop sequence runs (1.2-11): no user message is popped
+	cellStopping                  // the stop sequence runs (SUP-060): no user message is popped
 	cellStopped                   // the final stop completed; the queues are closed
 )
 
@@ -76,7 +76,7 @@ type cell[M any] struct {
 	actor   Actor[M]
 	ctx     *Context[M]
 	starter Starter[M]        // the incarnation's optional interfaces, asserted once (ACT-100)
-	stopper Stopper[M]        // called by the stop sequence (1.2-11)
+	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
 	failure error             // the error handlerFailed got; supervision's in plan 1.3
 
@@ -155,7 +155,7 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 
 // closeQueues closes both queues for the final stop and empties them (SUP-060 step 5): it
 // returns the Sent entries of the user mailbox in queue order, for dead letters, and discards the
-// Self entries and every system message (MBX-160, ruling B8). Later enqueues are refused.
+// Self entries and every system message (MBX-160). Later enqueues are refused.
 func (c *cell[M]) closeQueues() []entry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -223,7 +223,7 @@ const (
 type entry struct {
 	msg  any     // the M
 	from Address // the sender
-	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask (1.2-07) sets it
+	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
 	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe sets it
 	kind entryKind
 }

@@ -150,7 +150,7 @@ func TestATACT06ShutdownOrder(t *testing.T) {
 	if _, err := spawnSystem(sys, "s", leaf); err != nil {
 		t.Fatal(err)
 	}
-	if err := waitFor(t, spawned); err != nil {
+	if err := recv(t, spawned); err != nil {
 		t.Fatalf("spawning a1 and a2: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestATACT07ShutdownWaiting(t *testing.T) {
 		if err := sys.Shutdown(cancelled()); err != context.Canceled { //nolint:errorlint // ACT-060: unwrapped
 			t.Errorf("Shutdown with a cancelled ctx = %v, want context.Canceled", err)
 		}
-		waitFor(t, entered)
+		recv(t, entered)
 		if sys.shut.engStopped.Load() {
 			t.Error("the engine stopped while a Stopped hook runs")
 		}
@@ -224,7 +224,7 @@ func TestATACT07ShutdownWaiting(t *testing.T) {
 			t.Fatal(err)
 		}
 		send(t, sys, pid, 1)
-		if err := waitFor(t, got); err != nil {
+		if err := recv(t, got); err != nil {
 			t.Errorf("Shutdown in Receive = %v, want nil", err)
 		}
 		// Nothing outside the engine calls Shutdown again: the system stops the engine itself.
@@ -253,7 +253,7 @@ func TestATACT07ShutdownWaiting(t *testing.T) {
 		}
 		close(start)
 		for range 10 {
-			if err := waitFor(t, errs); err != nil {
+			if err := recv(t, errs); err != nil {
 				t.Errorf("concurrent Shutdown = %v, want nil", err)
 			}
 		}
@@ -340,15 +340,15 @@ func TestATACT08AfterShutdown(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() { result <- sys.Shutdown(context.Background()) }()
-	waitFor(t, entered)
+	recv(t, entered)
 	if _, err := Spawn(sys, "during", idle[int]()); !isStoppedErr(sys, err) {
 		t.Errorf("Spawn from the system during the shutdown = %v, want ErrStopped with text %q", err, stoppedText(sys))
 	}
 	close(release)
-	if err := waitFor(t, result); err != nil {
+	if err := recv(t, result); err != nil {
 		t.Fatalf("Shutdown = %v, want nil", err)
 	}
-	if err := waitFor(t, lateSpawn); !errors.Is(err, ErrStopped) {
+	if err := recv(t, lateSpawn); !errors.Is(err, ErrStopped) {
 		t.Errorf("Spawn from a Stopped hook during the shutdown = %v, want ErrStopped", err)
 	}
 
@@ -431,7 +431,7 @@ func TestATMSG07SendDuringShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	shutdownWithin(t, sys)
-	if err := waitFor(t, sent); err != nil {
+	if err := recv(t, sent); err != nil {
 		t.Errorf("Send from a Stopped hook during the shutdown = %v, want nil", err)
 	}
 	select {
@@ -683,7 +683,7 @@ func TestShutdownCalledFromLastStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	shutdownWithin(t, sys)
-	if err := waitFor(t, got); err != nil {
+	if err := recv(t, got); err != nil {
 		t.Errorf("Shutdown from the last Stopped hook = %v, want nil", err)
 	}
 	if err := sys.Shutdown(cancelled()); err != nil {

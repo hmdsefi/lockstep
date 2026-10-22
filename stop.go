@@ -55,8 +55,8 @@ func (stopped) isSysMsg() {}
 func (c *cell[M]) stopping() bool { return c.state == cellStopping || c.state == cellStopped }
 
 // startStop processes the stop request (SUP-060 step 1): the cell takes no more user messages,
-// the incarnation's watches leave every watcher list and its watched set (SUP-340, ACT-640,
-// ruling B7), and the children start to stop.
+// the incarnation's watches leave every watcher list and its watched set (SUP-340, ACT-640), and
+// the children start to stop.
 func (c *cell[M]) startStop(reason StopReason) {
 	if c.stopping() {
 		return // unreachable: requestStop queues one request (SUP-050)
@@ -113,8 +113,8 @@ func (c *cell[M]) childStopped(child Address) {
 
 // finishStop completes the stop once every child has stopped (SUP-060 steps 3 to 7): Stopped,
 // registry removal, the closed and drained queues, the tracked asks, the record, the watchers'
-// Terminated and the parent's notice. It holds no lock across these steps (ruling: c.mu is a
-// leaf; asks are settled with no cell or registry lock held).
+// Terminated and the parent's notice. It holds no lock across these steps (c.mu is a leaf;
+// asks are settled with no cell or registry lock held).
 func (c *cell[M]) finishStop() {
 	sys := c.sys
 	if c.ctx != nil && c.stopper != nil {
@@ -128,7 +128,7 @@ func (c *cell[M]) finishStop() {
 	for _, e := range c.closeQueues() {
 		sys.deadLetter(c.addr, reasonStopped, e.msg) // Sent entries only, in queue order (MBX-160)
 	}
-	// An ask whose request was among the dead letters fails here, once (MSG-340, ruling B8).
+	// An ask whose request was among the dead letters fails here, once (MSG-340).
 	failure := fmt.Errorf("%w: %s", ErrTerminated, c.addr)
 	for _, ask := range sys.asks.untrackAll(c) {
 		sys.replyAttempt(ask, c.addr, nil, failure)
@@ -177,12 +177,12 @@ func (s *System) notifyParent(parent, child Address, from engine.ActorRef) {
 	uid, a, ok := s.reg.Lookup(parent.path)
 	c, _ := a.(actorCell)
 	if !ok || c == nil || uid != parent.uid {
-		return // unreachable: a parent completes its stop after its children
+		return // no parent is registered under that uid: there is nobody to notify
 	}
 	c.pushSystem(stopped{child: child}, from)
 }
 
-// recordStop emits lockstep.stop (SUP §8, m22) for a cell that reached Stopped: inc is its last
+// recordStop emits lockstep.stop (SUP §8) for a cell that reached Stopped: inc is its last
 // incarnation (0 if none began), reason the kind of the final stop, err empty without an error.
 func (s *System) recordStop(addr Address, inc uint32, reason StopReason) {
 	tr := s.eng.Tracer

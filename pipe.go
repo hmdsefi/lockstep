@@ -59,7 +59,7 @@ type pipedReply[M any] struct {
 
 // processSelf handles one Self entry of the user mailbox. It returns the message that the turn's
 // lockstep.turn record describes (ENG-340): the M that to returned for a piped reply, none when
-// the entry was discarded or to panicked (m20).
+// the entry was discarded or to panicked.
 func (c *cell[M]) processSelf(e entry) (msg any, ok bool) {
 	p, isPipe := e.msg.(pipedReply[M])
 	if !isPipe {

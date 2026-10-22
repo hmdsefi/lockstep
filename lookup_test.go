@@ -102,7 +102,7 @@ func TestATACT23LookupTypeCheck(t *testing.T) {
 }
 
 // AT-ACT-03 (the Lookup and uid clauses): ACT-030, ACT-040, ACT-045. Stop and Watch of a guardian
-// belong to 1.2-10 and 1.2-11.
+// are tested with Watch and Stop.
 func TestATACT03GuardiansLookup(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	for _, path := range []string{"/user", "/system"} {

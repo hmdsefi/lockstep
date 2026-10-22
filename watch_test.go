@@ -157,7 +157,7 @@ func TestATACT03WatchGuardian(t *testing.T) {
 	}
 }
 
-// AT-ACT-29 (b), ACT-630, SUP-335, m21: Unwatch right after a not-alive Watch suppresses the
+// AT-ACT-29 (b), ACT-630, ACT-660, SUP-335: Unwatch right after a not-alive Watch suppresses the
 // queued Terminated, and records the unwatch because the address was in the watched set.
 func TestATACT29UnwatchQueued(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -414,7 +414,7 @@ func TestATACT26WatchStoppedActor(t *testing.T) {
 	if err := Stop(sys, w.Address()); err != nil {
 		t.Fatal(err)
 	}
-	got := waitFor(t, stoppedErr)
+	got := recv(t, stoppedErr)
 	if want := "lockstep: stopped: " + w.String(); !errors.Is(got, ErrStopped) || got.Error() != want {
 		t.Errorf("Watch from Stopped = %v, want ErrStopped with text %q", got, want)
 	}
@@ -487,7 +487,7 @@ func TestATACT29UnwatchAlive(t *testing.T) {
 	}
 }
 
-// SUP-060 step 1, ACT-640, ruling B7: when a watcher starts its stop, its watches leave every
+// SUP-060 step 1, SUP-340, ACT-640: when a watcher starts its stop, its watches leave every
 // watcher list and its watched set, so the target's later stop pushes it nothing.
 func TestStopDropsWatches(t *testing.T) {
 	sys, eng := newManualSystem(t)

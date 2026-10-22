@@ -16,8 +16,8 @@ var (
 	ErrWrongType     = errors.New("lockstep: wrong message type")
 	ErrNotFound      = errors.New("lockstep: not found")
 	ErrInvalidOption = errors.New("lockstep: invalid option")
-	ErrInvalidName   = errors.New("lockstep: invalid name")      // (addition)
-	ErrNotLocal      = errors.New("lockstep: address not local") // (addition)
+	ErrInvalidName   = errors.New("lockstep: invalid name")
+	ErrNotLocal      = errors.New("lockstep: address not local")
 )
 
 // Errors of sending and asking (MSG §4.1, §7).
