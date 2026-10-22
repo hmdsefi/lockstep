@@ -16,14 +16,7 @@ import (
 // (ErrMailboxFull, MBX), the admission error (ErrOverloaded, OVL), and a synchronous transport
 // error, wrapped (MSG-110). Send panics if from is nil or is a Context outside its turn.
 func Send[M any](from Sender, to PID[M], msg M) error {
-	var s senderInfo
-	if from != nil {
-		s, _ = from.(senderInfo)
-	}
-	if s == nil || s.nilSender() {
-		panic("lockstep: nil Sender")
-	}
-	sys, fromAddr, fromRef := s.sendOrigin() // panics for a Context outside its turn (ACT-120)
+	sys, fromAddr, fromRef := mustSender(from).sendOrigin() // panics for a Context outside its turn (ACT-120)
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
 	}
@@ -37,6 +30,19 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 		typ:     reflect.TypeFor[M](),
 		msg:     msg,
 	}).err
+}
+
+// mustSender returns from's senderInfo. It panics with ACT's nil Sender message if from is nil or
+// a nil pointer (ACT-200).
+func mustSender(from Sender) senderInfo {
+	var s senderInfo
+	if from != nil {
+		s, _ = from.(senderInfo)
+	}
+	if s == nil || s.nilSender() {
+		panic("lockstep: nil Sender")
+	}
+	return s
 }
 
 // senderInfo is what Send needs from a Sender; exactly *System and *Context[X] implement it.
@@ -83,8 +89,8 @@ const (
 	reasonUnreachable = "unreachable" // another node, and the engine has no Transport
 )
 
-// routeRequest is one user message on its way to a mailbox: what Send routes, and what Ask
-// (1.2-07) and Host.Inbound (1.2-06, 1.2-08) route the same way.
+// routeRequest is one user message on its way to a mailbox: what Send routes, and what Ask and
+// Host.Inbound route the same way.
 type routeRequest struct {
 	from    Address         // the sender
 	fromRef engine.ActorRef // the cell whose turn sends, or nil outside any turn
@@ -105,9 +111,9 @@ const (
 	routeHeld                          // the engine's interposer took the message and offers it later (ENG-150)
 )
 
-// outcome is the result of routing one message. Send maps it to MSG-110's result; Ask (1.2-07)
-// maps it to MSG-310: a dead letter resolves the ask with ErrTerminated (ruling B5), an error
-// resolves it with that error, an enqueued request is tracked at cell.
+// outcome is the result of routing one message. Send maps it to MSG-110's result. For an Ask
+// request the router itself applies MSG-310's dead-letter and enqueue outcomes (deadRequest,
+// offer), also for a request the interposer held; Ask applies routeFailed.
 type outcome struct {
 	kind   routeKind
 	cell   actorCell // routeEnqueued: the target's cell
@@ -142,12 +148,17 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 
 // offer resolves r's target and enqueues the message, or makes it a dead letter (MBX-150). The
 // message goes to the user mailbox of the actor now registered at the address, so a held message
-// whose target stopped meanwhile is a dead letter.
+// whose target stopped meanwhile is a dead letter. An ask request becomes tracked by its target
+// before it is enqueued (MSG-310, MSG-340), so the reply attempt that removes the entry
+// (MSG-410) cannot come first. Plan 1.3's mailbox refusal of a tracked request removes the entry
+// again (MSG-345).
 func (s *System) offer(r routeRequest) outcome {
 	c, reason := s.resolve(r.to, r.typ)
 	if c == nil {
-		s.deadLetter(r.to, reason, r.msg)
-		return outcome{kind: routeDead, reason: reason}
+		return s.deadRequest(r, reason)
+	}
+	if !r.ask.IsZero() {
+		s.asks.track(r.ask, c)
 	}
 	c.offerUser(entry{msg: r.msg, from: r.from, ask: r.ask, kind: entrySent}, r.fromRef)
 	return outcome{kind: routeEnqueued, cell: c}
@@ -177,8 +188,7 @@ func (s *System) resolve(to Address, typ reflect.Type) (actorCell, string) {
 func (s *System) sendRemote(r routeRequest) outcome {
 	tr := s.eng.Transport
 	if tr == nil {
-		s.deadLetter(r.to, reasonUnreachable, r.msg)
-		return outcome{kind: routeDead, reason: reasonUnreachable}
+		return s.deadRequest(r, reasonUnreachable)
 	}
 	err := tr.Deliver(engine.Envelope{
 		From:    r.from.engine(),
@@ -189,6 +199,18 @@ func (s *System) sendRemote(r routeRequest) outcome {
 		return outcome{kind: routeFailed, err: fmt.Errorf("lockstep: send to %s: %w", r.to, err)}
 	}
 	return outcome{kind: routeHanded}
+}
+
+// deadRequest makes r a dead letter with reason (MBX-150). The request of an ask whose asker is
+// this system resolves that ask with ErrTerminated, for every reason (MSG-310, ruling B5): before
+// Ask returns, or when the engine offers a request its interposer held. An ask request that
+// arrived from another node is failed back to its asker by MSG-350 (1.2-08).
+func (s *System) deadRequest(r routeRequest, reason string) outcome {
+	s.deadLetter(r.to, reason, r.msg)
+	if !r.ask.IsZero() && r.ask.node == s.node {
+		s.settle(r.ask, resolution{how: byRouting, from: r.to, err: fmt.Errorf("%w: %s", ErrTerminated, r.to)})
+	}
+	return outcome{kind: routeDead, reason: reason}
 }
 
 // deadLetter is the one place a message that cannot be delivered goes (MBX-150): to is the

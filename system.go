@@ -24,6 +24,8 @@ type System struct {
 	user, system Address     // the guardians; neither is registered (ACT-030)
 	closing      atomic.Bool // shutting down or stopped: Spawn returns ErrStopped (ACT-050); set by Shutdown (1.2-12)
 
+	asks askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
+
 	uidMu   sync.Mutex
 	epoch   uint32 // the epoch of the next uid
 	seq     uint64 // the seq of the next uid, 1 to 2^32-1 (ACT-040)
