@@ -29,8 +29,9 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 	if addr.node != sys.node {
 		return fmt.Errorf("%w: %s", ErrNotLocal, addr)
 	}
-	// Hook for 1.2-11: the watching incarnation stopping returns fmt.Errorf("%w: %s", ErrStopped,
-	// c.addr) here, after the locality check and before the self check.
+	// Hook for the stop sequence (SUP-060): the watching incarnation stopping returns
+	// fmt.Errorf("%w: %s", ErrStopped, c.addr) here, after the locality check and before the self
+	// check.
 	if addr == c.addr {
 		return nil
 	}
@@ -65,7 +66,8 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 		return
 	}
 	// A not-alive watch is in the set but on no registry list, so RemoveWatch's result does not
-	// decide the record (m21): the Terminated that Watch queued is skipped at delivery instead.
+	// decide the record (ACT-630, ACT-660): the Terminated that Watch queued is skipped at delivery
+	// instead.
 	c := ctx.cell
 	c.sys.reg.RemoveWatch(registryAddr(addr), registry.Watcher{Addr: registryAddr(c.addr), Inc: ctx.inc})
 	c.sys.recordUnwatch(c.addr, addr)

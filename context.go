@@ -18,8 +18,8 @@ type Context[M any] struct {
 	inTurn atomic.Bool // set for the duration of each handler call of this incarnation (ACT-120)
 
 	// watched is the incarnation's watched set (ACT-600). Turn-owned: only Watch, Unwatch and
-	// signal delivery, all in a turn of this incarnation, touch it; so does 1.2-11's stop sequence,
-	// in the turn that ends the incarnation.
+	// signal delivery, all in a turn of this incarnation, touch it; so does the stop sequence
+	// (SUP-060), in the turn that ends the incarnation.
 	watched watchedSet
 }
 
