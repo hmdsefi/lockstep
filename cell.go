@@ -60,7 +60,7 @@ type cell[M any] struct {
 	actor   Actor[M]
 	ctx     *Context[M]
 	starter Starter[M]        // the incarnation's optional interfaces, asserted once (ACT-100)
-	stopper Stopper[M]        // called by the stop sequence (1.2-11)
+	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
 	failure error             // the error handlerFailed got; supervision's in plan 1.3
 }
@@ -122,7 +122,8 @@ type handlerPanic struct{ value any }
 
 func (p *handlerPanic) Error() string { return fmt.Sprintf("lockstep: panic: %v", p.value) }
 
-// sysMsg is one system-queue message: begin, signals (signalMsg) and, with 1.2-11, stop.
+// sysMsg is one system-queue message: begin, signals (signalMsg) and, with the stop sequence
+// (SUP-060), stop.
 type sysMsg interface{ isSysMsg() }
 
 // begin starts the first incarnation (ACT-340, SUP-030).
@@ -142,7 +143,7 @@ const (
 type entry struct {
 	msg  any     // the M
 	from Address // the sender
-	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask (1.2-07) sets it
+	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
 	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe sets it
 	kind entryKind
 }

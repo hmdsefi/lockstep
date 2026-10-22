@@ -20,8 +20,8 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
 	}
-	// MSG-100's last check, the sender's system stopped (ErrStopped), arrives with Shutdown
-	// (1.2-12). A system that is only shutting down still sends, so Stopped hooks can send.
+	// MSG-100's last check, the sender's system stopped (ErrStopped), arrives with Shutdown. A
+	// system that is only shutting down still sends, so Stopped hooks can send.
 	sys.recordSend(fromAddr, to.addr, msg)
 	return sys.route(routeRequest{
 		from:    fromAddr,
@@ -202,7 +202,7 @@ func (s *System) sendRemote(r routeRequest) outcome {
 }
 
 // deadRequest makes r a dead letter with reason (MBX-150). The request of an ask whose asker is
-// this system resolves that ask with ErrTerminated, for every reason (MSG-310, ruling B5): before
+// this system resolves that ask with ErrTerminated, for every reason (MSG-310): before
 // Ask returns, or when the engine offers a request its interposer held. For an ask request that
 // arrived from another node, the system issues Fail(ErrTerminated) from the target address,
 // which travels back to the asker like any reply attempt (MSG-350).

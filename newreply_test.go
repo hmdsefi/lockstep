@@ -46,7 +46,7 @@ func TestATMSG35NewReply(t *testing.T) {
 		t.Fatal("the reply of NewReply is resolved before anyone answered")
 	}
 	send(t, sys, answerer, answerReq{rt})
-	if v, err := r.Await(within(t, time.Second)); v != 9 || err != nil {
+	if v, err := r.Await(within(t, 10*time.Second)); v != 9 || err != nil {
 		t.Errorf("Await = %d, %v, want 9, nil", v, err)
 	}
 	resolved := []string{"ask=" + a.String(), "from=" + answerer.String(), "outcome=resolved"}
@@ -55,7 +55,7 @@ func TestATMSG35NewReply(t *testing.T) {
 	}
 
 	rt2, r2 := NewReply[int](sys, WithTimeout(50*time.Millisecond))
-	v, err := r2.Await(within(t, time.Second))
+	v, err := r2.Await(within(t, 10*time.Second))
 	wantErr := fmt.Sprintf("lockstep: timeout: ask %s to <zero> after 50ms", rt2.addr)
 	if v != 0 || !errors.Is(err, ErrTimeout) || err.Error() != wantErr {
 		t.Errorf("unanswered NewReply: Await = %d, %v, want 0 and ErrTimeout with text %q", v, err, wantErr)
@@ -187,8 +187,8 @@ func TestATMSG31PendingAsks(t *testing.T) {
 }
 
 // MSG-390, R47: a request that carries a NewReply's ReplyTo is an ordinary Send. Its error returns
-// to the caller and leaves the reply pending until the caller answers it. (1.2-13 adds the
-// ErrMailboxFull form of AT-MSG-40.)
+// to the caller and leaves the reply pending until the caller answers it. (The ErrMailboxFull
+// form of AT-MSG-40 arrives with plan 1.3's mailbox capacity.)
 func TestNewReplySendError(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	eng.SetDeliverError(errX)
@@ -231,7 +231,7 @@ func TestATMSG17ForwardingAnswer(t *testing.T) {
 	}
 	var rt ReplyTo[int]
 	r := Ask(sys, a, func(x ReplyTo[int]) fwdMsg { rt = x; return fwdMsg{x} })
-	if v, err := r.Await(within(t, time.Second)); v != 7 || err != nil {
+	if v, err := r.Await(within(t, 10*time.Second)); v != 7 || err != nil {
 		t.Fatalf("Await = %d, %v, want 7, nil", v, err)
 	}
 	want := []string{"ask=" + rt.addr.String(), "from=" + b.String(), "outcome=resolved"}

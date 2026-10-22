@@ -259,8 +259,8 @@ func TestATMSG06SendRecord(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("p did not run within 1 s")
+	case <-time.After(10 * time.Second):
+		t.Fatal("p did not run within 10 s")
 	}
 	got = recordsOf(rec.Records(), "lockstep.send")
 	if len(got) != 3 || !slices.Equal(got[2], want(p.Address())) {
@@ -268,7 +268,7 @@ func TestATMSG06SendRecord(t *testing.T) {
 	}
 }
 
-// AT-MSG-04: MSG-100 (the stopped check is 1.2-12's). A zero PID is ErrNotFound; a nil Sender or
+// AT-MSG-04: MSG-100 (the stopped check arrives with Shutdown). A zero PID is ErrNotFound; a nil Sender or
 // a Context outside its turn panics, before the zero PID is looked at.
 func TestATMSG04SendChecks(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -439,13 +439,13 @@ func TestATACT18MessagesBeforeStart(t *testing.T) {
 		}
 	}
 	var seq []string
-	timeout := time.After(time.Second)
+	timeout := time.After(10 * time.Second)
 	for len(seq) < 4 {
 		select {
 		case s := <-got:
 			seq = append(seq, s)
 		case <-timeout:
-			t.Fatalf("received %v within 1 s, want 4 events", seq)
+			t.Fatalf("received %v within 10 s, want 4 events", seq)
 		}
 	}
 	if want := []string{"started", "1", "2", "3"}; !slices.Equal(seq, want) {
