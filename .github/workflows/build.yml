@@ -1,0 +1,187 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+
+  build:
+    name: Go build
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable # the test job covers the minimum version in go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - name: vet
+        run: go vet ./...
+      - name: build
+        run: go build -v ./...
+
+  test:
+    name: Go test (go ${{ matrix.go }})
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.26.x', 'stable']
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+      - name: test
+        run: go test -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile=cover.out ./...
+      - name: check coverage
+        if: matrix.go == '1.26.x'
+        id: coverage
+        uses: vladopajic/go-test-coverage@f94bcf0d6b9fa5fb8b783830b22648f6c17475e2 # v2.19.0
+        with:
+          config: ./.testcoverage.yml
+      - name: coverage summary
+        if: ${{ !cancelled() && matrix.go == '1.26.x' && steps.coverage.outputs.report != '' }}
+        env:
+          REPORT: ${{ fromJSON(steps.coverage.outputs.report) }}
+        run: |
+          {
+            echo '```'
+            echo "$REPORT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  determinism:
+    name: determinism (${{ matrix.os }}, go ${{ matrix.go }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ['1.26.x', 'stable']
+    runs-on: ${{ matrix.os }}
+    env:
+      GOWORK: 'off'
+      LOCKSTEP_CHECK_DETERMINISM: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+      - name: determinism lint, boundaries, API snapshot, golden hashes, run-twice checks
+        run: go test -count=1 ./internal/dettest/...
+
+  boundaries:
+    name: boundaries (D5)
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: production packages link no faultline and no gograph
+        run: |
+          set -e
+          pkgs=$(go list ./... | grep -v -x -e 'github.com/hmdsefi/lockstep/sim' -e 'github.com/hmdsefi/lockstep/internal/viz' -e 'github.com/hmdsefi/lockstep/cmd/lockstep')
+          bad=$(go list -deps $pkgs | grep -E '^github\.com/hmdsefi/(faultline|gograph)(/|$)' || true)
+          if [ -n "$bad" ]; then
+            echo "production packages depend on simulation-only packages (architecture §5.1, D5):"
+            echo "$bad"
+            exit 1
+          fi
+
+  nested:
+    name: nested modules (go ${{ matrix.go }})
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.26.x', 'stable']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+      - name: workspace with the root and all nested modules
+        run: |
+          go work init
+          go work use -r .
+      - name: vet and test each nested module
+        run: |
+          set -e
+          for mod in $(git ls-files '*/go.mod' | xargs -r -n 1 dirname | sort); do
+            echo "::group::$mod"
+            go -C "$mod" vet ./...
+            go -C "$mod" test -race -count=1 ./...
+            echo "::endgroup::"
+          done
+
+  golden-trailer:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: hash changes need an explanation
+        run: |
+          base=${{ github.event.pull_request.base.sha }}
+          if git diff --name-only "$base"...HEAD | grep -qx 'internal/dettest/testdata/hashes.txt'; then
+            if ! git log --format=%B "$base"..HEAD | grep -Eq '^Golden-Update: .+'; then
+              echo "internal/dettest/testdata/hashes.txt changed: add a 'Golden-Update: <reason>' line to a commit message"
+              exit 1
+            fi
+          fi
+
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Conventional Commits, no AI attribution
+        run: |
+          base=${{ github.event.pull_request.base.sha }}
+          bad=0
+          for c in $(git rev-list --no-merges "$base"..HEAD); do
+            subject=$(git log -1 --format=%s "$c")
+            if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|docs|test|refactor|perf|build|ci|chore|revert)(\([a-z0-9./_-]+\))?!?: .+'; then
+              echo "$c: subject is not a Conventional Commit: $subject"
+              bad=1
+            fi
+            if git log -1 --format=%B "$c" | grep -Eiq '^co-authored-by: .*(claude|anthropic|copilot|openai|chatgpt|cursor)|generated (with|by) \[?claude'; then
+              echo "$c: commit message carries an AI attribution line"
+              bad=1
+            fi
+          done
+          exit $bad
