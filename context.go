@@ -16,6 +16,11 @@ type Context[M any] struct {
 	cell   *cell[M]
 	inc    uint32      // the incarnation number (SUP-020)
 	inTurn atomic.Bool // set for the duration of each handler call of this incarnation (ACT-120)
+
+	// watched is the incarnation's watched set (ACT-600). Turn-owned: only Watch, Unwatch and
+	// signal delivery, all in a turn of this incarnation, touch it; so does 1.2-11's stop sequence,
+	// in the turn that ends the incarnation.
+	watched watchedSet
 }
 
 // Self returns the actor's PID. It is the same for every incarnation of the actor.

@@ -33,8 +33,18 @@ func (c *cell[M]) pushSignal(sig Signal) { c.pushSystem(signalMsg{sig: sig}, nil
 // implements SignalReceiver gets it in Signal, during a turn; any other ignores it without a
 // record. Only a running incarnation delivers: the other lifecycle states keep or drop signals by
 // SUP-320's rules, which arrive with 1.2-13.
+//
+// A Terminated whose Addr is not in the incarnation's watched set is skipped, and the address
+// leaves the set when the Terminated is delivered (ACT-630). An actor without SignalReceiver
+// consumes the watch the same way, so a later Watch of the address registers again.
 func (c *cell[M]) deliverSignal(sig Signal) {
-	if c.state != cellRunning || c.signals == nil {
+	if c.state != cellRunning {
+		return
+	}
+	if t, ok := sig.(Terminated); ok && !c.ctx.watched.remove(t.Addr) {
+		return
+	}
+	if c.signals == nil {
 		return
 	}
 	c.enter()
