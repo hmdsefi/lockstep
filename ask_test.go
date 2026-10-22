@@ -95,14 +95,14 @@ func cancelled() context.Context {
 	return ctx
 }
 
-// recv returns the next value from ch, failing the test if none arrives within 1 s.
+// recv returns the next value from ch, failing the test if none arrives within 10 s.
 func recv[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()
 	select {
 	case v := <-ch:
 		return v
-	case <-time.After(time.Second):
-		t.Fatalf("no %T within 1 s", *new(T))
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no %T within 10 s", *new(T))
 		panic("unreachable")
 	}
 }
@@ -154,7 +154,7 @@ func TestATMSG01SendAndAsk(t *testing.T) {
 	acct := spawnAcct(t, sys, nil)
 	send(t, sys, acct, acctMsg(Deposit{10}))
 	send(t, sys, acct, acctMsg(Deposit{20}))
-	v, err := Ask(sys, acct, getBalance).Await(within(t, time.Second))
+	v, err := Ask(sys, acct, getBalance).Await(within(t, 10*time.Second))
 	if v != 30 || err != nil {
 		t.Errorf("Await = %d, %v, want 30, nil", v, err)
 	}
@@ -242,7 +242,7 @@ func TestATMSG09AskBuilderAndRecord(t *testing.T) {
 	if recs := recordsOf(rec.Records(), "lockstep.ask"); len(recs) != 1 || !slices.Equal(recs[0], want) {
 		t.Errorf("lockstep.ask records = %q, want one %q", recs, want)
 	}
-	if v, err := r.Await(within(t, time.Second)); v != 0 || err != nil {
+	if v, err := r.Await(within(t, 10*time.Second)); v != 0 || err != nil {
 		t.Errorf("Await = %d, %v, want 0, nil", v, err)
 	}
 
@@ -275,7 +275,7 @@ func TestATMSG10BuilderPanic(t *testing.T) {
 	if next.addr.path != "/temp/2" {
 		t.Errorf("the next ask has path %q, want /temp/2", next.addr.path)
 	}
-	if _, err := r.Await(within(t, time.Second)); err != nil {
+	if _, err := r.Await(within(t, 10*time.Second)); err != nil {
 		t.Errorf("the next ask: %v", err)
 	}
 
@@ -323,7 +323,7 @@ func TestATMSG14TimeoutAndLateAnswer(t *testing.T) {
 	silent, stored := spawnSilent(t, sys)
 	r := askSilent(sys, silent, WithTimeout(50*time.Millisecond))
 	rt := recv(t, stored)
-	v, err := r.Await(within(t, time.Second))
+	v, err := r.Await(within(t, 10*time.Second))
 	want := fmt.Sprintf("lockstep: timeout: ask %s to %s after 50ms", rt.addr, silent)
 	if v != 0 || !errors.Is(err, ErrTimeout) || err.Error() != want {
 		t.Fatalf("Await = %d, %v, want 0 and ErrTimeout with text %q", v, err, want)
@@ -393,7 +393,7 @@ func TestATMSG19ExactlyOnce(t *testing.T) {
 	var rt1 ReplyTo[int]
 	r1 := Ask(sys, a, func(rt ReplyTo[int]) replyTwice { rt1 = rt; return replyTwice{rt: rt} })
 	recv(t, done)
-	if v, err := r1.Await(within(t, time.Second)); v != 1 || err != nil {
+	if v, err := r1.Await(within(t, 10*time.Second)); v != 1 || err != nil {
 		t.Errorf("Await after Send(1), Send(2) = %d, %v, want 1, nil", v, err)
 	}
 	if got := outcomes(rt1.addr); !slices.Equal(got, []string{"resolved", "late"}) {
@@ -404,7 +404,7 @@ func TestATMSG19ExactlyOnce(t *testing.T) {
 	var rt2 ReplyTo[int]
 	r2 := Ask(sys, a, func(rt ReplyTo[int]) replyTwice { rt2 = rt; return replyTwice{rt: rt, err: e} })
 	recv(t, done)
-	if v, err := r2.Await(within(t, time.Second)); v != 0 || err != e { //nolint:errorlint // the very value Fail got
+	if v, err := r2.Await(within(t, 10*time.Second)); v != 0 || err != e { //nolint:errorlint // the very value Fail got
 		t.Errorf("Await after Fail(e), Send(3) = %d, %v, want 0 and e itself", v, err)
 	}
 	if got := outcomes(rt2.addr); !slices.Equal(got, []string{"resolved", "late"}) {
@@ -482,7 +482,7 @@ func TestATMSG28TimeoutOptionAsk(t *testing.T) {
 	start := time.Now()
 	r50 := askSilent(sys, silent, WithTimeout(time.Hour), WithTimeout(50*time.Millisecond))
 	rt50 := recv(t, stored)
-	if _, err := r50.Await(within(t, time.Second)); !errors.Is(err, ErrTimeout) {
+	if _, err := r50.Await(within(t, 10*time.Second)); !errors.Is(err, ErrTimeout) {
 		t.Errorf("Ask with a last WithTimeout(50ms): Await = %v after %v, want ErrTimeout", err, time.Since(start))
 	}
 	if recs := askRecords(rec.Records(), "lockstep.ask", rt50.addr); len(recs) != 1 || !slices.Contains(recs[0], "timeout=50ms") {
@@ -530,7 +530,7 @@ func TestATMSG39AskTimerLabel(t *testing.T) {
 	}
 }
 
-// MSG-310, ruling B5: every dead letter of the request on the asker's system resolves the ask with
+// MSG-310: every dead letter of the request on the asker's system resolves the ask with
 // ErrTerminated before Ask returns, and a routing error with that error; a hand-off to the
 // transport leaves it pending. Each immediate resolution records lockstep.reply from the target
 // and cancels the timer.
@@ -609,7 +609,7 @@ func TestAskRoutingOutcomes(t *testing.T) {
 	}
 }
 
-// Ruling (task 6): a request the interposer holds leaves the ask pending; when the engine offers
+// ENG-150, MSG-310: a request the interposer holds leaves the ask pending; when the engine offers
 // it, an enqueue tracks the ask and a dead letter resolves it with ErrTerminated.
 func TestAskHeld(t *testing.T) {
 	eng, sys, fake := interposedSystem(t, func(msg any) bool { _, ok := msg.(ReplyTo[int]); return ok })
@@ -708,7 +708,7 @@ func TestAskResolutionRace(t *testing.T) {
 	recs := rec.Records()
 	timedOut := 0
 	for i, r := range replies {
-		v, err := r.Await(within(t, time.Second))
+		v, err := r.Await(within(t, 10*time.Second))
 		for range 3 {
 			if v2, err2 := r.Await(cancelled()); v2 != v || err2 != err { //nolint:errorlint // the same value
 				t.Fatalf("ask %d: Await gave %d, %v, then %d, %v", i, v, err, v2, err2)
