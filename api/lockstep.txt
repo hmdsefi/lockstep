@@ -31,6 +31,7 @@ pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
 pkg github.com/hmdsefi/lockstep, method (*Reply[R]) Await(context.Context) (R, error)
 pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
 pkg github.com/hmdsefi/lockstep, method (*System) Node() string
+pkg github.com/hmdsefi/lockstep, method (*System) Shutdown(context.Context) error
 pkg github.com/hmdsefi/lockstep, method (Address) IsZero() bool
 pkg github.com/hmdsefi/lockstep, method (Address) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) Path() string

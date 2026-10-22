@@ -171,7 +171,7 @@ func (s *System) pushTerminated(w registry.Watch, reason StopReason, from engine
 // parent has no cell and gets the notice through guardianChildStopped.
 func (s *System) notifyParent(parent, child Address, from engine.ActorRef) {
 	if s.isGuardian(parent) {
-		s.guardianChildStopped(parent, child)
+		s.guardianChildStopped(child, from)
 		return
 	}
 	uid, a, ok := s.reg.Lookup(parent.path)
@@ -181,13 +181,6 @@ func (s *System) notifyParent(parent, child Address, from engine.ActorRef) {
 	}
 	c.pushSystem(stopped{child: child}, from)
 }
-
-// guardianChildStopped is a guardian's stopped notice: child, a child of guardian, completed its
-// final stop. 1.2-12's Shutdown, which stops a guardian's children one at a time, waits on it;
-// until then no guardian waits.
-//
-//nolint:unparam // the seam of 1.2-12's Shutdown
-func (s *System) guardianChildStopped(guardian, child Address) {}
 
 // recordStop emits lockstep.stop (SUP §8, m22) for a cell that reached Stopped: inc is its last
 // incarnation (0 if none began), reason the kind of the final stop, err empty without an error.

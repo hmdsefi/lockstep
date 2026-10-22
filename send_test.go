@@ -268,7 +268,7 @@ func TestATMSG06SendRecord(t *testing.T) {
 	}
 }
 
-// AT-MSG-04: MSG-100 (the stopped check is 1.2-12's). A zero PID is ErrNotFound; a nil Sender or
+// AT-MSG-04: MSG-100 (TestATMSG04SendFromStoppedSystem has the stopped check). A zero PID is ErrNotFound; a nil Sender or
 // a Context outside its turn panics, before the zero PID is looked at.
 func TestATMSG04SendChecks(t *testing.T) {
 	sys, eng := newManualSystem(t)

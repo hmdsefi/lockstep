@@ -26,7 +26,8 @@ func newManualSystem(t *testing.T) (*System, *enginetest.Engine) {
 }
 
 // newRecordingSystem returns a system built through the ACT-015 constructor on a local engine
-// whose tracer is a new recorder (ACT §10, "recording tracer"). The test stops the engine.
+// whose tracer is a new recorder (ACT §10, "recording tracer"). The system shuts down when the
+// test ends.
 func newRecordingSystem(t *testing.T) (*System, *enginetest.Recorder) {
 	t.Helper()
 	rec := enginetest.NewRecorder()
@@ -39,25 +40,27 @@ func newRecordingSystem(t *testing.T) (*System, *enginetest.Recorder) {
 		le.Stop()
 		t.Fatalf("newSystem on a local engine: %v", err)
 	}
-	stopEngineAtEnd(t, sys)
+	shutdownAtEnd(t, sys)
 	return sys, rec
 }
 
-// newLocalSystem returns New(opts...) and stops its engine when the test ends.
+// newLocalSystem returns New(opts...) and shuts it down when the test ends.
 func newLocalSystem(t *testing.T, opts ...Option) *System {
 	t.Helper()
 	sys := New(opts...)
-	stopEngineAtEnd(t, sys)
+	shutdownAtEnd(t, sys)
 	return sys
 }
 
-// stopEngineAtEnd stops sys's engine when the test ends, so goleak finds no engine goroutine. Until
-// Shutdown exists (1.2-12) this is the only way to stop a local system.
-func stopEngineAtEnd(t *testing.T, sys *System) {
+// shutdownAtEnd shuts sys down when the test ends, waiting up to 10 s, so goleak finds no
+// goroutine of its engine. A system the test shut down already returns at once.
+func shutdownAtEnd(t *testing.T, sys *System) {
 	t.Helper()
 	t.Cleanup(func() {
-		if sys.eng.Stop != nil {
-			sys.eng.Stop()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := sys.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown at the end of the test: %v", err)
 		}
 	})
 }

@@ -51,18 +51,24 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	// 2. Options, in argument order: the last WithTimeout wins.
 	cfg, err := applyAskOptions(opts)
 
-	// 3. Failures before sending: nothing is built, allocated or recorded. The stopped-system check
-	// (ErrStopped) arrives with Shutdown (1.2-12).
+	// 3. Failures before sending: nothing is built, allocated or recorded.
 	if err != nil {
 		return resolvedReply[R](sys, err)
 	}
 	if to.IsZero() {
 		return resolvedReply[R](sys, fmt.Errorf("%w: %s", ErrNotFound, to.addr))
 	}
+	if sys.stopped.Load() {
+		return resolvedReply[R](sys, sys.errStopped())
+	}
 
-	// 4. The ask address and the table entry.
+	// 4. The ask address and the table entry. newAsk checks the stopped mark again under the
+	// table's lock, for a system that stopped since the check above (MSG-360).
 	r := newReply[R](sys)
 	p := sys.newAsk(fromAddr, to.addr, cfg.timeout, r)
+	if p == nil {
+		return resolvedReply[R](sys, sys.errStopped())
+	}
 	r.ask = p.addr // before Ask returns, so before any Pipe reads it
 
 	// 5. The request; a panic of build removes the entry and propagates.
@@ -119,21 +125,31 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 			panic("lockstep: nil AskOption")
 		}
 	}
-	// An invalid option value: the zero ReplyTo and a resolved reply, with nothing allocated or
-	// recorded. The stopped-system check (ErrStopped) arrives with Shutdown (1.2-12).
+	// An invalid option value, then a stopped system: the zero ReplyTo and a resolved reply, with
+	// nothing allocated or recorded.
 	cfg, err := applyAskOptions(opts)
 	if err != nil {
 		return ReplyTo[R]{}, resolvedReply[R](sys, err)
+	}
+	if sys.stopped.Load() {
+		return ReplyTo[R]{}, resolvedReply[R](sys, sys.errStopped())
 	}
 	// MSG-300 step 4 with the zero target, then the timer and the record. No actor tracks the ask
 	// (MSG-390): it resolves by a reply attempt, its timeout or its system stopping.
 	r := newReply[R](sys)
 	p := sys.newAsk(fromAddr, Address{}, cfg.timeout, r)
+	if p == nil {
+		return ReplyTo[R]{}, resolvedReply[R](sys, sys.errStopped())
+	}
 	r.ask = p.addr
 	sys.armTimeout(p)
 	sys.recordAsk(fromAddr, p, nil)
 	return ReplyTo[R]{addr: p.addr}, r
 }
+
+// errStopped is the ErrStopped error of a send, an ask or a pending ask of the stopped system s
+// (MSG §7): it names the system address.
+func (s *System) errStopped() error { return fmt.Errorf("%w: %s", ErrStopped, s.user) }
 
 // applyAskOptions applies opts, which hold no nil option, in argument order, so the last
 // WithTimeout wins, and validates the result: a timeout <= 0 is MSG-700's ErrInvalidOption error.
