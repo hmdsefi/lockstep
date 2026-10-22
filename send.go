@@ -20,8 +20,8 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
 	}
-	// MSG-100's last check, the sender's system stopped (ErrStopped), arrives with Shutdown
-	// (1.2-12). A system that is only shutting down still sends, so Stopped hooks can send.
+	// MSG-100's last check, the sender's system stopped (ErrStopped), arrives with Shutdown. A
+	// system that is only shutting down still sends, so Stopped hooks can send.
 	sys.recordSend(fromAddr, to.addr, msg)
 	return sys.route(routeRequest{
 		from:    fromAddr,
