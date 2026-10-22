@@ -11,11 +11,19 @@ import (
 )
 
 // sigActor is an any actor that logs, in order, the strings it receives ("recv <m>") and the
-// signals it gets ("signal"), keeping the signals. onRecv, if set, runs after Receive's log entry.
+// signals it gets ("signal"), keeping the signals. onStart, if set, runs in Started, and onRecv
+// after Receive's log entry.
 type sigActor struct {
-	log    []string
-	sigs   []Signal
-	onRecv func(ctx *Context[any], m string)
+	log     []string
+	sigs    []Signal
+	onStart func(ctx *Context[any])
+	onRecv  func(ctx *Context[any], m string)
+}
+
+func (a *sigActor) Started(ctx *Context[any]) {
+	if a.onStart != nil {
+		a.onStart(ctx)
+	}
 }
 
 func (a *sigActor) Receive(ctx *Context[any], m any) {
@@ -46,18 +54,28 @@ func spawnSigActor(t *testing.T, sys *System, eng *enginetest.Engine, name strin
 // never Receive, before the user messages queued ahead of it and also when it arrives during a turn,
 // before the remaining ones; an actor without SignalReceiver ignores it without a record.
 //
-// The test pushes the Terminated straight to the system queue (pushSignal).
+// The test obtains its Terminated through Watch of a not-alive PIDAt address, which puts the
+// address in the watched set: ACT-630's skip rule drops a Terminated whose Addr is not in it.
 func TestSignalDelivery(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	eng.SetBudget(32)
-	term := Terminated{Addr: Address{node: "local", path: "/user/gone", uid: 5}, Reason: NoActor}
+	term := Terminated{Addr: gone(), Reason: NoActor}
+	watchGone := func(ctx *Context[any]) {
+		if err := Watch(ctx, term.Addr); err != nil {
+			t.Errorf("Watch: %v", err)
+		}
+	}
 
 	t.Run("receiver", func(t *testing.T) {
-		a := &sigActor{}
-		pid, c := spawnSigActor(t, sys, eng, "recv", a)
+		// Started watches; the user messages queued before the engine runs wait for the begin
+		// message, so the signal is queued ahead of them in the turn that starts the actor.
+		a := &sigActor{onStart: watchGone}
+		pid, err := Spawn(sys, "recv", actorOf[any](a))
+		if err != nil {
+			t.Fatal(err)
+		}
 		send(t, sys, pid, any("u1"))
 		send(t, sys, pid, any("u2"))
-		c.pushSignal(term)
 		eng.RunUntilIdle()
 		if want := []string{"signal", "recv u1", "recv u2"}; !slices.Equal(a.log, want) {
 			t.Errorf("log = %q, want %q: the signal must come before the queued user messages", a.log, want)
@@ -69,10 +87,10 @@ func TestSignalDelivery(t *testing.T) {
 
 	t.Run("during a turn", func(t *testing.T) {
 		a := &sigActor{}
-		pid, c := spawnSigActor(t, sys, eng, "mid", a)
-		a.onRecv = func(_ *Context[any], m string) {
+		pid, _ := spawnSigActor(t, sys, eng, "mid", a)
+		a.onRecv = func(ctx *Context[any], m string) {
 			if m == "u1" {
-				c.pushSignal(term)
+				watchGone(ctx)
 			}
 		}
 		send(t, sys, pid, any("u1"))
@@ -86,25 +104,25 @@ func TestSignalDelivery(t *testing.T) {
 	t.Run("no SignalReceiver", func(t *testing.T) {
 		var got []any
 		pid, err := Spawn(sys, "plain", actorOf[any](&fnActor[any]{
+			started: watchGone,
 			receive: func(_ *Context[any], m any) { got = append(got, m) },
 		}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		eng.RunUntilIdle()
-		c := cellOf(t, sys, pid)
 		before := len(eng.Records())
-		c.pushSignal(term)
 		eng.RunUntilIdle()
 		var kinds []string
 		for _, r := range eng.Records()[before:] {
 			kinds = append(kinds, r.Kind)
 		}
-		if want := []string{"lockstep.turn"}; !slices.Equal(kinds, want) {
+		// Started's Watch records the watch; begin and the signal are the two system messages of
+		// the one turn. Nothing else is recorded for the ignored signal.
+		if want := []string{"lockstep.watch", "lockstep.turn"}; !slices.Equal(kinds, want) {
 			t.Errorf("the ignored signal emitted records %q, want only %q", kinds, want)
 		}
 		turns := recordsOf(eng.Records()[before:], "lockstep.turn")
-		if want := []string{"actor=" + pid.String(), "system=1", "user=0", "msg="}; len(turns) != 1 || !slices.Equal(turns[0], want) {
+		if want := []string{"actor=" + pid.String(), "system=2", "user=0", "msg="}; len(turns) != 1 || !slices.Equal(turns[0], want) {
 			t.Errorf("turn record of the ignored signal = %q, want %q", turns, want)
 		}
 		send(t, sys, pid, any("after"))
