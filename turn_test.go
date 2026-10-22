@@ -147,6 +147,25 @@ func TestTurnRecord(t *testing.T) {
 	}
 }
 
+// ENG-340: a Receive that panics still leaves its message as the turn record's msg.
+func TestTurnRecordPanickingReceive(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	pid, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{
+		receive: func(_ *Context[int], _ int) { panic("boom") },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	send(t, sys, pid, 7)
+	eng.RunUntilIdle()
+	turns := recordsOf(eng.Records(), "lockstep.turn")
+	want := []string{"actor=" + pid.String(), "system=0", "user=1", "msg=" + sys.eng.Tracer.Describe(7)}
+	if last := turns[len(turns)-1]; !slices.Equal(last, want) {
+		t.Errorf("last lockstep.turn = %q, want %q", last, want)
+	}
+}
+
 // logActor spawns "a" under sys, an int actor that appends every message to the returned log, and
 // runs the engine until its start message is processed.
 func logActor(t *testing.T, sys *System, eng *enginetest.Engine) (PID[int], *[]int) {

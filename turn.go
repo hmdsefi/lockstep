@@ -150,11 +150,12 @@ func (c *cell[M]) processUser(e entry) (msg any, shown bool) {
 	if e.kind == entrySelf {
 		return c.processSelf(e)
 	}
-	m, _ := e.msg.(M) // a nil e.msg of an interface type M is M's zero value
+	m, _ := e.msg.(M)        // a nil e.msg of an interface type M is M's zero value
+	msg, shown = e.msg, true // set before Receive: a panic of Receive still leaves the description
 	c.enter()
 	defer c.leave()
 	c.actor.Receive(c.ctx, m)
-	return e.msg, true
+	return msg, shown
 }
 
 // enter sets the in-turn flag before a handler call (ACT-120).

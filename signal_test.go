@@ -113,10 +113,18 @@ func TestSignalDelivery(t *testing.T) {
 		}
 		before := len(eng.Records())
 		eng.RunUntilIdle()
+		var kinds []string
 		for _, r := range eng.Records()[before:] {
-			if r.Kind != "lockstep.turn" && r.Kind != "lockstep.watch" {
-				t.Errorf("the ignored signal emitted a %s record", r.Kind)
-			}
+			kinds = append(kinds, r.Kind)
+		}
+		// Started's Watch records the watch; begin and the signal are the two system messages of
+		// the one turn. Nothing else is recorded for the ignored signal.
+		if want := []string{"lockstep.watch", "lockstep.turn"}; !slices.Equal(kinds, want) {
+			t.Errorf("the ignored signal emitted records %q, want only %q", kinds, want)
+		}
+		turns := recordsOf(eng.Records()[before:], "lockstep.turn")
+		if want := []string{"actor=" + pid.String(), "system=2", "user=0", "msg="}; len(turns) != 1 || !slices.Equal(turns[0], want) {
+			t.Errorf("turn record of the ignored signal = %q, want %q", turns, want)
 		}
 		send(t, sys, pid, any("after"))
 		eng.RunUntilIdle()
