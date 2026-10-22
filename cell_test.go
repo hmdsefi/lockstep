@@ -51,7 +51,7 @@ func cellOf[M any](t *testing.T, sys *System, pid PID[M]) *cell[M] {
 	return c
 }
 
-// send puts msg in pid's user mailbox as a sent message from the system (until Send, 1.2-06).
+// send puts msg in pid's user mailbox as a sent message from the system (until Send exists).
 func send[M any](t *testing.T, sys *System, pid PID[M], msg M) {
 	t.Helper()
 	cellOf(t, sys, pid).enqueueUser(entry{msg: msg, from: sys.user, kind: entrySent})

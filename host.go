@@ -9,5 +9,5 @@ import "github.com/hmdsefi/lockstep/internal/engine"
 // node (ENG-080). It is a type of its own so that *System has no exported Inbound method.
 type host struct{ sys *System }
 
-// Inbound drops env: inbound delivery arrives with sending (1.2-06).
+// Inbound drops env: inbound delivery arrives with Send (MSG §4.1).
 func (host) Inbound(engine.Envelope) {}
