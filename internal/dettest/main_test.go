@@ -6,5 +6,5 @@ package dettest
 import "testing"
 
 // TestMain runs the package's tests under goleak with the run-twice switch prepared (DET-140,
-// DET-150). The package runs simulations in TestGolden.
+// DET-150). The package will run simulations (the golden test).
 func TestMain(m *testing.M) { Main(m) }

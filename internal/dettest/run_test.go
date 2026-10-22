@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // AT-DET-11, DET-130
@@ -103,7 +104,8 @@ type helperResult struct {
 // without the variables of the switch and of the helper, plus DETTEST_HELPER=1 and env.
 func runHelper(t *testing.T, env ...string) helperResult {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperMain$") //nolint:gosec // the test binary itself
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHelperMain$") //nolint:gosec // the test binary itself
+	cmd.WaitDelay = 10 * time.Second
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
 		switch {
