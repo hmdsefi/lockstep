@@ -10,6 +10,7 @@ pkg github.com/hmdsefi/lockstep, const StopRestarting = 5
 pkg github.com/hmdsefi/lockstep, const StopRestarting StopKind
 pkg github.com/hmdsefi/lockstep, const StopShutdown = 4
 pkg github.com/hmdsefi/lockstep, const StopShutdown StopKind
+pkg github.com/hmdsefi/lockstep, func Ask[M any, R any](Sender, PID[M], func(ReplyTo[R]) M, ...AskOption) *Reply[R]
 pkg github.com/hmdsefi/lockstep, func Failed(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Lookup[M any](*System, string) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func New(...Option) *System
@@ -18,9 +19,11 @@ pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Send[M any](Sender, PID[M], M) error
 pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor[M], ...SpawnOption) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
+pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
+pkg github.com/hmdsefi/lockstep, method (*Reply[R]) Await(context.Context) (R, error)
 pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
 pkg github.com/hmdsefi/lockstep, method (*System) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) IsZero() bool
@@ -31,14 +34,19 @@ pkg github.com/hmdsefi/lockstep, method (Address) UID() uint64
 pkg github.com/hmdsefi/lockstep, method (PID[M]) Address() Address
 pkg github.com/hmdsefi/lockstep, method (PID[M]) IsZero() bool
 pkg github.com/hmdsefi/lockstep, method (PID[M]) String() string
+pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) Fail(Sender, error)
+pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) Send(Sender, R)
 pkg github.com/hmdsefi/lockstep, method (StopKind) String() string
 pkg github.com/hmdsefi/lockstep, method (StopReason) String() string
 pkg github.com/hmdsefi/lockstep, type Actor[M any] interface { Receive }
 pkg github.com/hmdsefi/lockstep, type Actor[M any] interface, Receive(*Context[M], M)
 pkg github.com/hmdsefi/lockstep, type Address struct
+pkg github.com/hmdsefi/lockstep, type AskOption func(*askConfig)
 pkg github.com/hmdsefi/lockstep, type Context[M any] struct
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type PID[M any] struct
+pkg github.com/hmdsefi/lockstep, type ReplyTo[R any] struct
+pkg github.com/hmdsefi/lockstep, type Reply[R any] struct
 pkg github.com/hmdsefi/lockstep, type Sender interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type Signal interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type SignalReceiver[M any] interface { Signal }
