@@ -202,9 +202,9 @@ func (s *System) sendRemote(r routeRequest) outcome {
 }
 
 // deadRequest makes r a dead letter with reason (MBX-150). The request of an ask whose asker is
-// this system resolves that ask with ErrTerminated, for every reason (MSG-310, ruling B5): before
+// this system resolves that ask with ErrTerminated, for every reason (MSG-310): before
 // Ask returns, or when the engine offers a request its interposer held. An ask request that
-// arrived from another node is failed back to its asker by MSG-350 (1.2-08).
+// arrived from another node is failed back to its asker by MSG-350.
 func (s *System) deadRequest(r routeRequest, reason string) outcome {
 	s.deadLetter(r.to, reason, r.msg)
 	if !r.ask.IsZero() && r.ask.node == s.node {

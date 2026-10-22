@@ -55,7 +55,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	}
 
 	// 3. Failures before sending: nothing is built, allocated or recorded. The stopped-system check
-	// (ErrStopped) arrives with Shutdown (1.2-12).
+	// (ErrStopped) arrives with Shutdown.
 	if cfg.timeout <= 0 {
 		return resolvedReply[R](sys, fmt.Errorf("%w: WithTimeout(%s): timeout must be positive", ErrInvalidOption, cfg.timeout))
 	}

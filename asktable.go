@@ -175,11 +175,11 @@ func (s *System) replyAttempt(ask, from Address, v any, err error) {
 		s.recordReply(ask, from, "zero", err)
 		return
 	}
-	// A reply attempt from a stopped system is dropped without a record (MSG-410): with Shutdown,
-	// 1.2-12.
+	// A reply attempt from a stopped system is dropped without a record (MSG-410); that check
+	// arrives with Shutdown.
 	s.asks.untrack(ask)
 	if ask.node != s.node {
-		// Not local: Transport.Deliver, a dead letter without one (MSG-410): 1.2-08.
+		// Not local: Transport.Deliver, a dead letter without one (MSG-410), is not handled yet.
 		return
 	}
 	s.settle(ask, resolution{how: byReply, from: from, v: v, err: err})
