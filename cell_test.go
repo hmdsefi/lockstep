@@ -51,10 +51,12 @@ func cellOf[M any](t *testing.T, sys *System, pid PID[M]) *cell[M] {
 	return c
 }
 
-// send puts msg in pid's user mailbox as a sent message from the system (until Send exists).
+// send sends msg to pid from the system and fails the test on an error.
 func send[M any](t *testing.T, sys *System, pid PID[M], msg M) {
 	t.Helper()
-	cellOf(t, sys, pid).enqueueUser(entry{msg: msg, from: sys.user, kind: entrySent})
+	if err := Send(sys, pid, msg); err != nil {
+		t.Fatalf("Send(%v): %v", pid, err)
+	}
 }
 
 // recordsOf returns the attributes of recs' records of kind, each as key=value strings.

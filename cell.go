@@ -17,8 +17,12 @@ import (
 // Lookup[M] asserts it back (ACT §11).
 type actorCell interface {
 	engine.ActorRef
-	// messageType returns reflect.TypeFor[M]().String(), for Lookup's ErrWrongType message.
-	messageType() string
+	// msgType returns reflect.TypeFor[M](): the exact type identity of ACT-530, for Lookup's
+	// ErrWrongType message and for path addresses (ACT-440).
+	msgType() reflect.Type
+	// offerUser appends e to the user mailbox and schedules the cell (ENG-350). from is the cell
+	// whose turn enqueues, or nil.
+	offerUser(e entry, from engine.ActorRef)
 }
 
 // cellState is a cell's lifecycle state as the turn loop sees it. Plan 1.3's state machine (SUP)
@@ -64,8 +68,8 @@ type cell[M any] struct {
 // Address returns the actor's address (engine.ActorRef).
 func (c *cell[M]) Address() engine.Address { return c.addr.engine() }
 
-// messageType returns the name of the cell's message type M (actorCell).
-func (*cell[M]) messageType() string { return reflect.TypeFor[M]().String() }
+// msgType returns the cell's message type M (actorCell).
+func (*cell[M]) msgType() reflect.Type { return reflect.TypeFor[M]() }
 
 // Slot returns the cell's scheduling state (engine.ActorRef).
 func (c *cell[M]) Slot() *engine.Slot { return &c.slot }
@@ -79,13 +83,14 @@ func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
 	c.sys.ready(c, from)
 }
 
-// enqueueUser appends e to the user mailbox and then schedules the cell (ENG-350). Until Send
-// exists it is how tests deliver user messages.
-func (c *cell[M]) enqueueUser(e entry) {
+// offerUser appends e to the user mailbox and then schedules the cell (ENG-350). from is the cell
+// whose turn enqueues, or nil (actorCell). Plan 1.3's mailbox policies decide here whether the
+// entry fits.
+func (c *cell[M]) offerUser(e entry, from engine.ActorRef) {
 	c.mu.Lock()
 	c.user.push(e)
 	c.mu.Unlock()
-	c.sys.ready(c, nil)
+	c.sys.ready(c, from)
 }
 
 // handlerFailed is the one place a failed handler goes (ENG-330): a recovered panic of the
@@ -137,7 +142,7 @@ const (
 type entry struct {
 	msg  any     // the M
 	from Address // the sender
-	ask  Address //nolint:unused // MBX-092's ask address of a request, zero otherwise; Ask sets it
+	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
 	inc  uint32  //nolint:unused // entrySelf's incarnation (MBX-170); Pipe sets it
 	kind entryKind
 }

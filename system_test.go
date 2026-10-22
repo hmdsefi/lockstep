@@ -194,8 +194,8 @@ func TestBindOnceWithNoopCallbacks(t *testing.T) {
 	eng.ChangeAdmission(engine.AdmissionChange{Source: engine.SourcePressure, On: true, Shedding: true})
 }
 
-// host.Inbound drops every envelope until inbound delivery arrives with Send (MSG §4.1).
-func TestInboundDropsEverything(t *testing.T) {
+// host.Inbound ignores a payload it has no handler for, and an empty envelope.
+func TestInboundIgnoresUnknownPayloads(t *testing.T) {
 	sys, _ := newManualSystem(t)
 	var h engine.Host = host{sys}
 	h.Inbound(engine.Envelope{To: sys.user.engine(), Payload: 1})

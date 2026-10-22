@@ -31,7 +31,7 @@ func Lookup[M any](sys *System, path string) (PID[M], error) {
 	if _, ok := a.(*cell[M]); !ok {
 		spawned := "unknown"
 		if c, ok := a.(actorCell); ok {
-			spawned = c.messageType()
+			spawned = c.msgType().String()
 		}
 		return PID[M]{}, fmt.Errorf("%w: %s: spawned as %s, looked up as %s",
 			ErrWrongType, addr, spawned, reflect.TypeFor[M]().String())
