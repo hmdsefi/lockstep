@@ -24,7 +24,7 @@ type Addr struct {
 // node is what a guardian and a registered actor have in common: a spawn-ordered child list and
 // a generated-name counter.
 type node struct {
-	node     string // node name inherited by the children
+	nodeName string // node name inherited by the children
 	children []Addr
 	counter  uint64
 }
@@ -64,7 +64,7 @@ func (r *Registry) AddRoot(a Addr) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.roots[a.Path]; !ok {
-		r.roots[a.Path] = &node{node: a.Node}
+		r.roots[a.Path] = &node{nodeName: a.Node}
 	}
 }
 
@@ -92,7 +92,11 @@ func (r *Registry) Taken(parent, name string) bool {
 // when a generated name is taken, never for a named child and never when ok is false. ok is false
 // when a registered child of parent already has the name (ACT-330). Add panics if parent is
 // neither a declared root nor a registered actor; the runtime spawns only under live parents.
-func (r *Registry) Add(parent, name string, uid uint64, cell any) (path string, ok bool) {
+//
+// uid allocates the actor's uid (ACT-040). Add calls it exactly once, under the registry's lock,
+// only after the name check passed and the generated name is fixed, so a spawn that loses the name
+// race allocates no uid. uid must not call back into the registry.
+func (r *Registry) Add(parent, name string, uid func() uint64, cell any) (path string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p := r.parentOf(parent)
@@ -110,8 +114,8 @@ func (r *Registry) Add(parent, name string, uid uint64, cell any) (path string, 
 	if generated {
 		p.counter++
 	}
-	a := Addr{Node: p.node, Path: path, UID: uid}
-	r.entries[path] = &entry{node: node{node: p.node}, addr: a, cell: cell, parent: parent}
+	a := Addr{Node: p.nodeName, Path: path, UID: uid()}
+	r.entries[path] = &entry{node: node{nodeName: p.nodeName}, addr: a, cell: cell, parent: parent}
 	p.children = append(p.children, a)
 	return path, true
 }

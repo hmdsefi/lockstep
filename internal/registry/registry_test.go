@@ -17,9 +17,12 @@ func newTestRegistry() *Registry {
 	return r
 }
 
+// fixed returns a uid allocator that yields uid.
+func fixed(uid uint64) func() uint64 { return func() uint64 { return uid } }
+
 func mustAdd(t *testing.T, r *Registry, parent, name string, uid uint64) string {
 	t.Helper()
-	p, ok := r.Add(parent, name, uid, "cell-"+name)
+	p, ok := r.Add(parent, name, fixed(uid), "cell-"+name)
 	if !ok {
 		t.Fatalf("Add(%q, %q) not ok", parent, name)
 	}
@@ -60,6 +63,35 @@ func TestAddAndLookup(t *testing.T) {
 	}
 }
 
+func TestAddCallsUIDOnlyOnSuccess(t *testing.T) {
+	r := newTestRegistry()
+	var calls int
+	var last uint64 = 40
+	next := func() uint64 { calls++; last++; return last }
+
+	p, ok := r.Add("/user", "a", next, "c")
+	if !ok || p != "/user/a" || calls != 1 {
+		t.Fatalf("Add = %q, %v after %d uid calls; want one call", p, ok, calls)
+	}
+	if uid, _, found := r.Lookup("/user/a"); !found || uid != 41 {
+		t.Fatalf("Lookup uid = %d, %v; want 41", uid, found)
+	}
+	if got := r.Children("/user"); len(got) != 1 || got[0].UID != 41 {
+		t.Fatalf("Children = %v", got)
+	}
+	// A taken name allocates no uid.
+	if _, ok := r.Add("/user", "a", next, "c"); ok || calls != 1 {
+		t.Fatalf("taken Add ok = %v with %d uid calls; want false and 1", ok, calls)
+	}
+	// A generated name calls it once and the uid is the allocator's.
+	if p, ok := r.Add("/user", "", next, "c"); !ok || p != "/user/$1" || calls != 2 {
+		t.Fatalf("generated Add = %q, %v after %d uid calls", p, ok, calls)
+	}
+	if uid, _, _ := r.Lookup("/user/$1"); uid != 42 {
+		t.Fatalf("generated uid = %d, want 42", uid)
+	}
+}
+
 func TestAddUnknownParentPanics(t *testing.T) {
 	r := newTestRegistry()
 	defer func() {
@@ -67,7 +99,7 @@ func TestAddUnknownParentPanics(t *testing.T) {
 			t.Fatal("Add under an unknown parent did not panic")
 		}
 	}()
-	r.Add("/user/missing", "a", 1, nil)
+	r.Add("/user/missing", "a", fixed(1), nil)
 }
 
 func TestGeneratedNames(t *testing.T) {
@@ -88,7 +120,7 @@ func TestGeneratedNames(t *testing.T) {
 	}
 	// A named spawn consumes no number, and neither does a failed one (ACT-320).
 	mustAdd(t, r, "/user", "named", 6)
-	if _, ok := r.Add("/user", "named", 7, nil); ok {
+	if _, ok := r.Add("/user", "named", fixed(7), nil); ok {
 		t.Fatal("Add of a taken name succeeded")
 	}
 	if p := mustAdd(t, r, "/user", "", 8); p != "/user/$3" {
@@ -104,7 +136,7 @@ func TestGeneratedNames(t *testing.T) {
 func TestNameFreedAtRemove(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "a", 1)
-	if _, ok := r.Add("/user", "a", 2, nil); ok {
+	if _, ok := r.Add("/user", "a", fixed(2), nil); ok {
 		t.Fatal("duplicate name accepted")
 	}
 	// The name stays taken, and the actor found, until Remove (stop started is not removed).
@@ -121,7 +153,7 @@ func TestNameFreedAtRemove(t *testing.T) {
 	if _, _, ok := r.Lookup("/user/a"); ok {
 		t.Fatal("entry found after Remove")
 	}
-	if p, ok := r.Add("/user", "a", 3, "again"); !ok || p != "/user/a" {
+	if p, ok := r.Add("/user", "a", fixed(3), "again"); !ok || p != "/user/a" {
 		t.Fatalf("re-Add = %q, %v", p, ok)
 	}
 	if uid, cell, _ := r.Lookup("/user/a"); uid != 3 || cell != "again" {
@@ -413,7 +445,7 @@ func TestWatchRaceWithRemove(t *testing.T) {
 func ExampleRegistry() {
 	r := New()
 	r.AddRoot(Addr{Node: "n1", Path: "/user"})
-	p, _ := r.Add("/user", "", 1, nil)
+	p, _ := r.Add("/user", "", fixed(1), nil)
 	fmt.Println(p)
 	// Output: /user/$1
 }
