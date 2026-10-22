@@ -20,6 +20,7 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	}
 	var system, u int
 	var first any
+	var firstShown bool // the first user message has a description for lockstep.turn
 	for {
 		if m, ok := c.popSystem(); ok {
 			c.processSystem(m)
@@ -28,10 +29,10 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 		}
 		if u < budget && c.accepting() {
 			if e, ok := c.popUser(); ok {
+				msg, shown := c.processUser(e)
 				if u == 0 {
-					first = e.msg
+					first, firstShown = msg, shown
 				}
-				c.processUser(e)
 				u++
 				continue
 			}
@@ -39,7 +40,7 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 		break
 	}
 	if system+u > 0 {
-		c.recordTurn(system, u, first)
+		c.recordTurn(system, firstShown, u, first)
 	}
 	return c.hasWork()
 }
@@ -68,14 +69,15 @@ func (c *cell[M]) hasWork() bool {
 }
 
 // recordTurn emits lockstep.turn for a turn that processed system system messages and u user
-// messages, the first of which was first (ENG-340).
-func (c *cell[M]) recordTurn(system, u int, first any) {
+// messages, the first of which was first (ENG-340). shown is false when that message has no
+// description: a discarded or failed piped reply (m20).
+func (c *cell[M]) recordTurn(system int, shown bool, u int, first any) {
 	tr := c.sys.eng.Tracer
 	if !tr.Enabled() {
 		return
 	}
 	msg := ""
-	if u > 0 {
+	if u > 0 && shown {
 		msg = tr.Describe(first)
 	}
 	tr.Record("lockstep.turn",
@@ -88,8 +90,11 @@ func (c *cell[M]) recordTurn(system, u int, first any) {
 
 // processSystem handles one system message.
 func (c *cell[M]) processSystem(m sysMsg) {
-	if _, ok := m.(begin); ok {
+	switch m := m.(type) {
+	case begin:
 		c.begin()
+	case signalMsg:
+		c.deliverSignal(m.sig)
 	}
 }
 
@@ -138,12 +143,18 @@ func (c *cell[M]) callStarted() {
 	c.starter.Started(c.ctx)
 }
 
-// processUser hands one user message to Receive.
-func (c *cell[M]) processUser(e entry) {
-	msg, _ := e.msg.(M) // a nil e.msg of an interface type M is M's zero value
+// processUser handles one user message: it hands a Sent entry to Receive and a Self entry to
+// processSelf. It returns the message that the turn's lockstep.turn record describes, and false
+// when there is none (ENG-340, m20).
+func (c *cell[M]) processUser(e entry) (msg any, shown bool) {
+	if e.kind == entrySelf {
+		return c.processSelf(e)
+	}
+	m, _ := e.msg.(M) // a nil e.msg of an interface type M is M's zero value
 	c.enter()
 	defer c.leave()
-	c.actor.Receive(c.ctx, msg)
+	c.actor.Receive(c.ctx, m)
+	return e.msg, true
 }
 
 // enter sets the in-turn flag before a handler call (ACT-120).

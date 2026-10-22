@@ -63,6 +63,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	// 4. The ask address and the table entry.
 	r := newReply[R](sys)
 	p := sys.newAsk(fromAddr, to.addr, cfg.timeout, r)
+	r.ask = p.addr // before Ask returns, so before any Pipe reads it
 
 	// 5. The request; a panic of build removes the entry and propagates.
 	msg := buildRequest(sys, p, build)
@@ -128,6 +129,7 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 	// (MSG-390): it resolves by a reply attempt, its timeout or its system stopping.
 	r := newReply[R](sys)
 	p := sys.newAsk(fromAddr, Address{}, cfg.timeout, r)
+	r.ask = p.addr
 	sys.armTimeout(p)
 	sys.recordAsk(fromAddr, p, nil)
 	return ReplyTo[R]{addr: p.addr}, r

@@ -46,6 +46,9 @@ type resolver interface {
 	// resolve stores the result, v asserted to R, and closes the reply's done channel. It reports
 	// whether this call resolved the reply.
 	resolve(v any, err error) bool
+	// fire runs the continuations of the reply's Pipe calls (MSG-610). The caller has resolved
+	// the reply and released the table's lock.
+	fire()
 	// wrongType returns MSG-420's ErrWrongType error for an answer v that is not an R, and nil
 	// for an R or a nil v (the zero R). It runs no user code.
 	wrongType(ask Address, v any) error
@@ -160,12 +163,21 @@ func (t *askTable) len() int {
 // channel. An answer that is not the ask's R resolves it with ErrWrongType instead (MSG-420).
 // Otherwise the ask resolved already, or is unknown here: a reply attempt is recorded as late and
 // every other attempt is dropped silently. res.err is described before the lock is taken, since
-// its Error or String method is user code that may use the table.
+// its Error or String method is user code that may use the table. The resolution then runs the
+// continuations of the reply's Pipe calls, after it has released the lock and before settle
+// returns (MSG-610).
 func (s *System) settle(ask Address, res resolution) {
 	desc := ""
 	if res.how != byTimeout {
 		desc = s.describeErr(res.err)
 	}
+	if r := s.resolveLocked(ask, res, desc); r != nil {
+		r.fire()
+	}
+}
+
+// resolveLocked is settle under the table's lock. It returns the reply it resolved, or nil.
+func (s *System) resolveLocked(ask Address, res resolution, desc string) resolver {
 	t := &s.asks
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -174,7 +186,7 @@ func (s *System) settle(ask Address, res resolution) {
 		if res.how == byReply {
 			s.recordReply(ask, res.from, "late", res.err, desc)
 		}
-		return
+		return nil
 	}
 	if res.err == nil {
 		if err := p.reply.wrongType(ask, res.v); err != nil {
@@ -191,7 +203,10 @@ func (s *System) settle(ask Address, res resolution) {
 	} else {
 		s.recordReply(ask, res.from, "resolved", res.err, desc)
 	}
-	p.reply.resolve(res.v, res.err)
+	if !p.reply.resolve(res.v, res.err) {
+		return nil
+	}
+	return p.reply
 }
 
 // describeErr returns Tracer.Describe(err) for the err attribute of lockstep.reply, or "" when

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"sync/atomic"
 )
 
@@ -43,6 +44,7 @@ func replier(from Sender) (*System, Address) {
 // Reply is the typed future of one ask.
 type Reply[R any] struct {
 	sys  *System       // the asker system
+	ask  Address       // the ask address; zero for a reply resolved before it was sent (MSG-300 step 3)
 	done chan struct{} // closed at resolution (MSG-470)
 
 	// val and err are written once, by the resolution (under the asker table's lock, or before
@@ -51,6 +53,16 @@ type Reply[R any] struct {
 	resolved atomic.Bool
 	val      R
 	err      error
+
+	// The Pipe continuations (MSG-600 to MSG-630). They run, in registration order, when the
+	// resolution calls fire after it has released the ask table's lock, or at once for a Pipe
+	// after that. pmu is held while they run, so a Pipe that races with fire cannot overtake
+	// the continuations before it; they are runtime-only (they enqueue and schedule) and never
+	// call user code. Lock order: pmu, then the cell's mu and the engine; nothing that holds
+	// those takes pmu.
+	pmu   sync.Mutex
+	conts []func()
+	fired bool
 }
 
 // newReply returns a pending reply on the asker system sys.
@@ -62,6 +74,7 @@ func newReply[R any](sys *System) *Reply[R] {
 func resolvedReply[R any](sys *System, err error) *Reply[R] {
 	r := newReply[R](sys)
 	r.resolve(nil, err)
+	r.fire()
 	return r
 }
 
@@ -80,6 +93,32 @@ func (r *Reply[R]) resolve(v any, err error) bool {
 	r.resolved.Store(true)
 	close(r.done)
 	return true
+}
+
+// fire runs the continuations that Pipe registered, in the order of the Pipe calls, and makes a
+// later Pipe run its continuation at once. The resolver of the reply's table entry calls it, after
+// resolve and after the ask table's lock is released (MSG-610): a continuation takes the actor's
+// mailbox lock and calls the engine's Ready, and the table's lock must not be held across that.
+func (r *Reply[R]) fire() {
+	r.pmu.Lock()
+	defer r.pmu.Unlock()
+	r.fired = true
+	for _, f := range r.conts {
+		f()
+	}
+	r.conts = nil
+}
+
+// then registers the continuation f (MSG-600): it runs when the reply's resolution fires, or now
+// if that has happened. f runs while pmu is held and must not call back into r.
+func (r *Reply[R]) then(f func()) {
+	r.pmu.Lock()
+	defer r.pmu.Unlock()
+	if r.fired {
+		f()
+		return
+	}
+	r.conts = append(r.conts, f)
 }
 
 // wrongType returns MSG-420's error for an answer v whose dynamic type is not R (a ReplyTo
