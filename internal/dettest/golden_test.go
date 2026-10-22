@@ -132,6 +132,11 @@ func goldenSuite(t *testing.T, list []scenario, path string, rewrite bool) {
 		if err := os.WriteFile(path, FormatGolden(got), 0o644); err != nil { //nolint:gosec // hashes.txt is a committed, world-readable file
 			t.Fatal(err)
 		}
+		// The umask reduces WriteFile's mode, and WriteFile keeps an existing file's mode;
+		// DET-270 step 6 wants 0644 either way.
+		if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // path is the golden file or a test's temporary file
+			t.Fatal(err)
+		}
 		return
 	}
 	committed, err := os.ReadFile(path) //nolint:gosec // path is the golden file or a test's temporary file
@@ -646,13 +651,25 @@ func TestGoldenSuite(t *testing.T) {
 			t.Errorf("entry %+v lacks a seed or hash", e)
 		}
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o644 {
-		t.Errorf("mode of the written file: %v, %v", fi, err)
+	checkMode := func(when string) {
+		t.Helper()
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o644 {
+			t.Errorf("mode of the file written by %s: %v, want %v", when, perm, fs.FileMode(0o644))
+		}
 	}
+	checkMode("-update")
 
 	// Step 7: the same scenarios match, and -update changes nothing.
 	if res = goldenCase(t, "check", path); res.exit != 0 {
 		t.Errorf("check against the written file: exit %d, output:\n%s", res.exit, res.out)
+	}
+	// A second -update over an existing file with another mode restores 0644.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	if res = goldenCase(t, "update", path); res.exit != 0 {
 		t.Fatalf("second update: exit %d, output:\n%s", res.exit, res.out)
@@ -660,6 +677,7 @@ func TestGoldenSuite(t *testing.T) {
 	if again, err := os.ReadFile(path); err != nil || !bytes.Equal(again, data) {
 		t.Errorf("second update changed the file: %q, %v", again, err)
 	}
+	checkMode("-update over a file with mode 0600")
 
 	// A changed scenario: three "got ... want" lines and the hint, no GOWORK line.
 	res = goldenCase(t, "changed", path, "GOWORK=off")
