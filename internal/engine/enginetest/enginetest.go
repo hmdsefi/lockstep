@@ -126,8 +126,17 @@ func (e *Engine) run(fn func()) {
 	fn()
 }
 
+// outsideEngineContext panics if the caller runs in engine context: method would run callbacks
+// nested inside the current one, so they would overlap (ENG-060, ENG-135).
+func (e *Engine) outsideEngineContext(method string) {
+	if e.busy > 0 {
+		panic("enginetest: " + method + " called from engine context")
+	}
+}
+
 // Step runs the first queued turn and reports whether there was one.
 func (e *Engine) Step() bool {
+	e.outsideEngineContext("Step")
 	if e.stopped || len(e.runq) == 0 {
 		return false
 	}
@@ -147,6 +156,7 @@ func (e *Engine) Step() bool {
 
 // RunUntilIdle runs Step until no turn is queued and returns the number of turns run.
 func (e *Engine) RunUntilIdle() int {
+	e.outsideEngineContext("RunUntilIdle")
 	n := 0
 	for e.Step() {
 		n++
@@ -159,6 +169,7 @@ func (e *Engine) RunUntilIdle() int {
 
 // Advance moves the clock forward by d, firing due timers in order (ENG-520).
 func (e *Engine) Advance(d time.Duration) {
+	e.outsideEngineContext("Advance")
 	if d < 0 {
 		panic("enginetest: Advance(" + d.String() + ") with d < 0")
 	}
@@ -399,7 +410,9 @@ func (f failer) Fail(err error) { f.e.failures = append(f.e.failures, err) }
 type waiter struct{ e *Engine }
 
 // Wait runs the engine until idle and returns nil if done is then closed, else ErrWouldBlock.
+// It panics when called from engine context (ENG-135).
 func (w waiter) Wait(_ context.Context, done <-chan struct{}) error {
+	w.e.outsideEngineContext("Wait")
 	w.e.RunUntilIdle()
 	if closed(done) {
 		return nil

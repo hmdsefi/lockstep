@@ -580,3 +580,96 @@ func TestManualRequeueBehindQueued(t *testing.T) {
 	m.RunUntilIdle()
 	wantOrder(t, &order, "A", "C", "A")
 }
+
+// hostFunc is an engine.Host that calls itself.
+type hostFunc func(engine.Envelope)
+
+func (h hostFunc) Inbound(env engine.Envelope) { h(env) }
+
+// ENG-135: Wait, Step, RunUntilIdle and Advance panic when called from engine context (inside a
+// turn, timer function, effect completion, Inbound or onChange), and the engine works normally
+// once the callback returns.
+func TestManualDriveFromEngineContext(t *testing.T) {
+	calls := []struct {
+		method string
+		call   func(m *enginetest.Engine, b engine.Engine)
+	}{
+		{"Wait", func(_ *enginetest.Engine, b engine.Engine) { _ = b.Waiter.Wait(context.Background(), nil) }},
+		{"Step", func(m *enginetest.Engine, _ engine.Engine) { m.Step() }},
+		{"RunUntilIdle", func(m *enginetest.Engine, _ engine.Engine) { m.RunUntilIdle() }},
+		{"Advance", func(m *enginetest.Engine, _ engine.Engine) { m.Advance(time.Second) }},
+	}
+	// Each enter runs fn once, as engine context of m.
+	contexts := []struct {
+		name  string
+		enter func(m *enginetest.Engine, b engine.Engine, fn func())
+	}{
+		{"turn", func(m *enginetest.Engine, b engine.Engine, fn func()) {
+			a := newFake("A", nil)
+			a.onTurn = fn
+			b.Scheduler.Ready(a)
+			m.Step()
+		}},
+		{"timer", func(m *enginetest.Engine, b engine.Engine, fn func()) {
+			b.Clock.AfterFunc(time.Millisecond, "t", fn)
+			m.Advance(time.Millisecond)
+		}},
+		{"effect", func(m *enginetest.Engine, b engine.Engine, fn func()) {
+			run := func(context.Context) (any, error) { return nil, nil }
+			b.Effects.Start(engine.EffectRequest{ID: 1, Name: "e", Run: run}, func(any, error) { fn() })
+			m.CompleteEffect(1, nil, nil)
+		}},
+		{"inbound", func(m *enginetest.Engine, _ engine.Engine, fn func()) {
+			m.SetHost(hostFunc(func(engine.Envelope) { fn() }))
+			m.Inbound(engine.Envelope{})
+		}},
+		{"onChange", func(m *enginetest.Engine, b engine.Engine, fn func()) {
+			b.Admission.Bind(func(engine.AdmissionChange) { fn() }, func() engine.Usage { return engine.Usage{} })
+			m.ChangeAdmission(engine.AdmissionChange{})
+		}},
+	}
+	for _, c := range contexts {
+		for _, call := range calls {
+			t.Run(c.name+"/"+call.method, func(t *testing.T) {
+				m := enginetest.New("n", 1)
+				b := m.Engine()
+				ran := false
+				var got string
+				c.enter(m, b, func() {
+					ran = true
+					got = panicText(func() { call.call(m, b) })
+				})
+				if !ran {
+					t.Fatal("the callback did not run")
+				}
+				if want := "enginetest: " + call.method + " called from engine context"; got != want {
+					t.Errorf("panic = %q, want %q", got, want)
+				}
+
+				// Outside engine context the same calls work.
+				if b.Scheduler.InTurn() {
+					t.Error("InTurn() = true after the callback")
+				}
+				order := []string{}
+				b.Scheduler.Ready(newFake("B", &order))
+				if n := m.RunUntilIdle(); n != 1 {
+					t.Errorf("RunUntilIdle() = %d, want 1", n)
+				}
+				fired := false
+				b.Clock.AfterFunc(time.Second, "t", func() { fired = true })
+				m.Advance(time.Second)
+				if !fired {
+					t.Error("Advance did not fire the timer")
+				}
+				done := make(chan struct{})
+				close(done)
+				if err := b.Waiter.Wait(context.Background(), done); err != nil {
+					t.Errorf("Wait(closed) = %v, want nil", err)
+				}
+				if err := b.Waiter.Wait(context.Background(), make(chan struct{})); !errors.Is(err, enginetest.ErrWouldBlock) {
+					t.Errorf("Wait(open) = %v, want ErrWouldBlock", err)
+				}
+			})
+		}
+	}
+}
