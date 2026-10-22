@@ -109,7 +109,7 @@ func buildRequest[M, R any](sys *System, p *pendingAsk, build func(ReplyTo[R]) M
 // rt.Fail(from, err), as cluster.Ask does. A request that a DropNewest or DropOldest mailbox drops
 // is not reported, so the reply resolves at its timeout (MSG-390). An invalid option value
 // returns the zero ReplyTo and a reply resolved with an error wrapping ErrInvalidOption. NewReply
-// panics if from is nil, an option is nil, or from is a Context outside its turn. (addition)
+// panics if from is nil, an option is nil, or from is a Context outside its turn.
 func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 	// MSG-380's checks, in its order: from nil, a Context outside its turn (ACT-120), a nil option.
 	sys, fromAddr, _ := mustSender(from).sendOrigin()
@@ -119,7 +119,7 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 		}
 	}
 	// An invalid option value: the zero ReplyTo and a resolved reply, with nothing allocated or
-	// recorded. The stopped-system check (ErrStopped) arrives with Shutdown (1.2-12).
+	// recorded. The stopped-system check (ErrStopped) arrives with Shutdown.
 	cfg, err := applyAskOptions(opts)
 	if err != nil {
 		return ReplyTo[R]{}, resolvedReply[R](sys, err)
