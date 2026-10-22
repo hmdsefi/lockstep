@@ -11,8 +11,12 @@ pkg github.com/hmdsefi/lockstep, const StopRestarting StopKind
 pkg github.com/hmdsefi/lockstep, const StopShutdown = 4
 pkg github.com/hmdsefi/lockstep, const StopShutdown StopKind
 pkg github.com/hmdsefi/lockstep, func Failed(error) StopReason
+pkg github.com/hmdsefi/lockstep, func New(...Option) *System
 pkg github.com/hmdsefi/lockstep, func PIDAt[M any](string, string) PID[M]
 pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
+pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
+pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
+pkg github.com/hmdsefi/lockstep, method (*System) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) IsZero() bool
 pkg github.com/hmdsefi/lockstep, method (Address) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) Path() string
@@ -24,12 +28,16 @@ pkg github.com/hmdsefi/lockstep, method (PID[M]) String() string
 pkg github.com/hmdsefi/lockstep, method (StopKind) String() string
 pkg github.com/hmdsefi/lockstep, method (StopReason) String() string
 pkg github.com/hmdsefi/lockstep, type Address struct
+pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type PID[M any] struct
+pkg github.com/hmdsefi/lockstep, type Sender interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type Signal interface { unexported methods }
+pkg github.com/hmdsefi/lockstep, type Spawner interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type StopKind uint8
 pkg github.com/hmdsefi/lockstep, type StopReason struct
 pkg github.com/hmdsefi/lockstep, type StopReason struct, Err error
 pkg github.com/hmdsefi/lockstep, type StopReason struct, Kind StopKind
+pkg github.com/hmdsefi/lockstep, type System struct
 pkg github.com/hmdsefi/lockstep, type Terminated struct
 pkg github.com/hmdsefi/lockstep, type Terminated struct, Addr Address
 pkg github.com/hmdsefi/lockstep, type Terminated struct, Reason StopReason
