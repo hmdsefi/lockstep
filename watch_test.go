@@ -487,7 +487,7 @@ func TestATACT29UnwatchAlive(t *testing.T) {
 	}
 }
 
-// SUP-060 step 1, ACT-640, ruling B7: when a watcher starts its stop, its watches leave every
+// SUP-060 step 1, SUP-340, ACT-640: when a watcher starts its stop, its watches leave every
 // watcher list and its watched set, so the target's later stop pushes it nothing.
 func TestStopDropsWatches(t *testing.T) {
 	sys, eng := newManualSystem(t)

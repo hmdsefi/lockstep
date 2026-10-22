@@ -376,8 +376,8 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 	if err := Stop(sys, p.Address()); !errors.Is(err, ErrNotFound) || err.Error() != want {
 		t.Errorf("Stop(path address) with none registered = %v, want ErrNotFound with text %q", err, want)
 	}
-	// Nothing is delivered after the stop: the path address resolves to no actor (m25: the
-	// lockstep.deadletter record is plan 1.3's).
+	// Nothing is delivered after the stop: the path address resolves to no actor (MBX-150;
+	// the lockstep.deadletter record is plan 1.3's).
 	if o := sys.route(routeRequest{from: sys.user, to: p.Address(), typ: typeOf[int](), msg: 4}); o.kind != routeDead || o.reason != reasonNotFound {
 		t.Errorf("route to the path address after the stop = %+v, want a not-found dead letter", o)
 	}
@@ -388,7 +388,7 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 	}
 }
 
-// SUP §8, m22: lockstep.stop records the actor, its last incarnation (0 without one), the reason's
+// SUP §8: lockstep.stop records the actor, its last incarnation (0 without one), the reason's
 // kind and an empty err for a reason without an error.
 func TestStopRecord(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -516,7 +516,7 @@ func TestSpawnFromStopped(t *testing.T) {
 	}
 }
 
-// SUP-060 step 5, MBX-160, ruling B8: the final stop closes the queues and drains the mailbox,
+// SUP-060 step 5, MBX-160: the final stop closes the queues and drains the mailbox,
 // returning the Sent entries in queue order and discarding Self entries; a closed mailbox refuses
 // every later entry and a closed system queue drops every later message.
 func TestStopDrain(t *testing.T) {
