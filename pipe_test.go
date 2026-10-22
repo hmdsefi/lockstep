@@ -93,7 +93,7 @@ func runATMSG24(t *testing.T, budget int) pipeRun {
 
 // AT-MSG-24: MSG-600, MSG-620. A pipes an ask of acct's balance. The log of to and Receive reads
 // to, Receive(Balance{30, nil}) in one turn, with no other Receive between them. The message of the
-// lockstep.turn record of a piped entry is the Balance Receive got (m20, ENG-340).
+// lockstep.turn record of a piped entry is the Balance Receive got (ENG-340).
 func TestATMSG24Pipe(t *testing.T) {
 	t.Run("one turn", func(t *testing.T) {
 		run := runATMSG24(t, 32)
@@ -343,7 +343,7 @@ func TestPipeDropIncarnation(t *testing.T) {
 	if got := recordsOf(eng.Records(), "lockstep.pipe.drop"); len(got) != 1 || !slices.Equal(got[0], want) {
 		t.Errorf("lockstep.pipe.drop records = %q, want [%q]", got, want)
 	}
-	// The discarded entry counts as a user message of the turn and has no description (m20); the
+	// The discarded entry counts as a user message of the turn and has no description (ENG-340); the
 	// turn's first user message is the discarded one.
 	turns := recordsOf(eng.Records(), "lockstep.turn")
 	if last := turns[len(turns)-1]; !slices.Equal(last, []string{"actor=" + a.String(), "system=0", "user=2", "msg="}) {
@@ -385,18 +385,6 @@ func TestPipeToPanics(t *testing.T) {
 	}
 }
 
-// waitFor returns the next value of ch, failing the test if none arrives within 10 s.
-func waitFor[T any](t *testing.T, ch <-chan T) T {
-	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(10 * time.Second):
-		t.Fatalf("no %T within 10 s", *new(T))
-		panic("unreachable")
-	}
-}
-
 // MSG-610 on the local engine: Pipe races with the resolution, which runs the continuations on
 // another goroutine (run under -race). Every actor receives exactly one piped reply, whether its
 // Pipe came before or after the resolution.
@@ -434,7 +422,7 @@ func TestPipeLocalEngineRace(t *testing.T) {
 	wg.Wait()
 	seen := make(map[string]bool)
 	for range n {
-		seen[waitFor(t, got)] = true
+		seen[recv(t, got)] = true
 	}
 	for _, p := range pids {
 		if !seen[p.String()+" Balance{3, <nil>}"] {
@@ -468,9 +456,9 @@ func TestPipeFromAnotherActor(t *testing.T) {
 		t.Fatal(err)
 	}
 	send(t, sys, a, any("go"))
-	waitFor(t, stored) // silent holds the request: the ask is pending
+	recv(t, stored) // silent holds the request: the ask is pending
 	send(t, sys, silent, any(answer{9}))
-	if b := waitFor(t, out); b.V != 9 || b.Err != nil {
+	if b := recv(t, out); b.V != 9 || b.Err != nil {
 		t.Errorf("received %v, want Balance{9, nil}", b)
 	}
 }

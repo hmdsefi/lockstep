@@ -107,8 +107,8 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, name string
 	if cfg.err != nil {
 		return refuse(cfg.err)
 	}
-	// Step 4. Shutdown (1.2-12) sets closing; the parent-incarnation-stopping check (SUP-090)
-	// arrives with the stop sequence (1.2-11) and belongs here too.
+	// Step 4. Shutdown sets closing; the parent-incarnation-stopping check (SUP-090) arrives
+	// with the stop sequence (SUP-060) and belongs here too.
 	if sys.closing.Load() {
 		return refuse(fmt.Errorf("%w: %s", ErrStopped, parent))
 	}
@@ -122,7 +122,7 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, name string
 
 	c := &cell[M]{sys: sys, parent: parent, factory: factory}
 	// Hold c.mu until addr is set: whoever finds c through the registry takes c.mu before reading
-	// addr (see cell). Add allocates the uid only when it registers c (ACT-040, ruling B2).
+	// addr (see cell). Add allocates the uid only when it registers c (ACT-040).
 	c.mu.Lock()
 	var uid uint64
 	path, ok := sys.reg.Add(parent.path, name, func() uint64 {

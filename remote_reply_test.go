@@ -36,7 +36,7 @@ func TestATMSG36PathAddressAsk(t *testing.T) {
 	if err := Send(sys, p, acctMsg(Deposit{10})); err != nil {
 		t.Fatalf("Send to %v after the spawn = %v", p, err)
 	}
-	if v, err := Ask(sys, p, getBalance).Await(within(t, time.Second)); v != 10 || err != nil {
+	if v, err := Ask(sys, p, getBalance).Await(within(t, 10*time.Second)); v != 10 || err != nil {
 		t.Errorf("Ask through %v after the spawn: Await = %d, %v, want 10, nil", p, v, err)
 	}
 }

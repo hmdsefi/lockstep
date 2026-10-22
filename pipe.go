@@ -34,8 +34,9 @@ func Pipe[R, M any](ctx *Context[M], r *Reply[R], to func(R, error) M) {
 	// (MSG-610); the mailbox always admits a Self entry (MBX-030).
 	//
 	// An incarnation that has ended by then is dropped when the actor dequeues the entry
-	// (dropPiped), which is all plan 1.2's one incarnation needs. 1.2-11 makes this check whether
-	// the cell has stopped too and emit lockstep.pipe.drop instead of enqueueing (MSG-610).
+	// (dropPiped), which is all plan 1.2's one incarnation needs. The stop sequence (SUP-060) makes
+	// this check whether the cell has stopped too and emit lockstep.pipe.drop instead of
+	// enqueueing (MSG-610).
 	inc := ctx.inc
 	r.then(func() {
 		c.offerUser(entry{
@@ -55,7 +56,7 @@ type pipedReply[M any] struct {
 
 // processSelf handles one Self entry of the user mailbox. It returns the message that the turn's
 // lockstep.turn record describes (ENG-340): the M that to returned for a piped reply, none when
-// the entry was discarded or to panicked (m20).
+// the entry was discarded or to panicked.
 func (c *cell[M]) processSelf(e entry) (msg any, ok bool) {
 	p, isPipe := e.msg.(pipedReply[M])
 	if !isPipe {
