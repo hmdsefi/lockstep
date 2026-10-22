@@ -113,38 +113,47 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bo
 	if cfg.err != nil {
 		return refuse(cfg.err)
 	}
-	// Step 4. Shutdown sets closing; a parent whose stop has started takes no child
-	// (SUP-090), so the stop sequence's registry removal never finds one.
+	c := &cell[M]{sys: sys, parent: parent, factory: factory}
+	if err := register(sys, c, parent, stopping, name); err != nil {
+		return refuse(err)
+	}
+	sys.recordSpawn(parent, c.addr, typ)
+	c.pushSystem(begin{}, from)
+	return PID[M]{addr: c.addr}, nil
+}
+
+// register runs ACT-300 steps 4 to 6 and registers c as parent's child named name (ACT-340). It
+// holds the system's spawnMu for reading from the step 4 check through Registry.Add, so a child
+// either sees the shutdown's closing mark or is registered before the shutdown lists the
+// guardians' children (ACT-050). stopping reports that the parent is stopping (SUP-090): its stop
+// sequence's registry removal then never finds a child.
+func register[M any](sys *System, c *cell[M], parent Address, stopping bool, name string) error {
+	sys.spawnMu.RLock()
+	defer sys.spawnMu.RUnlock()
 	if sys.closing.Load() || stopping {
-		return refuse(fmt.Errorf("%w: %s", ErrStopped, parent))
+		return fmt.Errorf("%w: %s", ErrStopped, parent)
 	}
 	nameTaken := func() error { return fmt.Errorf("%w: %q under %s", ErrNameTaken, name, parent) }
 	if name != "" && sys.reg.Taken(parent.path, name) {
-		return refuse(nameTaken())
+		return nameTaken()
 	}
 	if err := sys.eng.Admission.AdmitSpawn(false); err != nil {
-		return refuse(err)
+		return err
 	}
-
-	c := &cell[M]{sys: sys, parent: parent, factory: factory}
 	// Hold c.mu until addr is set: whoever finds c through the registry takes c.mu before reading
 	// addr (see cell). Add allocates the uid only when it registers c (ACT-040).
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	var uid uint64
 	path, ok := sys.reg.Add(parent.path, name, func() uint64 {
 		uid = sys.allocUID()
 		return uid
 	}, actorCell(c))
 	if !ok {
-		c.mu.Unlock()
-		return refuse(nameTaken()) // a concurrent Spawn took the name after Taken
+		return nameTaken() // a concurrent Spawn took the name after Taken
 	}
 	c.addr = Address{node: sys.node, path: path, uid: uid}
-	c.mu.Unlock()
-
-	sys.recordSpawn(parent, c.addr, typ)
-	c.pushSystem(begin{}, from)
-	return PID[M]{addr: c.addr}, nil
+	return nil
 }
 
 // recordSpawn emits lockstep.spawn for a successful spawn (ACT §8). name is the child's name,

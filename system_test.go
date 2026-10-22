@@ -148,6 +148,7 @@ func TestGuardianUIDs(t *testing.T) {
 			if _, ok := sys.reg.Add(p, "x", func() uint64 { return 7 }, nil); !ok {
 				t.Errorf("Add under %q failed: guardian is not a registry root", p)
 			}
+			sys.reg.Remove(p + "/x") // not a cell: the shutdown at the end of the test would find it
 		}
 	}
 	t.Run("manual", func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -68,6 +69,7 @@ const (
 	byReply   how = iota + 1 // a reply attempt (MSG-420): lockstep.reply resolved, or late when not pending
 	byRouting                // Ask's routing outcome (MSG-310): lockstep.reply resolved; nothing when not pending
 	byTimeout                // the timer (MSG-320): lockstep.timeout; nothing when not pending
+	byStop                   // the system stopped (MSG-360): lockstep.reply resolved; nothing when not pending
 )
 
 // resolution is one attempt to resolve an ask.
@@ -80,11 +82,16 @@ type resolution struct {
 
 // newAsk allocates the next ask address of s, /temp/<n> with a fresh uid, and enters a pending
 // ask for it with the given asker, target, timeout and resolver (MSG-300 step 4). The number and
-// the uid are allocated under the table's lock, so ask numbers and uids rise together.
+// the uid are allocated under the table's lock, so ask numbers and uids rise together. It returns
+// nil, allocating nothing, when s is stopped: the stopped mark is set under the same lock
+// (askTable.stop), so no ask enters the table after the stopped system resolved its asks.
 func (s *System) newAsk(asker, target Address, timeout time.Duration, reply resolver) *pendingAsk {
 	t := &s.asks
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if s.stopped.Load() {
+		return nil
+	}
 	t.counter++
 	p := &pendingAsk{
 		addr:    Address{node: s.node, path: "/temp/" + strconv.FormatUint(t.counter, 10), uid: s.allocUID()},
@@ -145,6 +152,22 @@ func (s *System) pendingAsks() []pendingAsk {
 	for _, p := range t.order {
 		if !p.removed {
 			out = append(out, *p)
+		}
+	}
+	return out
+}
+
+// stop sets stopped, the system's stopped mark, and returns the addresses of the pending asks in
+// ask-counter order (MSG-360), for the shutdown to resolve with ErrStopped after the lock is
+// released. newAsk checks the mark under the same lock, so the list is complete.
+func (t *askTable) stop(stopped *atomic.Bool) []Address {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	stopped.Store(true)
+	out := make([]Address, 0, len(t.pending))
+	for _, p := range t.order {
+		if !p.removed {
+			out = append(out, p.addr)
 		}
 	}
 	return out
@@ -238,8 +261,12 @@ func (s *System) replyAttempt(ask, from Address, v any, err error) {
 		s.recordReply(ask, from, "zero", err, s.describeErr(err))
 		return
 	}
-	// A reply attempt from a stopped system is dropped without a record (MSG-410); that check
-	// arrives with Shutdown.
+	// A reply attempt from a stopped system is dropped without a record (MSG-410). The mark is set
+	// only after every actor has stopped, so the Fail(ErrTerminated) attempts of those stops
+	// (MSG-340) still flow during the shutdown.
+	if s.stopped.Load() {
+		return
+	}
 	s.asks.untrack(ask)
 	if ask.node != s.node {
 		s.replyRemote(ask, from, v, err)
