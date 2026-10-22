@@ -6,6 +6,7 @@ package lockstep
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -16,6 +17,8 @@ import (
 // Lookup[M] asserts it back (ACT §11).
 type actorCell interface {
 	engine.ActorRef
+	// messageType returns reflect.TypeFor[M]().String(), for Lookup's ErrWrongType message.
+	messageType() string
 }
 
 // cellState is a cell's lifecycle state as the turn loop sees it. Plan 1.3's state machine (SUP)
@@ -60,6 +63,9 @@ type cell[M any] struct {
 
 // Address returns the actor's address (engine.ActorRef).
 func (c *cell[M]) Address() engine.Address { return c.addr.engine() }
+
+// messageType returns the name of the cell's message type M (actorCell).
+func (*cell[M]) messageType() string { return reflect.TypeFor[M]().String() }
 
 // Slot returns the cell's scheduling state (engine.ActorRef).
 func (c *cell[M]) Slot() *engine.Slot { return &c.slot }

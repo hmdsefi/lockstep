@@ -11,11 +11,13 @@ pkg github.com/hmdsefi/lockstep, const StopRestarting StopKind
 pkg github.com/hmdsefi/lockstep, const StopShutdown = 4
 pkg github.com/hmdsefi/lockstep, const StopShutdown StopKind
 pkg github.com/hmdsefi/lockstep, func Failed(error) StopReason
+pkg github.com/hmdsefi/lockstep, func Lookup[M any](*System, string) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func New(...Option) *System
 pkg github.com/hmdsefi/lockstep, func PIDAt[M any](string, string) PID[M]
 pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor[M], ...SpawnOption) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
 pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
