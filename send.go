@@ -152,16 +152,28 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 // before it is enqueued (MSG-310, MSG-340), so the reply attempt that removes the entry
 // (MSG-410) cannot come first. Plan 1.3's mailbox refusal of a tracked request removes the entry
 // again (MSG-345).
+//
+// A target can complete its final stop between the lookup and the enqueue (an offer from another
+// goroutine on the local engine). Its closed mailbox refuses the entry, and the message is a dead
+// letter with reason stopped (MBX-150 (b)). The ask of such a request fails with ErrTerminated
+// through whoever removes its tracked entry: here, or the stop's sweep of its tracked asks
+// (MSG-340), so it fails once and leaves no tracked entry behind.
 func (s *System) offer(r routeRequest) outcome {
 	c, reason := s.resolve(r.to, r.typ)
 	if c == nil {
 		return s.deadRequest(r, reason)
 	}
-	if !r.ask.IsZero() {
-		s.asks.track(r.ask, c)
+	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
+	if c.offerUser(entry{msg: r.msg, from: r.from, ask: r.ask, kind: entrySent}, r.fromRef) {
+		return outcome{kind: routeEnqueued, cell: c}
 	}
-	c.offerUser(entry{msg: r.msg, from: r.from, ask: r.ask, kind: entrySent}, r.fromRef)
-	return outcome{kind: routeEnqueued, cell: c}
+	if r.ask.IsZero() || tracked && s.asks.untrack(r.ask) {
+		return s.deadRequest(r, reasonStopped)
+	}
+	// The stop's sweep took the tracked entry and fails the ask; a request that was not tracked
+	// here (a duplicate, or an ask that already resolved) has nothing to fail.
+	s.deadLetter(r.to, reasonStopped, r.msg)
+	return outcome{kind: routeDead, reason: reasonStopped}
 }
 
 // resolve returns the cell the local address to names, or nil and the dead-letter reason. A full

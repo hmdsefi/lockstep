@@ -20,6 +20,7 @@ pkg github.com/hmdsefi/lockstep, func Pipe[R any, M any](*Context[M], *Reply[R],
 pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Send[M any](Sender, PID[M], M) error
 pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor[M], ...SpawnOption) (PID[M], error)
+pkg github.com/hmdsefi/lockstep, func Stop(Sender, Address) error
 pkg github.com/hmdsefi/lockstep, func Unwatch[M any](*Context[M], Address)
 pkg github.com/hmdsefi/lockstep, func Watch[M any](*Context[M], Address) error
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option

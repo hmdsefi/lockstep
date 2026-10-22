@@ -33,17 +33,20 @@ func Pipe[R, M any](ctx *Context[M], r *Reply[R], to func(R, error) M) {
 	// ReplyTo.Send or Fail returns, so the entry follows the earlier messages of the same pair
 	// (MSG-610); the mailbox always admits a Self entry (MBX-030).
 	//
-	// An incarnation that has ended by then is dropped when the actor dequeues the entry
-	// (dropPiped), which is all plan 1.2's one incarnation needs. The stop sequence (SUP-060) makes
-	// this check whether the cell has stopped too and emit lockstep.pipe.drop instead of
-	// enqueueing (MSG-610).
+	// If the incarnation has ended by then, or the actor has completed its final stop, the
+	// continuation enqueues nothing and records lockstep.pipe.drop (MSG-610); offerSelf decides
+	// under the cell's lock. An entry enqueued before the incarnation ended is dropped when it is
+	// dequeued (MSG-620) or drained at the final stop (MBX-160).
 	inc := ctx.inc
 	r.then(func() {
-		c.offerUser(entry{
+		ok := c.offerSelf(entry{
 			msg:  pipedReply[M]{ask: r.ask, call: func() M { return to(r.val, r.err) }},
 			kind: entrySelf,
 			inc:  inc,
-		}, nil)
+		})
+		if !ok {
+			c.dropPiped(r.ask)
+		}
 	})
 }
 
@@ -77,7 +80,7 @@ func (c *cell[M]) processSelf(e entry) (msg any, ok bool) {
 }
 
 // dropPiped discards a piped reply of an incarnation that has ended: to and Receive are not
-// called, and lockstep.pipe.drop records it (MSG-620, MSG §8).
+// called, and lockstep.pipe.drop records it (MSG-610, MSG-620, MSG §8).
 func (c *cell[M]) dropPiped(ask Address) {
 	tr := c.sys.eng.Tracer
 	if !tr.Enabled() {

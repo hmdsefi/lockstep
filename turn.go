@@ -45,8 +45,8 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	return c.hasWork()
 }
 
-// accepting reports whether the incarnation takes user messages: it has started and no handler
-// failed (ENG-310 step 2).
+// accepting reports whether the incarnation takes user messages: it has started, no handler
+// failed and no stop has started (ENG-310 step 2).
 func (c *cell[M]) accepting() bool { return c.state == cellRunning }
 
 func (c *cell[M]) popSystem() (sysMsg, bool) {
@@ -95,6 +95,10 @@ func (c *cell[M]) processSystem(m sysMsg) {
 		c.begin()
 	case signalMsg:
 		c.deliverSignal(m.sig)
+	case stop:
+		c.startStop(m.reason)
+	case stopped:
+		c.childStopped(m.child)
 	}
 }
 
@@ -114,6 +118,9 @@ func (c *cell[M]) begin() {
 		return
 	}
 	c.inc++
+	c.mu.Lock()
+	c.liveInc = c.inc // Pipe's continuations enqueue for this incarnation from now on (MSG-610)
+	c.mu.Unlock()
 	c.actor = a
 	c.ctx = &Context[M]{cell: c, inc: c.inc}
 	c.starter, _ = a.(Starter[M])

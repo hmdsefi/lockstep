@@ -5,8 +5,11 @@ package lockstep
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine/enginetest"
 )
@@ -335,5 +338,175 @@ func TestTerminatedSkipRule(t *testing.T) {
 	eng.RunUntilIdle()
 	if pc.ctx.watched.has(gone()) {
 		t.Error("the watched set of an actor without SignalReceiver still holds the delivered address")
+	}
+}
+
+// AT-ACT-25: ACT-600, ACT-660, SUP-330. A watcher of an alive actor gets exactly one Terminated
+// with the stop reason, and the watch record precedes the stop record.
+func TestATACT25WatchAlive(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	tp, err := Spawn(sys, "t", idle[int]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, wp := spawnProbe[any](t, sys, "w", nil)
+	watchFrom(t, sys, w, tp.Address())
+	if err := Stop(sys, tp.Address()); err != nil {
+		t.Fatal(err)
+	}
+	if term := awaitTerminated(t, wp, tp.Address()); term != (Terminated{Addr: tp.Address(), Reason: Normal}) {
+		t.Errorf("Terminated = %v, want reason Normal", term)
+	}
+	noSignal(t, wp, 100*time.Millisecond)
+
+	recs := rec.Records()
+	watch := recordIndex(recs, "lockstep.watch", "watcher="+w.String(), "addr="+tp.String(), "alive=true")
+	stop := recordIndex(recs, "lockstep.stop", "actor="+tp.String())
+	if watch < 0 || stop < 0 || watch > stop {
+		t.Errorf("lockstep.watch at %d, lockstep.stop at %d: want both, the watch first", watch, stop)
+	}
+	want := []string{"actor=" + tp.String(), "inc=1", "reason=normal", "err="}
+	if got := recordsOf(recs, "lockstep.stop"); len(got) != 1 || !slices.Equal(got[0], want) {
+		t.Errorf("lockstep.stop records = %q, want one %q", got, want)
+	}
+}
+
+// watchingProbe is a probe whose Stopped hook runs stopped.
+type watchingProbe struct {
+	*probe[any]
+	stopped func(ctx *Context[any])
+}
+
+func (p *watchingProbe) Stopped(ctx *Context[any], _ StopReason) { p.stopped(ctx) }
+
+// AT-ACT-26 (stopped-actor and Stopped clauses): ACT-600, ACT-660. The address of an actor that
+// completed its stop is not alive; Watch from the watcher's own Stopped hook returns ErrStopped and
+// registers nothing.
+func TestATACT26WatchStoppedActor(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	d, err := Spawn(sys, "d", idle[int]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := Spawn(sys, "live", idle[int]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stoppedErr := make(chan error, 1)
+	wp := &watchingProbe{probe: &probe[any]{signals: make(chan Signal, probeSignals)}}
+	wp.stopped = func(ctx *Context[any]) { stoppedErr <- Watch(ctx, live.Address()) }
+	w, err := Spawn(sys, "w", actorOf[any](wp))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stopAndWait(t, sys, w, wp.probe, d.Address())
+	// The Terminated took d out of the watched set: this Watch is of a dead address.
+	watchFrom(t, sys, w, d.Address())
+	if term := awaitTerminated(t, wp.probe, d.Address()); term.Reason != NoActor {
+		t.Errorf("Terminated = %v, want reason NoActor", term)
+	}
+	want := []string{"watcher=" + w.String(), "addr=" + d.String(), "alive=false"}
+	if i := recordIndex(rec.Records(), "lockstep.watch", want...); i < 0 {
+		t.Errorf("no lockstep.watch record %q", want)
+	}
+
+	if err := Stop(sys, w.Address()); err != nil {
+		t.Fatal(err)
+	}
+	got := recv(t, stoppedErr)
+	if want := "lockstep: stopped: " + w.String(); !errors.Is(got, ErrStopped) || got.Error() != want {
+		t.Errorf("Watch from Stopped = %v, want ErrStopped with text %q", got, want)
+	}
+	if ws := sys.registryWatchers(live.Address()); len(ws) != 0 {
+		t.Errorf("Watch from Stopped registered %v", ws)
+	}
+}
+
+// AT-ACT-27: ACT-600. Watch races with the target's stop; every iteration delivers exactly one
+// Terminated, with reason Normal or NoActor. Run with -race.
+func TestATACT27WatchRace(t *testing.T) {
+	sys := newLocalSystem(t)
+	w, wp := spawnProbe[any](t, sys, "w", func(ctx *Context[any], m any) {
+		if a, ok := m.(Address); ok {
+			if err := Watch(ctx, a); err != nil {
+				t.Errorf("Watch(%v): %v", a, err)
+			}
+		}
+	})
+	const n = 1000
+	for i := range n {
+		tp, err := Spawn(sys, fmt.Sprintf("t%d", i), idle[int]())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := Stop(sys, tp.Address()); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := Send(sys, w, any(tp.Address())); err != nil {
+				t.Errorf("Send: %v", err)
+			}
+		}()
+		wg.Wait()
+		term := awaitTerminated(t, wp, tp.Address())
+		if term.Reason != Normal && term.Reason != NoActor {
+			t.Fatalf("iteration %d: Terminated %v, want reason Normal or NoActor", i, term)
+		}
+	}
+	noSignal(t, wp, 100*time.Millisecond)
+}
+
+// AT-ACT-29 (a): ACT-630. After Unwatch of an alive actor, its stop gives the former watcher
+// nothing.
+func TestATACT29UnwatchAlive(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	tgt, _ := spawnRunner(t, sys, eng, "t")
+	pid, r := spawnRunner(t, sys, eng, "w")
+	inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+		if err := Watch(ctx, tgt.Address()); err != nil {
+			t.Errorf("Watch: %v", err)
+		}
+		Unwatch(ctx, tgt.Address())
+	})
+	if err := Stop(sys, tgt.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if len(r.sigs) != 0 {
+		t.Errorf("signals = %v, want none after Unwatch", r.sigs)
+	}
+	if n := len(recordsOf(eng.Records(), "lockstep.stop")); n != 1 {
+		t.Errorf("%d lockstep.stop records, want 1: the target stopped", n)
+	}
+}
+
+// SUP-060 step 1, SUP-340, ACT-640: when a watcher starts its stop, its watches leave every
+// watcher list and its watched set, so the target's later stop pushes it nothing.
+func TestStopDropsWatches(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	tgt, _ := spawnRunner(t, sys, eng, "t")
+	pid, _ := spawnRunner(t, sys, eng, "w")
+	c := cellOf(t, sys, pid)
+	inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+		if err := Watch(ctx, tgt.Address()); err != nil {
+			t.Errorf("Watch: %v", err)
+		}
+	})
+	if err := Stop(sys, pid.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if ws := sys.registryWatchers(tgt.Address()); len(ws) != 0 {
+		t.Errorf("watchers of t after w stopped = %v, want none", ws)
+	}
+	if len(c.ctx.watched.list) != 0 {
+		t.Errorf("w's watched set after its stop = %v, want empty", c.ctx.watched.list)
 	}
 }
