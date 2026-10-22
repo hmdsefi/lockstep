@@ -1,7 +1,11 @@
-# lockstep
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme-dark.svg">
+    <img alt="lockstep: deterministic actors for Go" src=".github/assets/readme-light.svg" width="640">
+  </picture>
+</p>
 
-**Deterministic actors for Go.**
-Write actors. Get exact replay.
+<p align="center"><strong>Write actors. Get exact replay.</strong></p>
 
 lockstep is an actor runtime where every message delivery, timer, and I/O event goes
 through the runtime. In production it's a concurrent actor runtime. In tests, the same
