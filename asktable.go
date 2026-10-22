@@ -33,13 +33,22 @@ type askTable struct {
 type pendingAsk struct {
 	addr    Address       // the ask address
 	asker   Address       // the asking actor, or the system address for a *System sender
-	target  Address       // the request's target
+	target  Address       // the request's target; the zero Address for NewReply
 	timeout time.Duration // the ask's timeout (MSG-320)
-	cancel  engine.Cancel // the timeout timer's Cancel; nil until Ask arms it
-	// resolve is the typed Reply's untyped resolver: it asserts v to R, stores the result and
-	// closes the reply's done channel. It reports whether this call resolved the reply.
-	resolve func(v any, err error) bool
-	removed bool // no longer pending: resolved, or dropped after a builder panic
+	cancel  engine.Cancel // the timeout timer's Cancel; nil until Ask or NewReply arms it
+	reply   resolver      // the typed Reply, seen without its R
+	removed bool          // no longer pending: resolved, or dropped after a builder panic
+}
+
+// resolver is the untyped view of a *Reply[R] (MSG §11), so reply attempts that arrive through
+// the transport resolve an ask without knowing R.
+type resolver interface {
+	// resolve stores the result, v asserted to R, and closes the reply's done channel. It reports
+	// whether this call resolved the reply.
+	resolve(v any, err error) bool
+	// wrongType returns MSG-420's ErrWrongType error for an answer v that is not an R, and nil
+	// for an R or a nil v (the zero R). It runs no user code.
+	wrongType(ask Address, v any) error
 }
 
 // trackList is the asks one actor tracks, in tracking order. Entries that left the table's
@@ -69,7 +78,7 @@ type resolution struct {
 // newAsk allocates the next ask address of s, /temp/<n> with a fresh uid, and enters a pending
 // ask for it with the given asker, target, timeout and resolver (MSG-300 step 4). The number and
 // the uid are allocated under the table's lock, so ask numbers and uids rise together.
-func (s *System) newAsk(asker, target Address, timeout time.Duration, resolve func(any, error) bool) *pendingAsk {
+func (s *System) newAsk(asker, target Address, timeout time.Duration, reply resolver) *pendingAsk {
 	t := &s.asks
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -79,7 +88,7 @@ func (s *System) newAsk(asker, target Address, timeout time.Duration, resolve fu
 		asker:   asker,
 		target:  target,
 		timeout: timeout,
-		resolve: resolve,
+		reply:   reply,
 	}
 	if t.pending == nil {
 		t.pending = make(map[string]*pendingAsk)
@@ -122,6 +131,22 @@ func (t *askTable) arm(p *pendingAsk, cancel engine.Cancel) {
 	cancel()
 }
 
+// pendingAsks returns a copy of each pending ask of s, with its ask address, asker, target and
+// timer, in ask-counter order (MSG-370). The order comes from the table's slice, never from its
+// map. Plan 1.4 wires hooks.PendingAsks, SIM's deadlock-detection accessor, to it.
+func (s *System) pendingAsks() []pendingAsk {
+	t := &s.asks
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]pendingAsk, 0, len(t.pending))
+	for _, p := range t.order {
+		if !p.removed {
+			out = append(out, *p)
+		}
+	}
+	return out
+}
+
 // len returns the number of pending asks.
 func (t *askTable) len() int {
 	t.mu.Lock()
@@ -132,18 +157,30 @@ func (t *askTable) len() int {
 // settle is the one place an ask resolves (MSG-430). Under the table's lock it looks up the
 // pending ask with exactly the address ask (path and uid); if there is one, it removes it,
 // cancels its timer, emits the record of res.how and resolves the reply, which closes its done
-// channel. Otherwise the ask resolved already, or is unknown here: a reply attempt is recorded as
-// late and every other attempt is dropped silently.
+// channel. An answer that is not the ask's R resolves it with ErrWrongType instead (MSG-420).
+// Otherwise the ask resolved already, or is unknown here: a reply attempt is recorded as late and
+// every other attempt is dropped silently. res.err is described before the lock is taken, since
+// its Error or String method is user code that may use the table.
 func (s *System) settle(ask Address, res resolution) {
+	desc := ""
+	if res.how != byTimeout {
+		desc = s.describeErr(res.err)
+	}
 	t := &s.asks
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.pending[ask.path]
 	if p == nil || p.addr.uid != ask.uid {
 		if res.how == byReply {
-			s.recordReply(ask, res.from, "late", res.err)
+			s.recordReply(ask, res.from, "late", res.err, desc)
 		}
 		return
+	}
+	if res.err == nil {
+		if err := p.reply.wrongType(ask, res.v); err != nil {
+			// The runtime's own error: describing it under the lock runs no user code.
+			res.v, res.err, desc = nil, err, s.describeErr(err)
+		}
 	}
 	t.remove(p)
 	if p.cancel != nil {
@@ -152,9 +189,19 @@ func (s *System) settle(ask Address, res resolution) {
 	if res.how == byTimeout {
 		s.recordTimeout(p)
 	} else {
-		s.recordReply(ask, res.from, "resolved", res.err)
+		s.recordReply(ask, res.from, "resolved", res.err, desc)
 	}
-	p.resolve(res.v, res.err)
+	p.reply.resolve(res.v, res.err)
+}
+
+// describeErr returns Tracer.Describe(err) for the err attribute of lockstep.reply, or "" when
+// err is nil or the tracer is disabled.
+func (s *System) describeErr(err error) string {
+	tr := s.eng.Tracer
+	if err == nil || !tr.Enabled() {
+		return ""
+	}
+	return tr.Describe(err)
 }
 
 // askTimedOut is the timeout timer's function (MSG-320): it resolves p with ErrTimeout if p is
@@ -167,22 +214,38 @@ func (s *System) askTimedOut(p *pendingAsk) {
 }
 
 // replyAttempt issues one reply attempt for ask from the sender from on s (MSG-410), after the
-// ReplyTo checks: a zero ask is only recorded; otherwise the ask leaves s's tracked asks and a
-// local attempt is applied to s's table before replyAttempt returns (MSG-420). v is the answer, or
-// nil with a non-nil err.
+// ReplyTo checks: a zero ask is only recorded; otherwise the ask leaves s's tracked asks, and then
+// a local attempt is applied to s's table before replyAttempt returns (MSG-420) and any other one
+// goes to the asker's node (replyRemote). v is the answer, or nil with a non-nil err. The runtime
+// issues its own attempts here too (MSG-350).
 func (s *System) replyAttempt(ask, from Address, v any, err error) {
 	if ask.IsZero() {
-		s.recordReply(ask, from, "zero", err)
+		s.recordReply(ask, from, "zero", err, s.describeErr(err))
 		return
 	}
 	// A reply attempt from a stopped system is dropped without a record (MSG-410); that check
 	// arrives with Shutdown.
 	s.asks.untrack(ask)
 	if ask.node != s.node {
-		// Not local: Transport.Deliver, a dead letter without one (MSG-410), is not handled yet.
+		s.replyRemote(ask, from, v, err)
 		return
 	}
 	s.settle(ask, resolution{how: byReply, from: from, v: v, err: err})
+}
+
+// replyRemote passes a reply attempt for the ask of another node to Transport.Deliver, from the
+// replier to the ask address; the asker's system applies it on arrival (MSG-410, host.Inbound).
+// Without a transport it is a dead letter (ENG-080, MBX-150 reason unreachable). A Deliver error
+// is dropped: ReplyTo.Send and Fail have no result, and REM-266 decides what happens to such a
+// reply.
+func (s *System) replyRemote(ask, from Address, v any, err error) {
+	p := replyPayload{v: v, err: err}
+	tr := s.eng.Transport
+	if tr == nil {
+		s.deadLetter(ask, reasonUnreachable, p)
+		return
+	}
+	_ = tr.Deliver(engine.Envelope{From: from.engine(), To: ask.engine(), Payload: p}) // MSG-410: not returned
 }
 
 // track makes the actor c track ask (MSG-340). The router calls it before it enqueues the
@@ -193,6 +256,9 @@ func (t *askTable) track(ask Address, c actorCell) {
 	if t.tracked == nil {
 		t.tracked = make(map[Address]actorCell)
 		t.byActor = make(map[actorCell]*trackList)
+	}
+	if _, dup := t.tracked[ask]; dup {
+		return // a duplicate delivery of the request: tracked once, by the first actor (MSG-340)
 	}
 	t.tracked[ask] = c
 	l := t.byActor[c]
@@ -240,24 +306,30 @@ func (t *askTable) trackedBy(c actorCell) []Address {
 	return out
 }
 
-// recordAsk emits lockstep.ask (MSG §8) before the request is routed.
+// recordAsk emits lockstep.ask (MSG §8): for Ask before the request is routed, for NewReply
+// before it returns. A NewReply ask, the only kind with a zero target, records to=<zero> and an
+// empty msg; msg is then ignored.
 func (s *System) recordAsk(from Address, p *pendingAsk, msg any) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
 		return
+	}
+	described := ""
+	if !p.target.IsZero() {
+		described = tr.Describe(msg)
 	}
 	tr.Record("lockstep.ask",
 		engine.Attr{Key: "from", Value: from.String()},
 		engine.Attr{Key: "to", Value: p.target.String()},
 		engine.Attr{Key: "ask", Value: p.addr.String()},
 		engine.Attr{Key: "timeout", Value: p.timeout.String()},
-		engine.Attr{Key: "msg", Value: tr.Describe(msg)},
+		engine.Attr{Key: "msg", Value: described},
 	)
 }
 
-// recordReply emits lockstep.reply (MSG §8) with the given outcome; err, if not nil, is described
-// in a last attribute.
-func (s *System) recordReply(ask, from Address, outcome string, err error) {
+// recordReply emits lockstep.reply (MSG §8) with the given outcome; if err is not nil, desc, its
+// description (describeErr), is a last attribute.
+func (s *System) recordReply(ask, from Address, outcome string, err error, desc string) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
 		return
@@ -268,7 +340,7 @@ func (s *System) recordReply(ask, from Address, outcome string, err error) {
 		{Key: "outcome", Value: outcome},
 	}
 	if err != nil {
-		attrs = append(attrs, engine.Attr{Key: "err", Value: tr.Describe(err)})
+		attrs = append(attrs, engine.Attr{Key: "err", Value: desc})
 	}
 	tr.Record("lockstep.reply", attrs...)
 }

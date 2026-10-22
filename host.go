@@ -9,12 +9,14 @@ import "github.com/hmdsefi/lockstep/internal/engine"
 // node (ENG-080). It is a type of its own so that *System has no exported Inbound method.
 type host struct{ sys *System }
 
-// Inbound hands an arriving user message to its target, through the engine's interposer first
-// (ENG-150, MBX-120). An envelope that names no live actor is a dead letter. Payloads of other
-// kinds are not handled yet: replies (MSG-410) and remote watches (ACT-602, Phase 3) are
-// dropped, like anything else.
+// Inbound applies an arriving envelope. A user message, or an ask request, goes to its target
+// through the engine's interposer first (ENG-150, MBX-120); one that names no live actor is a
+// dead letter, and an ask request then fails back to its asker (MSG-350). A reply attempt is
+// applied to the system's table (MSG-410, MSG-420). Remote watches (ACT-602, Phase 3) and any other
+// payload are dropped.
 func (h host) Inbound(env engine.Envelope) {
-	if p, ok := env.Payload.(userPayload); ok {
+	switch p := env.Payload.(type) {
+	case userPayload:
 		h.sys.deliverLocal(routeRequest{
 			from: addressOf(env.From),
 			to:   addressOf(env.To),
@@ -22,5 +24,7 @@ func (h host) Inbound(env engine.Envelope) {
 			msg:  p.msg,
 			ask:  p.ask,
 		})
+	case replyPayload:
+		h.sys.settle(addressOf(env.To), resolution{how: byReply, from: addressOf(env.From), v: p.v, err: p.err})
 	}
 }
