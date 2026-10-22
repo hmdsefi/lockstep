@@ -605,9 +605,9 @@ func TestReplyAttemptFromStoppedSystem(t *testing.T) {
 	}
 }
 
-// ACT-050: a Spawn from the system that races with Shutdown either fails with ErrStopped or
-// registers a child that the shutdown stops; none is left registered (the closing check is atomic
-// with the registration).
+// ACT-050: Spawns from the system on several goroutines while Shutdown runs each either fail with
+// ErrStopped or register a child that the shutdown stops, and none is left registered. The test
+// checks that outcome; it does not force any particular interleaving of Spawn and the shutdown.
 func TestShutdownRacesSpawn(t *testing.T) {
 	for round := range 20 {
 		sys := newLocalSystem(t)
@@ -691,9 +691,9 @@ func TestShutdownCalledFromLastStopped(t *testing.T) {
 	}
 }
 
-// ACT-050, SUP-060: a guardian's child whose stop request was processed before its begin (another
-// goroutine reached it between Registry.Add and the begin push) stops without an incarnation and
-// still notifies the sweep, which completes the shutdown.
+// ACT-050, SUP-060: a guardian's child whose system queue holds a stop request ahead of its begin
+// (the test builds that queue by hand) stops without an incarnation: its factory never runs,
+// lockstep.stop reports inc=0, and the shutdown completes.
 func TestShutdownChildStoppedBeforeBegin(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	calls := 0
