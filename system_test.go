@@ -122,7 +122,8 @@ func TestSystemIsSpawnerAndSender(t *testing.T) {
 }
 
 // ACT-030, ACT-040: guardians are created in order and are registry roots, not registered
-// entries. The rest of AT-ACT-03 is in 1.2-05, 1.2-10 and 1.2-11.
+// entries. The rest of AT-ACT-03 (its Lookup, Watch and Stop clauses) is tested with those
+// functions.
 func TestGuardianUIDs(t *testing.T) {
 	check := func(t *testing.T, sys *System) {
 		t.Helper()
@@ -193,7 +194,7 @@ func TestBindOnceWithNoopCallbacks(t *testing.T) {
 	eng.ChangeAdmission(engine.AdmissionChange{Source: engine.SourcePressure, On: true, Shedding: true})
 }
 
-// host.Inbound drops every envelope until 1.2-06.
+// host.Inbound drops every envelope until inbound delivery arrives with Send (MSG §4.1).
 func TestInboundDropsEverything(t *testing.T) {
 	sys, _ := newManualSystem(t)
 	var h engine.Host = host{sys}
