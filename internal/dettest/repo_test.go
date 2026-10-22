@@ -484,14 +484,15 @@ func underTestdata(rel string) bool {
 	return slices.Contains(strings.Split(rel, "/"), "testdata")
 }
 
-// nestedModuleViolations returns, sorted, one REP-130 line per way in which a nested module below
-// root breaks the rules, and one line per go.mod under a testdata directory. Paths in the lines
-// are slash-separated and relative to root. It skips directories whose name starts with "." or
-// "_". It stops the test if it cannot read a file or run go.
+// nestedModuleViolations returns one REP-130 line per way in which a nested module below root
+// breaks the rules, and one line per go.mod under a testdata directory. Lines come in walk order
+// (filepath.WalkDir, lexical), each module's lines in check order: module path, go version,
+// replace, then imports. Paths in the lines are slash-separated and relative to root. It skips
+// directories whose name starts with "." or "_". It stops the test if it cannot read a file or
+// run go.
 func nestedModuleViolations(t *testing.T, root string) []string {
 	t.Helper()
 	var lines []string
-	var modDirs []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -514,17 +515,14 @@ func nestedModuleViolations(t *testing.T, root string) []string {
 			lines = append(lines, rel+": go.mod under testdata")
 			return nil
 		}
-		modDirs = append(modDirs, filepath.ToSlash(filepath.Dir(filepath.FromSlash(rel))))
+		dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(rel)))
+		lines = append(lines, nestedGoModViolations(t, root, dir)...)
+		lines = append(lines, nestedImportViolations(t, root, dir)...)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range modDirs {
-		lines = append(lines, nestedGoModViolations(t, root, dir)...)
-		lines = append(lines, nestedImportViolations(t, root, dir)...)
-	}
-	sort.Strings(lines)
 	return lines
 }
 
@@ -712,7 +710,7 @@ func TestNestedModules(t *testing.T) {
 			want:   []string{"examples/raft/testdata/m/go.mod: go.mod under testdata"},
 		},
 		{
-			name: "two violations are sorted",
+			name: "walk order, then check order",
 			change: map[string]string{
 				"examples/raft/go.mod":       nestedGoMod("example.com/raft", "1.25", "../.."),
 				"analysis/a_test.go":         "package analysis\n\nimport _ \"" + lockstepModule + "/internal/engine\"\n",
@@ -720,8 +718,8 @@ func TestNestedModules(t *testing.T) {
 			},
 			want: []string{
 				"analysis/a_test.go: imports github.com/hmdsefi/lockstep/internal/engine; nested modules use public packages only",
-				"examples/raft/go.mod: go 1.25, want 1.26.0",
 				"examples/raft/go.mod: module example.com/raft, want github.com/hmdsefi/lockstep/examples/raft",
+				"examples/raft/go.mod: go 1.25, want 1.26.0",
 				"internal/y/testdata/go.mod: go.mod under testdata",
 			},
 		},
