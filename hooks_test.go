@@ -79,6 +79,16 @@ func TestATACT35EngineBuiltSystem(t *testing.T) {
 	if sys.Node() != "n7" || sys.Incarnation() != 1 {
 		t.Errorf("Node, Incarnation = %q, %d; want n7, 1", sys.Node(), sys.Incarnation())
 	}
+	p, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[int] { return nil })
+	if err != nil {
+		t.Fatalf("Spawn on the engine-built system: %v", err)
+	}
+	if got, want := p.Address().UID(), uint64(1)<<32|3; got != want {
+		t.Errorf("first spawned uid %#x, want %#x", got, want)
+	}
+	if p.Address().Node() != "n7" {
+		t.Errorf("first spawned node %q, want n7", p.Address().Node())
+	}
 
 	eng := enginetest.New("n7", 1)
 	got, err := hooks.NewSystem(eng.Engine(), []lockstep.Option{nil})
