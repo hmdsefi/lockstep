@@ -187,8 +187,10 @@ func (a *fakeActor) RunTurn(budget int) bool {
 
 // contend runs AT-ENG-04 on a: producers goroutines each add work and call Ready perTask times,
 // and the calling goroutine runs every queued turn (ENG-050 step 2) until the producers are done
-// and the queue is empty.
-func contend(a *fakeActor, producers, perTask int) {
+// and the queue is empty. A Slot panic in the runner is reported through t, not left to crash
+// the test binary.
+func contend(t *testing.T, a *fakeActor, producers, perTask int) {
+	t.Helper()
 	queue := make(chan engine.ActorRef, producers*perTask+1) // never blocks, even if the Slot misbehaves
 	var wg sync.WaitGroup
 	for range producers {
@@ -208,6 +210,11 @@ func contend(a *fakeActor, producers, perTask int) {
 	}()
 
 	run := func(r engine.ActorRef) {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Errorf("runner: %v", p)
+			}
+		}()
 		r.Slot().Begin()
 		more := r.RunTurn(1)
 		if r.Slot().End(more) {
@@ -237,7 +244,7 @@ func TestATENG04SlotContention(t *testing.T) {
 	for _, more := range []bool{false, true} {
 		t.Run(fmt.Sprintf("more=%t", more), func(t *testing.T) {
 			a := &fakeActor{more: more}
-			contend(a, producers, perTask)
+			contend(t, a, producers, perTask)
 			if n := a.overlap.Load(); n != 0 {
 				t.Errorf("RunTurn started %d times while a turn was running", n)
 			}
@@ -266,7 +273,7 @@ func TestSlotNoLostWakeup(t *testing.T) {
 	const rounds, producers, perTask = 300, 4, 50
 	a := &fakeActor{}
 	for round := range rounds {
-		contend(a, producers, perTask)
+		contend(t, a, producers, perTask)
 		if w, st := a.work.Load(), a.slot.State(); w != 0 || st != engine.SlotIdle {
 			t.Fatalf("round %d: work = %d, State() = %v after the queue drained; want 0, idle", round, w, st)
 		}

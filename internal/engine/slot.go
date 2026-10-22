@@ -33,8 +33,8 @@ func (s SlotState) String() string {
 	return "SlotState(" + strconv.FormatUint(uint64(s), 10) + ")"
 }
 
-// Slot is the scheduling state an engine keeps for one actor cell (§5.1.2). The runtime embeds
-// one in every cell and returns it from ActorRef.Slot; only engines call its methods or touch
+// Slot is the scheduling state an engine keeps for one actor cell (§5.1.2). The runtime keeps
+// one in a field of every cell and returns it from ActorRef.Slot; only engines call its methods or touch
 // Hint. The zero value is SlotIdle. All methods are safe for concurrent use.
 type Slot struct {
 	state atomic.Uint32
@@ -59,7 +59,8 @@ func (s *Slot) Ready() bool {
 				return true
 			}
 		case SlotRunning:
-			// End may finish the turn first: then the retry finds idle and queues a turn.
+			// End may finish the turn first: then the retry finds idle and queues a turn. This must
+			// stay a CompareAndSwap: a Store could overwrite End's idle and lose the wakeup.
 			if s.state.CompareAndSwap(old, uint32(SlotRunningReady)) {
 				return false
 			}
@@ -100,7 +101,9 @@ func (s *Slot) End(more bool) bool {
 			panic("engine: Slot.End in state " + SlotState(old).String())
 		}
 		// A Ready that moves running to running-ready between the Load and here makes the swap
-		// fail; the retry then queues the turn that Ready asked for.
+		// fail; the retry then queues the turn that Ready asked for. This must stay a
+		// CompareAndSwap: a Store would overwrite running-ready and lose that wakeup, and the
+		// contention tests catch that only some of the time.
 		if s.state.CompareAndSwap(old, uint32(next)) {
 			return next == SlotQueued
 		}
