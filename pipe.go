@@ -60,14 +60,17 @@ type pipedReply[M any] struct {
 	call func() M
 }
 
-// processSelf handles one Self entry of the user mailbox. It returns the message that the turn's
-// lockstep.turn record describes (ENG-340): the M that to returned for a piped reply, none when
-// the entry was discarded or to panicked.
+// processSelf handles one Self entry of the user mailbox: a timer message goes to processTimer. It
+// returns the message that the turn's lockstep.turn record describes (ENG-340): the M that to
+// returned for a piped reply, none when the entry was discarded or to panicked.
 //
 // An entry of an incarnation that has ended is not delivered (MBX-170): a piped reply is recorded
 // only as lockstep.pipe.drop (MSG-620), any other Self entry as lockstep.drop reason
 // incarnation-ended.
 func (c *cell[M]) processSelf(e entry) (msg any, ok bool) {
+	if e.timer != 0 {
+		return c.processTimer(e)
+	}
 	p, isPipe := e.msg.(pipedReply[M])
 	if e.inc != c.inc {
 		if isPipe {
