@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/overload"
@@ -198,5 +199,86 @@ func TestGateConcurrentSet(t *testing.T) {
 	}
 	if err := g.AdmitSend(); err != nil {
 		t.Fatalf("AdmitSend with every source off = %v; want nil", err)
+	}
+}
+
+// A Set made from inside onChange only queues its change: it returns at once, and its change is
+// reported after the current onChange returns, in transition order.
+func TestGateReentrantSet(t *testing.T) {
+	g := overload.NewGate()
+	var (
+		got      []engine.AdmissionChange
+		inCall   bool
+		overlap  bool
+		returned bool // the nested Set returned while the outer onChange was still running
+	)
+	g.Bind(func(c engine.AdmissionChange) {
+		if inCall {
+			overlap = true
+		}
+		inCall = true
+		defer func() { inCall = false }()
+		got = append(got, c)
+		if c.Source == engine.SourcePressure && c.On {
+			g.Set(engine.SourceBudget, true, 4, 8, 2)
+			returned = true
+			if len(got) != 1 {
+				t.Errorf("nested change reported inside onChange: %+v", got)
+			}
+			shedSource(t, "AdmitSend from onChange", g.AdmitSend(), engine.SourcePressure)
+		}
+	}, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.Set(engine.SourcePressure, true, 0, 0, 0)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Set hung when onChange called Set")
+	}
+
+	want := []engine.AdmissionChange{
+		{Source: engine.SourcePressure, On: true, Shedding: true},
+		{Source: engine.SourceBudget, On: true, Live: 4, High: 8, Low: 2, Shedding: true},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("changes = %+v; want %+v", got, want)
+	}
+	if !returned {
+		t.Fatal("the nested Set did not return from inside onChange")
+	}
+	if overlap {
+		t.Fatal("onChange ran concurrently with itself")
+	}
+}
+
+// A panic in onChange leaves the Gate usable: later changes are still reported.
+func TestGateOnChangePanic(t *testing.T) {
+	g := overload.NewGate()
+	var got []engine.AdmissionChange
+	g.Bind(func(c engine.AdmissionChange) {
+		got = append(got, c)
+		if len(got) == 1 {
+			panic("boom")
+		}
+	}, nil)
+	if text := panicText(func() { g.Set(engine.SourcePressure, true, 0, 0, 0) }); text != "boom" {
+		t.Fatalf("Set panicked with %q; want the onChange panic", text)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.Set(engine.SourcePressure, false, 0, 0, 0)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Set hung after onChange panicked")
+	}
+	if len(got) != 2 || got[1].On || got[1].Shedding {
+		t.Fatalf("changes = %+v; want the off change reported second", got)
 	}
 }

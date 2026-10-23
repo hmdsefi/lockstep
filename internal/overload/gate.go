@@ -19,16 +19,17 @@ type Gate struct {
 	// admitting.
 	refusal atomic.Pointer[engine.AdmissionError]
 
-	// deliver serializes Set, including the onChange call, so changes are reported one at a time
-	// in the order they were made. onChange must not call Set.
-	deliver sync.Mutex
-
 	// mu guards the fields below and is never held while onChange or usage runs.
 	mu       sync.Mutex
 	bound    bool
 	onChange func(engine.AdmissionChange)
 	usage    func() engine.Usage
 	on       []engine.AdmissionSource // sources that are on, in the order they turned on
+
+	// pending holds the changes made but not yet reported, oldest first. delivering is true while
+	// one Set call drains it, which is what keeps onChange from running concurrently with itself.
+	pending    []engine.AdmissionChange
+	delivering bool
 }
 
 // NewGate returns a Gate with every source off.
@@ -48,13 +49,18 @@ func (g *Gate) Bind(onChange func(engine.AdmissionChange), usage func() engine.U
 }
 
 // Set turns src on or off with the measured values of the change (OVL-150). A call that does not
-// change src's state does nothing. Otherwise it calls the bound onChange with the change, whose
-// Shedding is the combined state, after releasing the lock the admit methods and Usage could
-// wait for. Set panics with "overload: Gate.Set before Bind" before Bind.
+// change src's state does nothing. Otherwise the change is reported to the bound onChange, its
+// Shedding being the combined state after the change, outside every lock of the Gate.
+//
+// Changes are reported one at a time, in the order they were made. A Set made while onChange is
+// running, from inside onChange or from another goroutine, only queues its change and returns; the
+// goroutine already reporting delivers it after the current onChange returns. So onChange may call
+// Set, and a Set from another goroutine may return before its change is reported. If onChange
+// panics the panic reaches the Set that was reporting, the Gate stays usable, and changes still
+// queued are reported by the next Set that changes something.
+//
+// Set panics with "overload: Gate.Set before Bind" before Bind.
 func (g *Gate) Set(src engine.AdmissionSource, on bool, live, high, low uint64) {
-	g.deliver.Lock()
-	defer g.deliver.Unlock()
-
 	g.mu.Lock()
 	if !g.bound {
 		g.mu.Unlock()
@@ -76,11 +82,46 @@ func (g *Gate) Set(src engine.AdmissionSource, on bool, live, high, low uint64) 
 	} else {
 		g.refusal.Store(nil)
 	}
-	onChange := g.onChange
+	g.pending = append(g.pending, engine.AdmissionChange{
+		Source: src, On: on, Live: live, High: high, Low: low, Shedding: shedding,
+	})
+	if g.delivering {
+		g.mu.Unlock()
+		return
+	}
+	g.delivering = true
 	g.mu.Unlock()
+	g.drain()
+}
 
-	if onChange != nil {
-		onChange(engine.AdmissionChange{Source: src, On: on, Live: live, High: high, Low: low, Shedding: shedding})
+// drain reports the pending changes in order until none is left. The caller has set delivering.
+func (g *Gate) drain() {
+	drained := false
+	defer func() {
+		if drained {
+			return
+		}
+		// onChange panicked: hand the delivery role back so the next Set can take it.
+		g.mu.Lock()
+		g.delivering = false
+		g.mu.Unlock()
+	}()
+	for {
+		g.mu.Lock()
+		if len(g.pending) == 0 {
+			g.pending = nil
+			g.delivering = false
+			drained = true
+			g.mu.Unlock()
+			return
+		}
+		c := g.pending[0]
+		g.pending = g.pending[1:]
+		onChange := g.onChange
+		g.mu.Unlock()
+		if onChange != nil {
+			onChange(c)
+		}
 	}
 }
 
