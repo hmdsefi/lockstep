@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"io"
 	"sync/atomic"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -26,6 +27,12 @@ type Context[M any] struct {
 	// signal delivery, all in a turn of this incarnation, touch it; so does the stop sequence,
 	// which clears it in the turn that starts the stop (SUP-060 step 1).
 	watched watchedSet
+
+	// owned is the incarnation's resource list in registration order (SUP-120). Turn-owned:
+	// Own appends in a turn of this incarnation, and the stop sequence closes the list after
+	// Stopped, in the turn that completes the stop. The next incarnation has a Context and so a
+	// list of its own.
+	owned []io.Closer
 }
 
 // Self returns the actor's PID. It is the same for every incarnation of the actor.
