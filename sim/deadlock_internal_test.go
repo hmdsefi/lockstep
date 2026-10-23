@@ -125,6 +125,27 @@ func TestSIM250WorldEvents(t *testing.T) {
 	})
 }
 
+// SIM-250, SFT §6: the world events of Pressure and PressureFor go through the counted world path
+// with their label, lockstep/pressure, whose class is background: they are counted while pending
+// and never keep the world from being quiescent.
+func TestSIM250PressureEventsCounted(t *testing.T) {
+	Simulate(t, Options{Options: faultline.Options{Seeds: 1}}, func(s *Sim) {
+		w, tt := s.World(), s.World().T()
+		s.Node("n1", func(*lockstep.System) {})
+		w.RunFor(10 * time.Millisecond)
+		s.PressureFor("n1", time.Second)
+		s.Pressure("n1", PressureRule{Every: time.Hour, MinFor: time.Second, MaxFor: time.Second})
+		if n := s.world.byLabel[pressureLabel]; n != 2 || s.world.activity != 0 || !s.quiescent() {
+			tt.Errorf("%d pending %s world events, activity %d, quiescent() = %v; want 2, 0, true",
+				n, pressureLabel, s.world.activity, s.quiescent())
+		}
+		w.RunFor(2 * time.Second)
+		if n := s.world.byLabel[pressureLabel]; n != 1 {
+			tt.Errorf("%d pending %s world events after PressureFor's episode ended, want 1: the rule's next start", n, pressureLabel)
+		}
+	})
+}
+
 // SIM-250: when a node with pending asks, turns and timers crashes, each of its counted events is
 // subtracted exactly once, whether Discard cancels it or the crash drops it: every count returns
 // to zero, and none goes below zero (eventCounts.add panics if one would).

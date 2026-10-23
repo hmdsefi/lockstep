@@ -5,7 +5,6 @@ package sim
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel"
@@ -19,6 +18,7 @@ type Sim struct {
 	w      *faultline.World
 	ended  bool
 	system []lockstep.Option // Options.System, applied at every boot (SIM-070)
+	budget Budget            // Options.Budget, for every node system (SFT-140)
 
 	// slots holds the first failure stored for each named check, indexed like checkNames.
 	slots [len(checkNames)]error
@@ -34,6 +34,10 @@ type Sim struct {
 	handlers map[string]func(c EffectCall) EffectResult
 
 	counts Counts
+
+	// pairs holds the pair rules of DelayBetween and DropBetween by pair; it is read by key only
+	// (SFT-060, SIM-330).
+	pairs map[pairKey]*pairRule
 
 	// events counts the pending node events of every engine by label and class, and world the
 	// pending world events sim scheduled (SIM-250). askGen changes whenever the number of pending
@@ -52,6 +56,10 @@ type node struct {
 	// be built and after a crash.
 	eng *simEngine
 	sys *lockstep.System
+
+	// pressure counts the node's active pressure episodes. It belongs to the kernel node, so it
+	// survives crashes and restarts (SFT-125).
+	pressure int
 }
 
 // World returns the faultline World of this run.
@@ -125,7 +133,7 @@ func (s *Sim) fifo(a, b kernel.NodeID) {
 func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e := newEngine(s, n, n.Incarnation())
 	ln.eng = e
-	b, err := hooks.NewSystem(e.bundle, slices.Clip(s.system))
+	b, err := hooks.NewSystem(e.bundle, s.systemOptions())
 	if err != nil {
 		ln.sys = nil
 		e.misuse(err)
@@ -140,8 +148,8 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e.host = b.Host
 	s.w.Net.Handle(n, e.arrive)
 
-	// Apply the node's pressure state to e's admission gate (SFT-125). This step comes with SFT's
-	// pressure support in plan 1.5; until then a node has no pressure state.
+	// Apply the node's pressure state to e's admission gate (SFT-125).
+	ln.bootPressure(e)
 
 	ln.sys = sys
 	ln.setup(sys)

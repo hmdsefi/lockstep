@@ -122,6 +122,10 @@ type simEngine struct {
 	events  eventCounts
 	labels  []string
 	dropped bool
+
+	// budgetExceeded is the state of the budget source of gate (SFT-140): one per system, since
+	// every boot has a fresh gate.
+	budgetExceeded bool
 }
 
 // newEngine returns the engine of incarnation inc of node n, with its bundle (SIM-070, SIM §5.3).
@@ -140,7 +144,7 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Admission:  e.gate, // a fresh gate per boot (SFT-150)
 		Failer:     e,
 		Waiter:     e,
-		Interposer: nil, // SFT-070
+		Interposer: e, // the pair rules (SFT-070)
 		Stop:       e.kill,
 	}
 	return e
@@ -327,13 +331,17 @@ func (e *simEngine) Rand(label string) *rand.Rand {
 func (e *simEngine) Enabled() bool { return true }
 
 // Record emits a runtime record as a kernel record of the node, with the text of its owner's
-// template (SIM-185). A dead engine records nothing (SIM-120).
+// template (SIM-185), then re-reads the system's usage against Options.Budget after a record
+// that can change it (SFT-140). A dead engine records nothing (SIM-120).
 func (e *simEngine) Record(kind string, attrs ...engine.Attr) {
 	if e.dead {
 		return
 	}
 	e.emit(kind, recordText(kind, attrs), attrs)
 	e.checkLeak(kind, attrs) // after the record it is about (SIM-290)
+	if changesUsage(kind) {
+		e.checkBudget()
+	}
 }
 
 // Describe returns kernel.Describe(v) (SIM-185).

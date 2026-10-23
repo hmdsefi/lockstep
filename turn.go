@@ -155,6 +155,14 @@ func (c *cell[M]) processSystem(m sysMsg) {
 		c.endIncarnation(m)
 	case resume:
 		c.resumeIncarnation(m)
+	case inject:
+		// A failure of the current incarnation, as one in Receive would be (SFT-040); in any
+		// other state there is nothing to fail.
+		if c.state == supervise.Running {
+			c.handlerFailed(supervise.InInjected, m.err)
+		} else {
+			c.sys.recordDropNotRunning(c.addr, m)
+		}
 	}
 }
 
