@@ -6,8 +6,7 @@ package sim
 import "github.com/hmdsefi/faultline"
 
 // Sim is the lockstep view of one simulated world. Call its methods on the simulation
-// goroutine: from body, kernel callbacks (actor code included) and checks. A Sim belongs to one
-// run; its methods panic once that run has ended.
+// goroutine: from body, kernel callbacks (actor code included) and checks.
 type Sim struct {
 	w     *faultline.World
 	ended bool

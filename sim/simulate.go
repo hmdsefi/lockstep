@@ -24,11 +24,10 @@ type Options struct {
 
 // Simulate runs body once for every run of every seed, as faultline.Run does, with a fresh Sim
 // built on that run's World. body adds lockstep nodes, registers handlers, faults and checks,
-// and may drive the run with s.World().RunFor.
+// and may drive the run with s.World().RunFor, Send and Ask.
 //
-// Simulate reads LOCKSTEP_CHECK_DETERMINISM once per call, before any seed runs: "1" runs every
-// seed twice and compares the traces; "" and "0" change nothing. Invalid options or another
-// value of the variable fail t before any seed runs.
+// Simulate reads LOCKSTEP_CHECK_DETERMINISM once per call, before any seed runs:
+// LOCKSTEP_CHECK_DETERMINISM=1 runs every seed twice and compares the traces.
 func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 	t.Helper()
 	fo := setup(t, opts)
@@ -81,11 +80,14 @@ type runner struct {
 }
 
 // run is the function passed to faultline: it ends the previous run's Sim (SIM-040), builds a
-// new one on w and calls body with it.
+// new one on w and calls body with it. The Sim also ends when the seed subtest's cleanups run:
+// registered after body returns, this cleanup runs before the ones body registered.
 func (r *runner) run(w *faultline.World) {
 	r.end()
-	r.cur = &Sim{w: w}
-	r.body(r.cur)
+	s := &Sim{w: w}
+	r.cur = s
+	r.body(s)
+	w.T().Cleanup(func() { s.ended = true })
 }
 
 // end ends the Sim of the latest run, if any.
