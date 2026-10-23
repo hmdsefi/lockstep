@@ -181,11 +181,14 @@ func attrValue(attrs []engine.Attr, key string) string {
 
 // Fail reports misuse the runtime detected (SIM-190, ENG-130). A dead engine ignores it
 // (SIM-120): the system of a crashed or stopped node makes no more calls that count.
-func (e *simEngine) Fail(err error) {
-	if e.dead {
-		return
+func (e *simEngine) Fail(err error) { e.liveMisuse(err) }
+
+// liveMisuse is misuse unless e is dead: a dead engine records and stores nothing (SIM-120). Fail,
+// Wait and the effect handlers' misuse (EFF-440, EFF-460) go through it.
+func (e *simEngine) liveMisuse(err error) {
+	if !e.dead {
+		e.misuse(err)
 	}
-	e.misuse(err)
 }
 
 // misuse emits lockstep.misuse with err's text and stores err in the lockstep/misuse slot unless
@@ -214,8 +217,6 @@ func (e *simEngine) Wait(_ context.Context, done <-chan struct{}) error {
 		return nil
 	}
 	err := fmt.Errorf("lockstep: sim: wait on a pending reply from the test body; use sim.Ask: %w", lockstep.ErrAwaitInActor)
-	if !e.dead {
-		e.misuse(err)
-	}
+	e.liveMisuse(err)
 	return err
 }

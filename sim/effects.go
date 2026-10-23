@@ -54,7 +54,7 @@ type EffectResult struct {
 // applies to Do calls made after it. It panics if name is invalid or starts with "lockstep.".
 func (s *Sim) HandleEffect(name string, h func(c EffectCall) EffectResult) {
 	s.check()
-	if !validEffectName(name) {
+	if !engine.ValidEffectName(name) {
 		panic(fmt.Sprintf("lockstep: sim: HandleEffect: invalid effect name %q", name))
 	}
 	if strings.HasPrefix(name, "lockstep.") {
@@ -68,24 +68,6 @@ func (s *Sim) HandleEffect(name string, h func(c EffectCall) EffectResult) {
 		s.handlers = make(map[string]func(c EffectCall) EffectResult)
 	}
 	s.handlers[name] = h
-}
-
-// validEffectName reports whether name matches EFF-010's pattern
-// ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.
-func validEffectName(name string) bool {
-	if len(name) < 1 || len(name) > 64 {
-		return false
-	}
-	for i := range len(name) {
-		b := name[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		case i > 0 && (b == '.' || b == '_' || b == '-'):
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // Start is the engine's Effects. It never calls req.Run (EFF-400): it calls the Sim's handler
@@ -109,12 +91,12 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 		e.s.store(checkNoEffectHandler, fmt.Errorf("%w: effect %q called by %s", lockstep.ErrNoEffectHandler, req.Name, req.Actor))
 		return cancelOnce()
 	}
-	res, ok := e.callHandler(h, req)
+	res, ok := e.callHandler(h, e.effectCall(req))
 	if !ok {
 		return cancelOnce()
 	}
 	if res.Latency < 0 {
-		e.handlerMisuse(fmt.Errorf("lockstep: effect %q: handler returned negative latency %s", req.Name, res.Latency))
+		e.liveMisuse(fmt.Errorf("lockstep: effect %q: handler returned negative latency %s", req.Name, res.Latency))
 		return cancelOnce()
 	}
 	if !e.canSchedule() { // the handler crashed the node or stopped its system
@@ -130,21 +112,11 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 	return func() bool { return e.n.Cancel(id) }
 }
 
-// callHandler calls h with the EffectCall of req and reports whether h returned. A panic in h is
-// recovered here, not by the actor's guarded call, and fails the seed with EFF-460's misuse
-// failure. runtime.Goexit is not stopped.
-func (e *simEngine) callHandler(h func(c EffectCall) EffectResult, req engine.EffectRequest) (res EffectResult, ok bool) {
-	defer func() {
-		if ok {
-			return
-		}
-		if v := recover(); v != nil {
-			e.handlerMisuse(fmt.Errorf("lockstep: effect handler %q panicked: %s", req.Name, kernel.Describe(v)))
-		}
-	}()
+// effectCall returns the EffectCall of req on e's node and incarnation (EFF-400, EFF-420).
+func (e *simEngine) effectCall(req engine.EffectRequest) EffectCall {
 	actor, _ := hooks.Address(req.Actor).(lockstep.Address)
 	node := e.n.Name()
-	c := EffectCall{
+	return EffectCall{
 		Name:   req.Name,
 		Node:   node,
 		Actor:  actor,
@@ -153,15 +125,21 @@ func (e *simEngine) callHandler(h func(c EffectCall) EffectResult, req engine.Ef
 		node:   e.n,
 		stream: e.s.w.Sim.Rand("lockstep/effect/" + node + "/" + strconv.FormatUint(uint64(e.inc), 10) + "/" + req.Name), // EFF-420
 	}
-	return h(c), true
 }
 
-// handlerMisuse fails the seed through lockstep/misuse for a handler's misuse (EFF-440, EFF-460),
-// unless the handler killed the engine, which then records nothing (SIM-120).
-func (e *simEngine) handlerMisuse(err error) {
-	if !e.dead {
-		e.misuse(err)
-	}
+// callHandler calls h with c and reports whether h returned. A panic in h is recovered here, not
+// by the actor's guarded call, and fails the seed with EFF-460's misuse failure, unless h killed
+// the engine. runtime.Goexit is not stopped.
+func (e *simEngine) callHandler(h func(c EffectCall) EffectResult, c EffectCall) (res EffectResult, ok bool) {
+	defer func() {
+		if ok {
+			return
+		}
+		if v := recover(); v != nil {
+			e.liveMisuse(fmt.Errorf("lockstep: effect handler %q panicked: %s", c.Name, kernel.Describe(v)))
+		}
+	}()
+	return h(c), true
 }
 
 // notPending is the Cancel of an effect the engine never started on a dead engine (SIM-120).

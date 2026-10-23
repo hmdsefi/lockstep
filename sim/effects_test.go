@@ -7,15 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/hmdsefi/faultline/artifact"
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/faultline/kernel/fault"
 	"github.com/hmdsefi/lockstep"
@@ -352,36 +348,6 @@ func failingQuote(t *testing.T, install func(s *sim.Sim), q func(s *sim.Sim) *qu
 // plainQuoter returns a Quoter that prints fetchedMarker for every Fetched.
 func plainQuoter(*sim.Sim) *quoter { return &quoter{onOther: printFetched} }
 
-// failingSeedOutput is failingSeed that also returns the child's output.
-func failingSeedOutput(t *testing.T, name string) (failure, string) {
-	t.Helper()
-	dir := t.TempDir()
-	out, code := runScenario(t, name, "FAULTLINE_ARTIFACTS="+dir)
-	if code == 0 {
-		t.Fatalf("scenario %s exited 0, want a failing seed\n%s", name, out)
-	}
-	var reports []string
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && d.Name() == "report.json" {
-			reports = append(reports, path)
-		}
-		return err
-	})
-	if err != nil || len(reports) != 1 {
-		t.Fatalf("scenario %s: %v; %d report.json files under %s, want 1\n%s", name, err, len(reports), dir, out)
-	}
-	f, err := os.Open(reports[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	r, err := artifact.ReadReport(f)
-	if err != nil || r.Failure == nil {
-		t.Fatalf("scenario %s: report %v, failure %v\n%s", name, err, r.Failure, out)
-	}
-	return failure{Kind: r.Failure.Kind, Check: r.Failure.Check, Signature: r.Failure.Signature, Message: r.Failure.Message}, out
-}
-
 // wantSeedFailure checks that scenario name fails its seed with check and message, and that its
 // Quoter never received a Fetched. It returns the child's output.
 func wantSeedFailure(t *testing.T, name, check, message string) string {
@@ -397,7 +363,10 @@ func wantSeedFailure(t *testing.T, name, check, message string) string {
 	return out
 }
 
-// noHandlerMessage is EFF-450's failure text for the Quoter of failingQuote.
+// noHandlerMessage is EFF-450's failure text for the Quoter of failingQuote. Its uid 0x100000003
+// is epoch 1 (the node's first incarnation) in the high 32 bits and seq 3 in the low ones: the
+// user and system guardians take seqs 1 and 2 (ACT-030, ACT-040), and the Quoter is the first
+// actor that setup spawns.
 const noHandlerMessage = `lockstep: no effect handler: effect "prices.fetch" called by lockstep://n1/user/q#100000003`
 
 // With no handler, the Quoter's Do stores EFF-450's failure; a failed in-process check stores
@@ -652,6 +621,67 @@ func TestATEFF15DonePanics(t *testing.T) {
 	})
 }
 
+// EFF-430, ENG §4.1: with latency 0 the result still arrives in a later lockstep/effect event at
+// the same virtual time, so done never runs inside Start or the turn that called Do.
+func TestEFF430ZeroLatency(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var got []fetchedAt
+		var doneInTurn []int
+		s.HandleEffect(fetchName, constLatency(int64(7), 0))
+		n1, q := addQuoter(s, &quoter{got: &got, onQuote: func(ctx *lockstep.Context[QMsg], m Quote) {
+			fetchQuote(ctx, m.Sym)
+			doneInTurn = append(doneInTurn, len(ofKind(w.Sim.Records(), "lockstep.effect.done"))+len(got))
+		}})
+		w.RunFor(time.Second)
+		send(tt, s, *q, Quote{"X"})
+		w.RunFor(time.Second)
+
+		if !slices.Equal(doneInTurn, []int{0}) {
+			tt.Errorf("effect.done records plus Fetched in the turn of Do: %v, want [0]", doneInTurn)
+		}
+		if want := []fetchedAt{{Fetched{7, nil}, at(time.Second)}}; !slices.Equal(got, want) {
+			tt.Errorf("Fetched %v, want %v", got, want)
+		}
+		recs := w.Sim.Records()
+		i := slices.IndexFunc(recs, func(r kernel.Record) bool { return r.Kind == "lockstep.effect.done" })
+		if i < 0 {
+			tt.Fatal("no effect.done record")
+		}
+		var event kernel.Record
+		for _, r := range recs[:i] {
+			if r.Kind == "kernel.event" {
+				event = r
+			}
+		}
+		if event.Text != "lockstep/effect" || event.Node != n1.ID() || ran(recs, n1, "lockstep/effect") != 1 {
+			tt.Errorf("effect.done follows event %q on node %d, want the one lockstep/effect event of n1", event.Text, event.Node)
+		}
+	})
+}
+
+// EFF-470, EFF-410: a handler may install and replace handlers; the change applies to later Do
+// calls.
+func TestEFF470HandleEffectInHandler(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var got []fetchedAt
+		s.HandleEffect(fetchName, func(sim.EffectCall) sim.EffectResult {
+			s.HandleEffect(fetchName, constLatency(int64(200), 2*time.Millisecond)) // later than this result: equal times tie-break by seed
+			return sim.EffectResult{Value: int64(100), Latency: time.Millisecond}
+		})
+		_, q := addQuoter(s, &quoter{got: &got})
+		w.RunFor(time.Second)
+		send(tt, s, *q, Quote{"X"})
+		send(tt, s, *q, Quote{"X"})
+		w.RunFor(time.Second)
+
+		if len(got) != 2 || got[0].P != 100 || got[1].P != 200 {
+			tt.Errorf("Fetched %v, want 100 then 200", got)
+		}
+	})
+}
+
 // A removed handler is the same as none.
 var _ = scenario("eff-handler-removed", func(t *testing.T) {
 	failingQuote(t, func(s *sim.Sim) {
@@ -664,7 +694,7 @@ var _ = scenario("eff-handler-removed", func(t *testing.T) {
 // removes the handler.
 func TestATEFF16HandleEffectNames(t *testing.T) {
 	t.Run("names", func(t *testing.T) {
-		sim.Simulate(t, sim.Options{}, func(s *sim.Sim) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 			tt := s.World().T()
 			h := constLatency(nil, 0)
 			expectPanic(tt, `lockstep: sim: HandleEffect: name "lockstep.journal.append" is reserved for lockstep's built-in effects`,

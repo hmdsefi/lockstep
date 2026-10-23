@@ -116,6 +116,13 @@ type failure struct {
 // seed, so that faultline writes one report.
 func failingSeed(t *testing.T, name string) failure {
 	t.Helper()
+	f, _ := failingSeedOutput(t, name)
+	return f
+}
+
+// failingSeedOutput is failingSeed that also returns the child's combined output.
+func failingSeedOutput(t *testing.T, name string) (failure, string) {
+	t.Helper()
 	dir := t.TempDir()
 	out, code := runScenario(t, name, "FAULTLINE_ARTIFACTS="+dir)
 	if code == 0 {
@@ -146,5 +153,5 @@ func failingSeed(t *testing.T, name string) failure {
 	if r.Failure == nil {
 		t.Fatalf("scenario %s: report.json has status %q and no failure\n%s", name, r.Status, out)
 	}
-	return failure{Kind: r.Failure.Kind, Check: r.Failure.Check, Signature: r.Failure.Signature, Message: r.Failure.Message}
+	return failure{Kind: r.Failure.Kind, Check: r.Failure.Check, Signature: r.Failure.Signature, Message: r.Failure.Message}, out
 }
