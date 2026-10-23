@@ -63,7 +63,7 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Failer:     e,
 		Waiter:     e,
 		Interposer: nil, // SFT-070
-		Stop:       e.stop,
+		Stop:       e.kill,
 	}
 	return e
 }
@@ -95,10 +95,12 @@ func (e *simEngine) postTurn(a engine.ActorRef) {
 	})
 }
 
-// stop is the bundle's Stop, which System.Shutdown calls after every actor stopped (ENG-140): it
-// marks the engine dead (SIM-195, SIM-120). The node stays up, and System keeps returning the
+// kill marks the engine dead, so it ignores every seam call from now on (SIM-120). It is the one
+// way an engine dies: the crash hook calls it when the node crashes, before the system is
+// discarded (SIM-110), and it is the bundle's Stop, which System.Shutdown calls after every actor
+// stopped (ENG-140, SIM-195). After a Stop the node stays up, and System keeps returning the
 // stopped system until the next boot.
-func (e *simEngine) stop() { e.dead = true }
+func (e *simEngine) kill() { e.dead = true }
 
 // InTurn reports whether the caller runs inside a kernel callback (SIM-195, ENG-055).
 func (e *simEngine) InTurn() bool { return kernel.Active() != nil }
