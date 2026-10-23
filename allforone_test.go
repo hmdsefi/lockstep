@@ -117,9 +117,10 @@ func TestATSUP26AllForOneRestartOrder(t *testing.T) {
 	})
 }
 
-// SUP-260: a supervisor that stops during the group's delay pushes no begin: no child starts
-// incarnation 2, and its stop stops every child, those in Restarting included, without a second
-// Stopped call.
+// SUP-260: a supervisor that stops during the group's delay cancels the timer, so no begin is
+// pushed when the delay ends, even though the stop is still in progress then and the children it
+// has not reached are still in Restarting. No child starts incarnation 2, and the stop stops every
+// child, those in Restarting included, without a second Stopped call.
 func TestSUP260GroupRestartCancelledByStop(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var obs []string
@@ -132,11 +133,14 @@ func TestSUP260GroupRestartCancelledByStop(t *testing.T) {
 			t.Fatalf("c%d is %v, want restarting", i+1, st)
 		}
 	}
+	release := Hold(sys, c[2].Address()) // the stop waits for C3, the first child it stops
 	if err := Stop(sys, s.Address()); err != nil {
 		t.Fatal(err)
 	}
 	eng.RunUntilIdle()
-	eng.Advance(5 * time.Second)
+	eng.Advance(5 * time.Second) // the delay ends while C1 and C2 still wait for their stop
+	release()
+	eng.RunUntilIdle()
 
 	if got := withPrefix(obs, "started "); len(got) != 3 {
 		t.Errorf("started observations %q, want only incarnation 1's", got)
@@ -361,4 +365,54 @@ func TestSUP260GuardianAllForOne(t *testing.T) {
 			t.Error("the shutdown did not complete")
 		}
 	})
+}
+
+// SUP-260: a supervisor that stops cancels every group delay timer, also one due at the very
+// instant at which another group restart is decided. The manual engine fires timers due together in
+// the order they were armed, running every turn between them. Here timer A (group {C1}) fires and
+// C1 fails again in Started; the supervisor decides a third group restart, arming its timer at
+// that instant, while timer B (group {C4}) is still pending; then a test timer stops the supervisor
+// while it waits for C4, which it has asked to stop, and B fires. B must push no begin.
+func TestSUP260StopCancelsTimersDueTogether(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	var c1, c4 PID[any]
+	st := allForOne(time.Second)
+	st.MaxBackoff = time.Second // every delay is one second
+	s, err := Spawn(sys, "s", actorOf[any](spawnsOnDemand{
+		rProbe: &rProbe{obs: new([]string), onStart: func(ctx *Context[any]) {
+			c1 = spawnR(t, ctx, "c1", &rProbe{obs: &obs, onStart: func(ctx *Context[any]) {
+				if ctx.inc == 2 {
+					panic("again")
+				}
+			}})
+		}},
+		t: t, obs: &obs, c4: &c4,
+	}), WithStrategy(st))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	send(t, sys, c1, any("fail"))
+	eng.RunUntilIdle() // timer A, due at 1s
+	sys.eng.Clock.AfterFunc(time.Second, "test", func() {
+		if err := Stop(sys, s.Address()); err != nil {
+			t.Error(err)
+		}
+	})
+	send(t, sys, s, any("spawn"))
+	eng.RunUntilIdle()
+	send(t, sys, c4, any("fail"))
+	eng.RunUntilIdle() // timer B, due at 1s, armed after A and the test timer
+	release := Hold(sys, c4.Address())
+	eng.Advance(time.Second)
+
+	if n := cellOf(t, sys, c4).sysq.Len(); n != 1 {
+		t.Errorf("C4's system queue holds %d messages, want only the stop request", n)
+	}
+	release()
+	eng.RunUntilIdle()
+	if got := withPrefix(obs, "started /user/s/c4"); len(got) != 1 {
+		t.Errorf("C4 started observations %q, want only incarnation 1's", got)
+	}
 }

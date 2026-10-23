@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -39,10 +40,14 @@ func (op *groupOp) waits(child Address) bool {
 	return !op.wait.addr.IsZero() && op.wait.addr == child
 }
 
-// pendingBegin is the delay timer of a group restart and the time it is due.
+// pendingBegin is the delay timer of a group restart. The timer's callback runs in engine context,
+// outside any turn, so the two flags are atomic: the callback sets fired when it starts, and
+// abandonGroup sets abandoned, which the callback checks before it pushes anything. That closes
+// the window in which Cancel loses to a callback that has started (ENG-070).
 type pendingBegin struct {
-	cancel engine.Cancel
-	due    time.Time
+	cancel    engine.Cancel
+	fired     atomic.Bool
+	abandoned atomic.Bool
 }
 
 // startGroup starts the group operation for the directive just applied to the failed child of n:
@@ -110,26 +115,27 @@ func (sv *supervisor) beginGroup(sys *System, op *groupOp, from engine.ActorRef)
 		return
 	}
 	members, guardian := op.members, sv.guardian
-	now := sys.eng.Clock.Now()
-	// The timers that have come due have fired or are about to; dropping their handles keeps the
-	// list from growing with every restart.
-	sv.begins = slicesDeleteDue(sv.begins, now)
-	cancel := sys.eng.Clock.AfterFunc(op.delay, "lockstep/backoff", func() {
-		if guardian && sys.closing.Load() {
+	// A timer that has fired needs no cancelling; dropping its handle keeps the list from growing
+	// with every restart. One that is due but has not fired yet stays.
+	sv.begins = pruneFired(sv.begins)
+	b := new(pendingBegin)
+	b.cancel = sys.eng.Clock.AfterFunc(op.delay, "lockstep/backoff", func() {
+		b.fired.Store(true)
+		if b.abandoned.Load() || guardian && sys.closing.Load() {
 			return
 		}
 		for _, m := range members {
 			sys.beginRestart(m.addr, m.inc, nil)
 		}
 	})
-	sv.begins = append(sv.begins, pendingBegin{cancel: cancel, due: now.Add(op.delay)})
+	sv.begins = append(sv.begins, b)
 }
 
-// slicesDeleteDue returns begins without the timers due at or before now.
-func slicesDeleteDue(begins []pendingBegin, now time.Time) []pendingBegin {
+// pruneFired returns begins without the timers whose callback has started.
+func pruneFired(begins []*pendingBegin) []*pendingBegin {
 	kept := begins[:0]
 	for _, b := range begins {
-		if b.due.After(now) {
+		if !b.fired.Load() {
 			kept = append(kept, b)
 		}
 	}
@@ -163,6 +169,7 @@ func (sv *supervisor) abandonGroup() {
 	sv.op = nil
 	sv.held = nil
 	for _, b := range sv.begins {
+		b.abandoned.Store(true)
 		b.cancel()
 	}
 	sv.begins = nil

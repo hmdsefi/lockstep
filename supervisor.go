@@ -51,7 +51,7 @@ type supervisor struct {
 	held []failed
 	// begins holds the delay timers of the group restarts that may still be pending, for the end
 	// of the supervisor's incarnation to cancel (SUP-260).
-	begins []pendingBegin
+	begins []*pendingBegin
 }
 
 // kidState is a supervisor's state for one child under OneForOne (SUP-250).
