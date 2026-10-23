@@ -139,17 +139,17 @@ func TestATEFF22LocalOverload(t *testing.T) {
 
 	testG := goroutineID()
 	var started, overRan, onTestOrLoop atomic.Int32
-	blocked := func(ctx context.Context) (int64, error) {
+	blocked := func(ctx context.Context) int64 {
 		started.Add(1)
 		if goroutineID() == testG || sys.eng.Scheduler.InTurn() {
 			onTestOrLoop.Add(1)
 		}
 		<-ctx.Done() // the shutdown at the end of the test cancels it
-		return 0, nil
+		return 0
 	}
 	send(t, sys, pid, any(func(ctx *Context[any]) {
 		for range running + queued {
-			Do(ctx, funcEffect{"wait", blocked}, func(v int64, err error) any { return fetched{v, err} }, WithEffectTimeout(time.Hour))
+			Do(ctx, funcEffect{"wait", func(ctx context.Context) (int64, error) { return blocked(ctx), nil }}, func(v int64, err error) any { return fetched{v, err} }, WithEffectTimeout(time.Hour))
 		}
 		Do(ctx, funcEffect{"over", func(context.Context) (int64, error) {
 			overRan.Add(1)

@@ -85,8 +85,8 @@ func WithEffectTimeout(d time.Duration) EffectOption {
 // Do starts effect e for the actor of ctx and returns its ID. When the effect's outcome is
 // delivered, a later turn of the actor calls done with the result, or with the zero T and
 // ErrTimeout or ErrOverloaded, and passes done's return value to Receive. done runs on the
-// actor's turn, never concurrently with Receive. If the incarnation ends first, done is never
-// called.
+// actor's turn, never concurrently with Receive. If the incarnation ends or CancelEffect cancels
+// the effect first, done is never called.
 //
 // Do panics if e is nil, e.Name() is invalid, done is nil, or an option is invalid.
 func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...EffectOption) EffectID {
@@ -245,13 +245,14 @@ func (c *cell[M]) takeEffect(pe *pendingEffect[M]) (cancelRun engine.Cancel, ok 
 // cancelEffect cancels pe if it is still pending (EFF-100, EFF-110) and reports whether it did: it
 // cancels the timeout timer, calls the engine's Cancel, then records outcome=cancelled. done is
 // never called for it, and an engine result that arrives anyway is ignored (EFF-060). Only the
-// cell's turn calls it, so Do has returned and cancelRun is set. It runs no user code.
+// cell's turn calls it, so Do has returned and cancelTimer and cancelRun are set. It runs no user
+// code.
 func (c *cell[M]) cancelEffect(pe *pendingEffect[M]) bool {
-	cancelTimer, cancelRun, ok := c.takeEffect(pe)
+	cancelRun, ok := c.takeEffect(pe)
 	if !ok {
 		return false
 	}
-	cancelTimer()
+	pe.cancelTimer()
 	if cancelRun != nil {
 		cancelRun()
 	}
