@@ -73,7 +73,7 @@ func (s *Sim) faultTarget(addr lockstep.Address) (kernel.NodeID, *lockstep.Syste
 
 // recordFault emits lockstep.fault for the fault op on kernel node node, with op as its first
 // attribute followed by attrs (SFT §8). The delay and drop faults of pair rules record through it
-// too.
+// too, on node 0.
 func (s *Sim) recordFault(node kernel.NodeID, op string, attrs ...kernel.Attr) {
 	all := make([]kernel.Attr, 0, len(attrs)+1)
 	all = append(all, kernel.Attr{Key: "op", Value: op})

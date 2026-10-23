@@ -144,7 +144,7 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Admission:  e.gate, // a fresh gate per boot (SFT-150)
 		Failer:     e,
 		Waiter:     e,
-		Interposer: nil, // SFT-070
+		Interposer: e, // the pair rules (SFT-070)
 		Stop:       e.kill,
 	}
 	return e
