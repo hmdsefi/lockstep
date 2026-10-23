@@ -627,10 +627,12 @@ func liveHeap(tb testing.TB) uint64 {
 }
 
 // settledGoroutines returns runtime.NumGoroutine() once it has not changed for 20 ms, so that the
-// goroutine of a finished subtest that is still returning does not count.
+// goroutine of a finished subtest that is still returning does not count. If the count keeps
+// changing it returns the last count after 10 s.
 func settledGoroutines() int {
 	n := runtime.NumGoroutine()
-	for stable := 0; stable < 20; {
+	deadline := time.Now().Add(10 * time.Second)
+	for stable := 0; stable < 20 && time.Now().Before(deadline); {
 		time.Sleep(time.Millisecond)
 		if m := runtime.NumGoroutine(); m != n {
 			n, stable = m, 0
@@ -644,7 +646,7 @@ func settledGoroutines() int {
 // AT-OVL-25 (the observable half), OVL-230: a simulation with every host-state option set and a
 // Go memory limit below the live heap runs spawning and sending for 10 s of virtual time and
 // passes; no admission source turns on, no kernel event is labeled lockstep/overload-sample, and
-// the host's goroutine count is the same after Simulate as before. The hooks that replace
+// the host's goroutine count and Go memory limit are the same after Simulate as before. The hooks that replace
 // metrics.Read, runtime.NumGoroutine, runtime.Stack and pprof with panicking functions need the
 // production sampler (plan 2.2) and are not part of this test.
 func TestATOVL25NoHostState(t *testing.T) {
@@ -702,6 +704,9 @@ func TestATOVL25NoHostState(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("runtime.NumGoroutine() is %d after Simulate, was %d before", after, before)
+	}
+	if got := debug.SetMemoryLimit(-1); got != limit {
+		t.Errorf("the Go memory limit is %d after Simulate, want %d: simulation must not set it", got, limit)
 	}
 }
 
