@@ -129,6 +129,14 @@ type cell[M any] struct {
 	nextTimer TimerID               // the last TimerID allocated: survives restarts (TMR-040)
 	timers    map[TimerID]*timer[M] // timers.go
 
+	// emu is the cell's effect lock (EFF §11): the engine's result and the timeout callbacks run in
+	// engine context, which on the local engine is a goroutine other than the turn. It guards
+	// effects and the cancelRun field of its entries, and is taken for table reads and writes only:
+	// never while holding or taking another lock of the cell, never across an engine call or user
+	// code.
+	emu     sync.Mutex
+	effects map[EffectID]*pendingEffect[M] // the incarnation's pending effects (effect.go)
+
 	// sup is the cell's supervision of its children with the strategy of its WithStrategy option
 	// (SUP-170 to SUP-290). Turn-owned.
 	sup supervisor
