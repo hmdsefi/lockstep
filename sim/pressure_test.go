@@ -125,6 +125,45 @@ func TestATSFT13PressureRule(t *testing.T) {
 	}
 }
 
+// SFT-120: PressureFor draws nothing from the node's lockstep/pressure/<node> stream and ignores the
+// recovery start. A PressureFor episode at 1s, before Pressure starts a rule at 1s, leaves the rule's
+// episodes at the times a fresh stream gives (as in AT-SFT-13), and a PressureFor at 50s, after the
+// recovery start (45s), still turns pressure on and off.
+func TestSFT120PressureForDrawsNothing(t *testing.T) {
+	opts := fullTrace(5)
+	opts.Duration = 60 * time.Second
+	rule := sim.PressureRule{Every: 5 * time.Second, MinFor: time.Second, MaxFor: 2 * time.Second}
+	sim.Simulate(t, opts, func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		n1 := s.Node("n1", noSetup)
+		w.Plan(&fault.Random{
+			Rules: []fault.Rule{{Kind: fault.KindPause, Every: 10 * time.Second, MaxFor: time.Second}},
+			Quiet: 15 * time.Second,
+		})
+		w.RunFor(time.Second)
+		s.PressureFor("n1", 100*time.Millisecond)
+		s.Pressure("n1", rule)
+		w.RunFor(49 * time.Second)
+		s.PressureFor("n1", 2*time.Second)
+		w.RunFor(10 * time.Second)
+
+		rec := w.RecoveryStart()
+		if rec != vt(45*time.Second) {
+			tt.Fatalf("RecoveryStart() = %v, want 45s", rec)
+		}
+		ref := kernel.New(kernel.Config{Seed: w.Seed()}).Rand("lockstep/pressure/n1")
+		gap := func() time.Duration { return kernel.Uniform(ref, rule.Every/2, rule.Every+rule.Every/2) }
+		want := []string{change("on", time.Second), change("off", 1100*time.Millisecond)}
+		for start := vt(time.Second).Add(gap()); start < rec; {
+			end := min(start.Add(kernel.Uniform(ref, rule.MinFor, rule.MaxFor)), rec)
+			want = append(want, "on@"+start.String(), "off@"+end.String())
+			start = end.Add(gap())
+		}
+		want = append(want, change("on", 50*time.Second), change("off", 52*time.Second))
+		equalStrings(tt, "pressure changes on n1", pressureChanges(w.Sim.Records(), n1), want)
+	})
+}
+
 // pressureNode is the state of a node whose setup spawns a FailSend sink and a flaky actor that
 // fails once at failAt, and counts the flaky actor's starts.
 type pressureNode struct {
