@@ -35,6 +35,10 @@ type Sim struct {
 
 	counts Counts
 
+	// pairs holds the pair rules of DelayBetween and DropBetween by pair; it is read by key only
+	// (SFT-060, SIM-330).
+	pairs map[pairKey]*pairRule
+
 	// events counts the pending node events of every engine by label and class, and world the
 	// pending world events sim scheduled (SIM-250). askGen changes whenever the number of pending
 	// ask timeouts does, so whenever an ask starts or resolves; graphGen is the askGen of the last
