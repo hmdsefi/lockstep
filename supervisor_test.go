@@ -96,10 +96,17 @@ func sameObs(t *testing.T, obs, want []string) {
 // directiveRecord returns the attributes of lockstep.directive that supervisor sup records for a
 // failure of child's incarnation inc with error text err.
 func directiveRecord(sup, child Address, inc int, directive, err string, restarts int, delay time.Duration, limit bool) []string {
+	return directiveAttrs(sup, child, inc, directive, err, restarts, delay, limit, false)
+}
+
+// directiveAttrs is directiveRecord with the escalated attribute of SUP-300.
+func directiveAttrs(sup, child Address, inc int, directive, err string, restarts int, delay time.Duration,
+	limit, escalated bool,
+) []string {
 	return []string{
 		"supervisor=" + sup.String(), "child=" + child.String(), "inc=" + strconv.Itoa(inc),
 		"scope=one-for-one", "directive=" + directive, "err=" + err, "restarts=" + strconv.Itoa(restarts),
-		"delay=" + delay.String(), "limit=" + strconv.FormatBool(limit), "escalated=false",
+		"delay=" + delay.String(), "limit=" + strconv.FormatBool(limit), "escalated=" + strconv.FormatBool(escalated),
 	}
 }
 
@@ -576,8 +583,9 @@ func TestSUP300GuardianSupervision(t *testing.T) {
 	)
 }
 
-// SUP-180, SUP-270: a restart beyond MaxRestarts in the window becomes DirectiveEscalate, recorded
-// with limit true and the count already in the window.
+// SUP-180, SUP-270, SUP-300: a restart beyond MaxRestarts in the window becomes DirectiveEscalate,
+// which the user guardian applies as a stop: recorded with directive stop, limit true, escalated
+// true and the count already in the window.
 func TestSUP180RestartOverLimitEscalates(t *testing.T) {
 	s := r0()
 	s.MaxRestarts = 1
@@ -589,7 +597,7 @@ func TestSUP180RestartOverLimitEscalates(t *testing.T) {
 	}
 	sameRecords(t, recordsOf(eng.Records(), "lockstep.directive"), "lockstep.directive",
 		directiveRecord(sys.user, p.Address(), 1, "restart", "errX", 1, 0, false),
-		directiveRecord(sys.user, p.Address(), 2, "escalate", "errX", 1, 0, true),
+		directiveAttrs(sys.user, p.Address(), 2, "stop", "errX", 1, 0, true, true),
 	)
 }
 

@@ -102,3 +102,36 @@ func TestLimitsValidate(t *testing.T) {
 		}
 	}
 }
+
+// Count reports the restarts in the window at now, as Admit would see them, without adding or
+// removing a timestamp.
+func TestIntensityCount(t *testing.T) {
+	l := Limits{MaxRestarts: 3, Window: 10 * time.Second}
+	var in Intensity
+	if n := in.Count(epoch, l); n != 0 {
+		t.Fatalf("Count of an empty Intensity = %d, want 0", n)
+	}
+	for _, at := range []time.Duration{0, 4 * time.Second} {
+		if _, ok := in.Admit(epoch.Add(at), l); !ok {
+			t.Fatalf("Admit at %v refused", at)
+		}
+	}
+	for _, c := range []struct {
+		at   time.Duration
+		want int
+	}{
+		{5 * time.Second, 2},
+		{10 * time.Second, 1}, // t=0 has aged out
+		{14 * time.Second, 0},
+		{2 * time.Second, 2}, // a clock jump backwards keeps the later timestamp
+	} {
+		if n := in.Count(epoch.Add(c.at), l); n != c.want {
+			t.Errorf("Count at %v = %d, want %d", c.at, n, c.want)
+		}
+	}
+	// Count removed nothing: at 5s both restarts are still in the window, so one more is admitted
+	// and the next is refused.
+	if count, ok := in.Admit(epoch.Add(5*time.Second), l); count != 3 || !ok {
+		t.Errorf("Admit at 5s after Count = %d, %v; want 3, true", count, ok)
+	}
+}
