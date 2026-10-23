@@ -176,6 +176,7 @@ func (c *cell[M]) begin() {
 	c.mu.Unlock()
 	c.actor = a
 	c.ctx = &Context[M]{cell: c, inc: c.inc}
+	c.rng = nil // the stream of an earlier incarnation is never reused (TMR-120)
 	c.starter, _ = a.(Starter[M])
 	c.stopper, _ = a.(Stopper[M])
 	c.signals, _ = a.(SignalReceiver[M])
