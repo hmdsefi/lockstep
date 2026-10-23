@@ -121,6 +121,14 @@ func (r *Reply[R]) then(f func()) {
 	r.conts = append(r.conts, f)
 }
 
+// isResolved reports, without waiting, whether the ask has resolved (hooks.AskResolved, SIM-200).
+func (r *Reply[R]) isResolved() bool {
+	if r == nil {
+		panic("lockstep: nil Reply")
+	}
+	return r.resolved.Load()
+}
+
 // wrongType returns MSG-420's error for an answer v whose dynamic type is not R (a ReplyTo
 // converted between instantiations, or a remote reply from other code), and nil for an R or a nil
 // v. Type names are reflect's String, as in ACT's ErrWrongType texts.
