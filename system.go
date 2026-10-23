@@ -37,6 +37,10 @@ type System struct {
 
 	asks askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
 
+	// afterRegister, when set, is called by Spawn with the new cell between its registration and
+	// the push of its begin. It is a test hook; production code never sets it.
+	afterRegister func(c actorCell)
+
 	uidMu   sync.Mutex
 	epoch   uint32 // the epoch of the next uid
 	seq     uint64 // the seq of the next uid, 1 to 2^32-1 (ACT-040)
@@ -276,9 +280,8 @@ func (g *guardianSweep) next() bool {
 			return true
 		}
 		k := kids[len(kids)-1]
-		uid, a, ok := s.reg.Lookup(k.Path)
-		child, _ := a.(actorCell)
-		if !ok || child == nil || uid != k.UID {
+		child, ok := s.lookupCell(k)
+		if !ok {
 			continue // it completed its stop after Children returned
 		}
 		g.wait = Address{node: k.Node, path: k.Path, uid: k.UID}

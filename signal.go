@@ -21,30 +21,34 @@ type SignalReceiver[M any] interface {
 
 // signalMsg is the system message that carries a Signal to a cell (MSG-810, SUP-330). Signals
 // travel only through the system queue: they never count against the user mailbox's capacity and
-// never go through Send.
-type signalMsg struct{ sig Signal }
+// never go through Send. For a Terminated, seq is the sequence number of the Watch call it answers
+// (ACT-630); the public Terminated does not carry it.
+type signalMsg struct {
+	sig Signal
+	seq uint64
+}
 
 func (signalMsg) isSysMsg() {}
 
-// pushSignal appends sig to the system queue and schedules the cell (ENG-350). Signals run before
-// every user message (ENG-310 step 1). Plan 1.3's supervision and Watch (ACT-600) push signals
-// here; neither applies SUP-320's per-state rules before the push.
-func (c *cell[M]) pushSignal(sig Signal) { c.pushSystem(signalMsg{sig: sig}, nil) }
-
-// deliverSignal handles a signal at the head of the system queue (MSG-810). An incarnation that
-// implements SignalReceiver gets it in Signal, during a turn; any other ignores it without a
-// record. Only a running incarnation delivers: the other lifecycle states keep or drop signals by
-// SUP-320's rules, which arrive with plan 1.3.
+// deliverSignal handles the signal message m at the head of the system queue (MSG-810). An
+// incarnation that implements SignalReceiver gets the signal in Signal, during a turn; any other
+// ignores it without a record. Only a running incarnation delivers: the other lifecycle states keep
+// or drop signals by SUP-320's rules, which supervision applies.
 //
-// A Terminated whose Addr is not in the incarnation's watched set is skipped, and the address
-// leaves the set when the Terminated is delivered (ACT-630). An actor without SignalReceiver
-// consumes the watch the same way, so a later Watch of the address registers again.
-func (c *cell[M]) deliverSignal(sig Signal) {
+// A Terminated whose Addr is not in the incarnation's watched set, or is there under another Watch
+// call's sequence number, is skipped; the address leaves the set when the Terminated is delivered
+// (ACT-630). An actor without SignalReceiver consumes the watch the same way, so a later Watch of
+// the address registers again.
+func (c *cell[M]) deliverSignal(m signalMsg) {
 	if c.state != supervise.Running {
 		return
 	}
-	if t, ok := sig.(Terminated); ok && !c.ctx.watched.remove(t.Addr) {
-		return
+	sig := m.sig
+	if t, ok := sig.(Terminated); ok {
+		if seq, in := c.ctx.watched.seq(t.Addr); !in || seq != m.seq {
+			return
+		}
+		c.ctx.watched.remove(t.Addr)
 	}
 	if c.signals == nil {
 		return

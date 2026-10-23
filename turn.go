@@ -118,7 +118,7 @@ func (c *cell[M]) processSystem(m sysMsg) {
 	case begin:
 		c.begin()
 	case signalMsg:
-		c.deliverSignal(m.sig)
+		c.deliverSignal(m)
 	case stop:
 		c.startStop(m.reason)
 	case stopped:

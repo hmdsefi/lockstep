@@ -15,12 +15,14 @@ import (
 )
 
 // supProbe is SUP §10's Probe for the manual engine. It observes "started <path> <inc>",
-// "stopped <path> <reason>" and every message it receives, panics on "panic" and calls
-// ctx.Fail(errProbe) on "fail". onStart, when set, runs first in Started; receive, when set, replaces
-// the message handling.
+// "stopped <path> <reason>", "terminated <path> <reason>" for a Terminated signal, any other
+// signal, and every message it receives; it panics on "panic", calls ctx.Fail(errProbe) on "fail"
+// and ctx.Stop() on "stop". onStart, when set, runs first in Started; onStop, when set, runs last
+// in Stopped; receive, when set, replaces the message handling.
 type supProbe struct {
 	obs     *[]string
 	onStart func(ctx *Context[any])
+	onStop  func(ctx *Context[any], r StopReason)
 	receive func(ctx *Context[any], msg any)
 }
 
@@ -36,6 +38,17 @@ func (p *supProbe) Started(ctx *Context[any]) {
 
 func (p *supProbe) Stopped(ctx *Context[any], r StopReason) {
 	*p.obs = append(*p.obs, "stopped "+ctx.Self().Address().Path()+" "+r.String())
+	if p.onStop != nil {
+		p.onStop(ctx, r)
+	}
+}
+
+func (p *supProbe) Signal(_ *Context[any], sig Signal) {
+	if t, ok := sig.(Terminated); ok {
+		*p.obs = append(*p.obs, "terminated "+t.Addr.Path()+" "+t.Reason.String())
+		return
+	}
+	*p.obs = append(*p.obs, fmt.Sprint(sig))
 }
 
 func (p *supProbe) Receive(ctx *Context[any], msg any) {
@@ -49,6 +62,8 @@ func (p *supProbe) Receive(ctx *Context[any], msg any) {
 		panic("probe panic")
 	case "fail":
 		ctx.Fail(errProbe)
+	case "stop":
+		ctx.Stop()
 	}
 }
 

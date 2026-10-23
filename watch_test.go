@@ -319,7 +319,7 @@ func TestTerminatedSkipRule(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	pid, r := spawnRunner(t, sys, eng, "w")
 	c := cellOf(t, sys, pid)
-	c.pushSignal(Terminated{Addr: gone(), Reason: NoActor}) // never watched
+	c.pushSystem(signalMsg{sig: Terminated{Addr: gone(), Reason: NoActor}}, nil) // never watched
 	eng.RunUntilIdle()
 	if len(r.sigs) != 0 {
 		t.Errorf("an unwatched Terminated was delivered: %v", r.sigs)
@@ -331,8 +331,8 @@ func TestTerminatedSkipRule(t *testing.T) {
 	}
 	eng.RunUntilIdle()
 	pc := cellOf(t, sys, plain)
-	pc.ctx.watched.add(gone())
-	pc.pushSignal(Terminated{Addr: gone(), Reason: NoActor})
+	pc.ctx.watched.add(gone(), 7)
+	pc.pushSystem(signalMsg{sig: Terminated{Addr: gone(), Reason: NoActor}, seq: 7}, nil)
 	eng.RunUntilIdle()
 	if pc.ctx.watched.has(gone()) {
 		t.Error("the watched set of an actor without SignalReceiver still holds the delivered address")

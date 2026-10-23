@@ -130,6 +130,9 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bo
 		return refuse(err)
 	}
 	sys.recordSpawn(parent, c.addr, typ)
+	if sys.afterRegister != nil {
+		sys.afterRegister(c)
+	}
 	c.pushSystem(begin{}, from)
 	return PID[M]{addr: c.addr}, nil
 }

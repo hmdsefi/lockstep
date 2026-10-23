@@ -41,10 +41,13 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 		return nil
 	}
 
-	// The alive check and the registration are one registry operation (ACT-600).
+	// The alive check and the registration are one registry operation (ACT-600). The watch's
+	// sequence number goes with it to the Terminated that ends it (ACT-630).
+	c.watchSeq++
+	seq := c.watchSeq
 	w := registry.Watcher{Addr: registryAddr(c.addr), Inc: ctx.inc}
-	alive, added := sys.reg.AddWatch(registryAddr(addr), w)
-	ctx.watched.add(addr)
+	alive, added := sys.reg.AddWatch(registryAddr(addr), w, seq)
+	ctx.watched.add(addr, seq)
 	if alive {
 		if added {
 			sys.recordWatch(c.addr, addr, "true")
@@ -53,7 +56,7 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 	}
 	// Not alive: Terminated{addr, NoActor} is on the system queue before Watch returns (SUP-335).
 	sys.recordWatch(c.addr, addr, "false")
-	c.pushSignal(Terminated{Addr: addr, Reason: NoActor})
+	c.pushSystem(signalMsg{sig: Terminated{Addr: addr, Reason: NoActor}, seq: seq}, c)
 	return nil
 }
 
@@ -67,7 +70,7 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 	}
 	// A not-alive watch is in the set but on no registry list, so RemoveWatch's result does not
 	// decide the record (ACT-630, ACT-660): the Terminated that Watch queued is skipped at delivery
-	// instead.
+	// instead, and so is it after a later Watch of addr, which has another sequence number.
 	c := ctx.cell
 	c.sys.reg.RemoveWatch(registryAddr(addr), registry.Watcher{Addr: registryAddr(c.addr), Inc: ctx.inc})
 	c.sys.recordUnwatch(c.addr, addr)
@@ -108,13 +111,14 @@ func (s *System) registryWatchers(addr Address) []Address {
 }
 
 // watchedSet is an incarnation's watched set (ACT-600, ACT §11): the addresses it passed to Watch
-// whose Terminated it has not received, in insertion order. The slice keeps the order for Phase
-// 3's RemoteUnwatch pass (ACT-640); the map answers membership only and is never ranged over.
-// Only turns of the owning incarnation touch it, so it needs no lock. A new incarnation has a new
-// Context and so an empty set.
+// whose Terminated it has not received, in insertion order, each with the sequence number of the
+// Watch call that added it (ACT-630). The slice keeps the order for Phase 3's RemoteUnwatch pass
+// (ACT-640); the map answers lookups only and is never ranged over. Only turns of the owning
+// incarnation touch it, so it needs no lock. A new incarnation has a new Context and so an empty
+// set.
 type watchedSet struct {
 	list []Address
-	in   map[Address]struct{}
+	in   map[Address]uint64
 }
 
 // has reports whether a is in the set.
@@ -123,15 +127,21 @@ func (w *watchedSet) has(a Address) bool {
 	return ok
 }
 
-// add puts a in the set if it is not there.
-func (w *watchedSet) add(a Address) {
+// seq returns the sequence number stored for a, and whether a is in the set.
+func (w *watchedSet) seq(a Address) (uint64, bool) {
+	s, ok := w.in[a]
+	return s, ok
+}
+
+// add puts a in the set with sequence number seq if it is not there.
+func (w *watchedSet) add(a Address, seq uint64) {
 	if w.has(a) {
 		return
 	}
 	if w.in == nil {
-		w.in = make(map[Address]struct{})
+		w.in = make(map[Address]uint64)
 	}
-	w.in[a] = struct{}{}
+	w.in[a] = seq
 	w.list = append(w.list, a)
 }
 

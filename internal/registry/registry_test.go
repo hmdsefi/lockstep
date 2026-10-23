@@ -231,16 +231,16 @@ func TestWatchAlive(t *testing.T) {
 	mustAdd(t, r, "/user", "t", 5)
 	watcher := w("/user/w", 9, 1)
 
-	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 5}, watcher); !alive || !added {
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 5}, watcher, 0); !alive || !added {
 		t.Fatalf("AddWatch registered uid = %v, %v", alive, added)
 	}
 	// A path key (UID 0) is alive when the path is registered, whatever its uid.
 	other := w("/user/w2", 10, 1)
-	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, other); !alive || !added {
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, other, 0); !alive || !added {
 		t.Fatalf("AddWatch path key = %v, %v", alive, added)
 	}
 	// A different uid at the same path is not alive.
-	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 4}, w("/user/w3", 11, 1)); alive || added {
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 4}, w("/user/w3", 11, 1), 0); alive || added {
 		t.Fatalf("AddWatch stale uid = %v, %v", alive, added)
 	}
 	// Never added, and roots.
@@ -250,16 +250,16 @@ func TestWatchAlive(t *testing.T) {
 		{Node: "n1", Path: "/user"},
 		{},
 	} {
-		if alive, added := r.AddWatch(k, watcher); alive || added {
-			t.Fatalf("AddWatch(%+v) = %v, %v", k, alive, added)
+		if alive, added := r.AddWatch(k, watcher, 0); alive || added {
+			t.Fatalf("AddWatch(%+v, 0) = %v, %v", k, alive, added)
 		}
 	}
 	// Removed.
 	r.Remove("/user/t")
-	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 5}, watcher); alive || added {
+	if alive, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t", UID: 5}, watcher, 0); alive || added {
 		t.Fatalf("AddWatch of removed = %v, %v", alive, added)
 	}
-	if alive, _ := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, watcher); alive {
+	if alive, _ := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, watcher, 0); alive {
 		t.Fatal("path key alive after Remove")
 	}
 	if got := r.Watchers("/user/t"); len(got) != 0 {
@@ -272,20 +272,21 @@ func TestWatchDuplicate(t *testing.T) {
 	mustAdd(t, r, "/user", "t", 5)
 	key := Addr{Node: "n1", Path: "/user/t", UID: 5}
 	watcher := w("/user/w", 9, 1)
-	if alive, added := r.AddWatch(key, watcher); !alive || !added {
+	if alive, added := r.AddWatch(key, watcher, 1); !alive || !added {
 		t.Fatalf("first = %v, %v", alive, added)
 	}
-	if alive, added := r.AddWatch(key, watcher); !alive || added {
+	if alive, added := r.AddWatch(key, watcher, 2); !alive || added {
 		t.Fatalf("second = %v, %v; want alive and not added", alive, added)
 	}
-	if got := r.Watchers("/user/t"); len(got) != 1 {
-		t.Fatalf("Watchers = %v, want one entry", got)
+	// The one entry takes the second call's sequence number (ACT-630).
+	if got := r.Watchers("/user/t"); len(got) != 1 || got[0].Seq != 2 {
+		t.Fatalf("Watchers = %v, want one entry with Seq 2", got)
 	}
 	// Another incarnation of the same actor is another watcher; another key is another entry.
-	if _, added := r.AddWatch(key, w("/user/w", 9, 2)); !added {
+	if _, added := r.AddWatch(key, w("/user/w", 9, 2), 0); !added {
 		t.Fatal("new incarnation not added")
 	}
-	if _, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, watcher); !added {
+	if _, added := r.AddWatch(Addr{Node: "n1", Path: "/user/t"}, watcher, 0); !added {
 		t.Fatal("same watcher under the path key not added")
 	}
 	if got := r.Watchers("/user/t"); len(got) != 3 {
@@ -312,7 +313,7 @@ func TestWatcherOrder(t *testing.T) {
 	w3, w1, w2 := w("/user/w3", 2, 1), w("/user/w1", 3, 1), w("/user/w2", 4, 1)
 	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
 	for _, x := range []Watcher{w2, w3, w1} {
-		r.AddWatch(key, x)
+		r.AddWatch(key, x, 0)
 	}
 	order := func() []Watcher {
 		var out []Watcher
@@ -328,7 +329,7 @@ func TestWatcherOrder(t *testing.T) {
 	if !r.RemoveWatch(key, w2) {
 		t.Fatal("RemoveWatch(w2) failed")
 	}
-	r.AddWatch(key, w2)
+	r.AddWatch(key, w2, 0)
 	if got, want := order(), []Watcher{w3, w1, w2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("order after re-watch = %v, want %v", got, want)
 	}
@@ -341,11 +342,11 @@ func TestDropWatcher(t *testing.T) {
 	k1 := Addr{Node: "n1", Path: "/user/t1", UID: 1}
 	k2 := Addr{Node: "n1", Path: "/user/t2", UID: 2}
 	a, b := w("/user/a", 3, 1), w("/user/b", 4, 1)
-	r.AddWatch(k1, a)
-	r.AddWatch(k1, b)
-	r.AddWatch(k2, a)
-	r.AddWatch(Addr{Node: "n1", Path: "/user/t2"}, a)
-	r.AddWatch(k2, b)
+	r.AddWatch(k1, a, 0)
+	r.AddWatch(k1, b, 0)
+	r.AddWatch(k2, a, 0)
+	r.AddWatch(Addr{Node: "n1", Path: "/user/t2"}, a, 0)
+	r.AddWatch(k2, b, 0)
 	r.DropWatcher(a)
 	if got := r.Watchers("/user/t1"); len(got) != 1 || got[0].Watcher != b {
 		t.Fatalf("t1 watchers = %v", got)
@@ -356,7 +357,7 @@ func TestDropWatcher(t *testing.T) {
 	// Dropping a watcher that watches nothing, or twice, is fine; a can watch again.
 	r.DropWatcher(a)
 	r.DropWatcher(w("/user/never", 99, 1))
-	if _, added := r.AddWatch(k1, a); !added {
+	if _, added := r.AddWatch(k1, a, 0); !added {
 		t.Fatal("watch after DropWatcher not added")
 	}
 	// A dropped watcher is not returned by Remove.
@@ -367,7 +368,7 @@ func TestDropWatcher(t *testing.T) {
 	}
 	// Only the other incarnation stays.
 	a2 := w("/user/a", 3, 2)
-	r.AddWatch(k2, a2)
+	r.AddWatch(k2, a2, 0)
 	r.DropWatcher(a)
 	if got := r.Watchers("/user/t2"); len(got) != 1 || got[0].Watcher != a2 {
 		t.Fatalf("t2 watchers = %v", got)
@@ -380,10 +381,10 @@ func TestRemoveReturnsWatchers(t *testing.T) {
 	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
 	pathKey := Addr{Node: "n1", Path: "/user/t"}
 	a, b, c := w("/user/a", 2, 1), w("/user/b", 3, 1), w("/user/c", 4, 2)
-	r.AddWatch(key, b)
-	r.AddWatch(pathKey, a)
-	r.AddWatch(key, c)
-	want := []Watch{{b, key}, {a, pathKey}, {c, key}}
+	r.AddWatch(key, b, 7)
+	r.AddWatch(pathKey, a, 8)
+	r.AddWatch(key, c, 9)
+	want := []Watch{{b, key, 7}, {a, pathKey, 8}, {c, key, 9}}
 	if got := r.Remove("/user/t"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Remove = %v, want %v", got, want)
 	}
@@ -418,7 +419,7 @@ func TestWatchRaceWithRemove(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			alive, _ = r.AddWatch(key, watcher)
+			alive, _ = r.AddWatch(key, watcher, 0)
 		}()
 		go func() {
 			defer wg.Done()

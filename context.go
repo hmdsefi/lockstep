@@ -71,6 +71,6 @@ func (c *Context[M]) spawnParent() (*System, Address, engine.ActorRef) {
 	return c.cell.sys, c.cell.addr, c.cell
 }
 
-// parentStopping reports whether the actor's stop has started (SUP-090). Only Stopped runs in a
-// turn from then on.
-func (c *Context[M]) parentStopping() bool { return c.cell.stopping() }
+// parentStopping reports whether the actor is Stopping, Restarting or Stopped (SUP-090). Only
+// Stopped runs in a turn then.
+func (c *Context[M]) parentStopping() bool { return c.cell.ending() }
