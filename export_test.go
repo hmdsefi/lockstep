@@ -19,3 +19,7 @@ func Hold(sys *System, addr Address) (release func()) {
 	}
 	return release
 }
+
+// EngineBlocking reports the Blocking flag of the engine bundle sys was built on, for the
+// simulation tests (SIM-220).
+func EngineBlocking(sys *System) bool { return sys.eng.Blocking }
