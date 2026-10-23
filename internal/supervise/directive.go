@@ -34,10 +34,11 @@ const (
 	InStopped
 	InDecider
 	InEscalate
+	InInjected // a failure the simulation injected with Sim.InjectFail (SFT-040)
 )
 
-// String returns "factory", "started", "receive", "signal", "stopped", "decider", "escalate", or
-// "Source(<n>)" for a value outside InFactory..InEscalate.
+// String returns "factory", "started", "receive", "signal", "stopped", "decider", "escalate", "injected", or
+// "Source(<n>)" for a value outside InFactory..InInjected.
 func (s Source) String() string {
 	switch s {
 	case InFactory:
@@ -54,6 +55,8 @@ func (s Source) String() string {
 		return "decider"
 	case InEscalate:
 		return "escalate"
+	case InInjected:
+		return "injected"
 	}
 	return "Source(" + strconv.Itoa(int(s)) + ")"
 }
