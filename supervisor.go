@@ -254,7 +254,9 @@ func (c *cell[M]) afterDecision(n failed, dec decision) {
 // no longer is Suspended in the notice's incarnation has moved on and is skipped. A failure in the
 // factory or Started left no initialized state to resume: as Normalize does for a decider's
 // DirectiveResume (SUP-180), that child is restarted instead, through the decision path, intensity
-// included. If that fails the cell again, the children left stay in the list.
+// included. If that fails the cell again, the children left stay in the list. While a group
+// operation pushes commands, such a restart is held like any failed notice and decided after it
+// (SUP-260), so it cannot replace the running operation.
 func (c *cell[M]) resumeEscalated() {
 	for c.state == supervise.Running && len(c.sup.escalated) > 0 {
 		n := c.sup.escalated[0]
@@ -265,6 +267,10 @@ func (c *cell[M]) resumeEscalated() {
 		}
 		if d, _ := supervise.Normalize(supervise.Resume, n.source); d == supervise.Resume {
 			child.pushSystem(resume{inc: n.inc}, c)
+			continue
+		}
+		if c.sup.op != nil {
+			c.sup.held = append(c.sup.held, n)
 			continue
 		}
 		c.afterDecision(n, decision{d: c.sup.apply(c.sys, c.addr, child, n, supervise.Restart, c)})
