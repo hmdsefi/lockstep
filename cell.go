@@ -180,24 +180,23 @@ func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
 // decides what a full mailbox, or a shed message (forceFull), does with the entry (MBX-040 to
 // MBX-060). A closed cell refuses with Closed (MBX-150 (b)). It holds no lock when it returns, so
 // the caller may call askRefused for the entries the outcome names. The entry's size counts toward
-// the mailbox bytes from before the queue decides, so a pop never sees it uncounted, and is taken
-// back when the entry is refused or dropped (OVL-410).
+// the mailbox bytes once the queue has taken it, and an entry DropOldest evicted no longer counts
+// (OVL-410). Both change under mu, which a pop takes too, so a pop never sees the entry uncounted,
+// and a refused or dropped entry is never counted.
 func (c *cell[M]) offerUser(e entry, from engine.ActorRef, forceFull bool) (mailbox.Outcome, entry) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return mailbox.Closed, entry{}
 	}
-	c.mem.addMailbox(e.size)
 	out, evicted := c.user.Offer(e, e.kind.queueKind(), forceFull)
-	c.mu.Unlock()
 	switch out {
 	case mailbox.Enqueued:
+		c.mem.addMailbox(e.size)
 	case mailbox.DroppedOldest:
-		c.mem.addMailbox(-evicted.size)
-	default:
-		c.mem.addMailbox(-e.size)
+		c.mem.addMailbox(e.size - evicted.size)
 	}
+	c.mu.Unlock()
 	if out == mailbox.Enqueued || out == mailbox.DroppedOldest {
 		c.schedule(from)
 	}
@@ -215,7 +214,9 @@ func (c *cell[M]) userQueue() *mailbox.Queue[entry] { return c.user }
 // queue's own closed state refuses the entry after the final stop, which closes the queue under
 // mu (MBX-150 (b)). A slot handed over by the turn's Pop or by Recheck comes with no Ready of its
 // own, so the cell is scheduled here; the Slot ignores a Ready for a cell that is scheduled or
-// running already.
+// running already. The entry's size counts toward the mailbox bytes from before the offer, since
+// a slot can be handed to it and the entry popped before OfferWaitNotify returns: a waiting
+// sender's entry counts toward MailboxBytes while it waits (OVL-410).
 func (c *cell[M]) offerWait(ctx context.Context, e entry, admit func() bool, waiting func()) (mailbox.Outcome, error) {
 	c.mem.addMailbox(e.size) // counted before the entry can be popped; taken back when it is not enqueued (OVL-410)
 	out, _, err := c.user.OfferWaitNotify(ctx, e, admit, waiting)
