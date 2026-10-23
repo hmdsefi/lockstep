@@ -129,7 +129,10 @@ type entry struct {
 	from Address // the sender
 	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
 	seq  uint64  // the inbound envelope's Seq for the deliver record (MBX §8); 0 for a local send
-	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe and the timers set it
+	// size is the entry's bytes in the actor's mailbox estimate (OVL-410): max(0, Size()) of a
+	// sent message that implements Sizer, 0 for every other entry and while estimates are off.
+	size int64
+	inc  uint32 // entrySelf's incarnation (MBX-170); Pipe and the timers set it
 	// timer is the TimerID of a timer message, 0 for any other entry.
 	timer TimerID
 	kind  entryKind

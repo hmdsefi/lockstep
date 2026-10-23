@@ -104,6 +104,7 @@ func (c *cell[M]) lifecycle() (supervise.State, uint32) {
 // callHandler calls fn, a handler of the live incarnation with source src, as a guarded call in
 // the in-turn window (ACT-120, SUP-140), and hands a failure to handlerFailed.
 func (c *cell[M]) callHandler(src supervise.Source, fn func()) {
+	c.handled++
 	if failed, err := c.callGuarded(fn); failed {
 		c.handlerFailed(src, err)
 	}

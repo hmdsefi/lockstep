@@ -46,6 +46,9 @@ func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) erro
 	if sys.stopped.Load() {
 		return sys.errStopped()
 	}
+	// Size is user code: it runs before anything is recorded and while the runtime holds no lock,
+	// so a panic in it reaches the caller and leaves nothing behind (OVL-410).
+	size := sys.sizeFor(to.addr, msg)
 	sys.recordSend(fromAddr, to.addr, msg)
 	r := routeRequest{
 		from:    fromAddr,
@@ -53,6 +56,7 @@ func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) erro
 		to:      to.addr,
 		typ:     reflect.TypeFor[M](),
 		msg:     msg,
+		size:    size,
 	}
 	if _, outside := from.(*System); outside {
 		r.wait = ctx // only an outside sender may wait (MBX-090)
@@ -127,6 +131,7 @@ type routeRequest struct {
 	msg     any             // the M value
 	ask     Address         // MBX-092's ask address of an Ask request, zero for every other message
 	seq     uint64          // the inbound envelope's Seq (MBX-120), 0 for a local send
+	size    int64           // msg's bytes for the target's mailbox estimate (OVL-410), computed by the caller before routing
 	// wait is set only for an outside sender, a Send or SendContext from a *System: the context that
 	// ends its wait for room in a BlockSender mailbox on a blocking engine (MBX-090). It is nil for
 	// every sender that never waits: an actor, an Ask request, an inbound envelope (MBX-120) and a
@@ -217,7 +222,7 @@ func (s *System) offer(r routeRequest) outcome {
 	}
 	shed := s.admitSend(owner)
 	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
-	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, kind: entrySent}
+	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, size: r.size, kind: entrySent}
 	var out mailbox.Outcome
 	var evicted entry
 	if r.wait != nil && s.eng.Blocking && c.blocksSenders() {

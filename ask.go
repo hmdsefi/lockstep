@@ -72,7 +72,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	r.ask = p.addr // before Ask returns, so before any Pipe reads it
 
 	// 5. The request; a panic of build removes the entry and propagates.
-	msg := buildRequest(sys, p, build)
+	msg, size := buildRequest(sys, p, to.addr, build)
 
 	// 6. Timer, record, routing exactly as Send's, with the ask address in the mailbox entry.
 	sys.armTimeout(p)
@@ -84,6 +84,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 		typ:     reflect.TypeFor[M](),
 		msg:     msg,
 		ask:     p.addr,
+		size:    size,
 	})
 
 	// 7. The routing outcome (MSG-310). The router has already resolved the ask for a dead letter
@@ -96,18 +97,20 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	return r
 }
 
-// buildRequest calls build with p's ReplyTo and returns the request. If build panics, p leaves the
-// table before the panic propagates (MSG-300 step 5).
-func buildRequest[M, R any](sys *System, p *pendingAsk, build func(ReplyTo[R]) M) M {
+// buildRequest calls build with p's ReplyTo and returns the request and its size for the mailbox
+// estimate of the target at to (OVL-410). If build or Size panics, p leaves the table before the
+// panic propagates (MSG-300 step 5).
+func buildRequest[M, R any](sys *System, p *pendingAsk, to Address, build func(ReplyTo[R]) M) (msg M, size int64) {
 	built := false
 	defer func() {
 		if !built {
 			sys.asks.drop(p)
 		}
 	}()
-	msg := build(ReplyTo[R]{addr: p.addr})
+	msg = build(ReplyTo[R]{addr: p.addr})
+	size = sys.sizeFor(to, msg)
 	built = true
-	return msg
+	return msg, size
 }
 
 // NewReply creates an ask without a target: a pending reply on from's system with Ask's timeout

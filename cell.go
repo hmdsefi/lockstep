@@ -22,6 +22,8 @@ type actorCell interface {
 	// msgType returns reflect.TypeFor[M](): the exact type identity of ACT-530, for Lookup's
 	// ErrWrongType message and for path addresses (ACT-440).
 	msgType() reflect.Type
+	// estimate returns the actor's mailbox and state bytes (OVL-410, OVL-420).
+	estimate() (mailbox, state int64)
 	// offerUser offers the Sent entry e to the user mailbox without waiting and returns the
 	// queue's outcome (MBX-040, MBX-050). It schedules the cell when the mailbox took an entry
 	// (ENG-350). from is the cell whose turn enqueues, or nil. For DroppedOldest it also returns
@@ -77,6 +79,10 @@ type cell[M any] struct {
 
 	mu sync.Mutex
 
+	// mem is the cell's memory estimate (OVL-400): its mailbox bytes change under any goroutine's
+	// offer and the turn's pops, its state bytes in turns.
+	mem memCount
+
 	// guarded by mu
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)
 	stopReq bool   // a stop request was queued; later ones are discarded (SUP-050, ACT-710)
@@ -97,6 +103,10 @@ type cell[M any] struct {
 	starter Starter[M]        // the incarnation's optional interfaces, asserted once (ACT-100)
 	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
+	// memSizer is the incarnation's MemSizer while estimates are on, else nil. handled counts the
+	// handler calls of the cell and measured the value it had at the last MemSize call (OVL-420).
+	memSizer          MemSizer
+	handled, measured uint64
 
 	// rebuildSpawn reports that the cell was spawned from a rebuild context, so its first Started
 	// runs in one too (OVL §3). Set before the cell is registered, never changed.
@@ -132,6 +142,7 @@ type cell[M any] struct {
 // the cell's children.
 func newCell[M any](sys *System, parent Address, factory func() Actor[M], mbx mailboxConfig, strategy Strategy) *cell[M] {
 	return &cell[M]{
+		mem:       memCount{sum: &sys.memBytes},
 		sup:       supervisor{strategy: strategy},
 		sys:       sys,
 		parent:    parent,
@@ -170,7 +181,10 @@ func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
 // cell (ENG-350). from is the cell whose turn enqueues, or nil (actorCell). The queue's policy
 // decides what a full mailbox, or a shed message (forceFull), does with the entry (MBX-040 to
 // MBX-060). A closed cell refuses with Closed (MBX-150 (b)). It holds no lock when it returns, so
-// the caller may call askRefused for the entries the outcome names.
+// the caller may call askRefused for the entries the outcome names. The entry's size counts toward
+// the mailbox bytes once the queue has taken it, and an entry DropOldest evicted no longer counts
+// (OVL-410). Both change under mu, which a pop takes too, so a pop never sees the entry uncounted,
+// and a refused or dropped entry is never counted.
 func (c *cell[M]) offerUser(e entry, from engine.ActorRef, forceFull bool) (mailbox.Outcome, entry) {
 	c.mu.Lock()
 	if c.closed {
@@ -178,6 +192,12 @@ func (c *cell[M]) offerUser(e entry, from engine.ActorRef, forceFull bool) (mail
 		return mailbox.Closed, entry{}
 	}
 	out, evicted := c.user.Offer(e, e.kind.queueKind(), forceFull)
+	switch out {
+	case mailbox.Enqueued:
+		c.mem.addMailbox(e.size)
+	case mailbox.DroppedOldest:
+		c.mem.addMailbox(e.size - evicted.size)
+	}
 	c.mu.Unlock()
 	if out == mailbox.Enqueued || out == mailbox.DroppedOldest {
 		c.schedule(from)
@@ -196,11 +216,16 @@ func (c *cell[M]) userQueue() *mailbox.Queue[entry] { return c.user }
 // queue's own closed state refuses the entry after the final stop, which closes the queue under
 // mu (MBX-150 (b)). A slot handed over by the turn's Pop or by Recheck comes with no Ready of its
 // own, so the cell is scheduled here; the Slot ignores a Ready for a cell that is scheduled or
-// running already.
+// running already. The entry's size counts toward the mailbox bytes from before the offer, since
+// a slot can be handed to it and the entry popped before OfferWaitNotify returns: a waiting
+// sender's entry counts toward MailboxBytes while it waits (OVL-410).
 func (c *cell[M]) offerWait(ctx context.Context, e entry, admit func() bool, waiting func()) (mailbox.Outcome, error) {
+	c.mem.addMailbox(e.size) // counted before the entry can be popped; taken back when it is not enqueued (OVL-410)
 	out, _, err := c.user.OfferWaitNotify(ctx, e, admit, waiting)
 	if out == mailbox.Enqueued {
 		c.schedule(nil)
+	} else {
+		c.mem.addMailbox(-e.size)
 	}
 	return out, err
 }
@@ -254,6 +279,7 @@ func (c *cell[M]) closeQueues() (sent, self []entry, signals []Signal) {
 	c.closed = true
 	for _, qe := range c.user.Close() {
 		if qe.Kind == mailbox.Sent {
+			c.mem.addMailbox(-qe.V.size)
 			sent = append(sent, qe.V)
 		} else {
 			self = append(self, qe.V)
