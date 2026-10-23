@@ -22,13 +22,20 @@ const turnLabel = "lockstep/turn"
 
 // simEngine is the simulation engine of one boot of a lockstep node: it is bound to the node and
 // to the incarnation it was created for (SIM §5.3). It implements the engine seam's Scheduler,
-// Clock, Effects, Entropy, Tracer, Failer and Waiter.
+// Clock, Transport, Effects, Entropy, Tracer, Failer and Waiter.
 type simEngine struct {
 	s      *Sim
 	n      *kernel.Node
 	inc    uint32         // the node incarnation the engine belongs to
 	gate   *overload.Gate // the bundle's Admission (SFT-150)
 	bundle engine.Engine
+
+	// The transport's state (SIM-160, SIM-170), read by key only. seq holds the last number given
+	// to an envelope for each destination node; next holds the next expected number of each
+	// stream key that arrived at this boot. host is the system's inbound side.
+	seq  map[kernel.NodeID]uint64
+	next map[stream]uint64
+	host engine.Host
 
 	dead bool // the engine ignores every seam call (SIM-120)
 }
@@ -42,7 +49,7 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Blocking:   false, // SIM-220
 		Scheduler:  e,
 		Clock:      e,
-		Transport:  nil, // the simnet transport (SIM-160)
+		Transport:  e, // the simnet transport (SIM-160)
 		Effects:    e,
 		Entropy:    e,
 		Tracer:     e,
