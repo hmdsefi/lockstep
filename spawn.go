@@ -10,15 +10,16 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// SpawnOption configures one Spawn. WithMailbox (MBX), the supervision option (SUP) and the
-// throughput hint (SCH) are SpawnOptions.
+// SpawnOption configures one Spawn. WithMailbox (MBX), WithStrategy (SUP) and the throughput hint
+// (SCH) are SpawnOptions.
 type SpawnOption func(*spawnConfig)
 
 // spawnConfig is what the SpawnOptions of one Spawn configure. Option appliers only set fields and
 // report a bad value through fail; Spawn validates (ACT-300 step 3a). The settings themselves
-// arrive with their owner plans (MBX, SUP, SCH).
+// arrive with their owner plans (MBX, SCH).
 type spawnConfig struct {
-	err error // the first invalid option's error, in argument order
+	err      error    // the first invalid option's error, in argument order
+	strategy Strategy // the strategy for the children of the spawned actor (SUP-370)
 }
 
 // fail records err, which wraps ErrInvalidOption, for the option being applied. Only the first
@@ -31,7 +32,7 @@ func (c *spawnConfig) fail(err error) {
 
 // newSpawnConfig applies opts in argument order. It panics on a nil option (ACT-300).
 func newSpawnConfig(opts []SpawnOption) *spawnConfig {
-	c := &spawnConfig{}
+	c := &spawnConfig{strategy: OneForOne(nil)}
 	for _, o := range opts {
 		if o == nil {
 			panic("lockstep: nil SpawnOption")
