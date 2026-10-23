@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
 // maxPPM is the probability scale of DropBetween: ppm of 1_000_000 drops every message.
@@ -42,9 +43,9 @@ type pairRule struct {
 	min, max time.Duration // its range, when set
 	dropPPM  uint32        // the drop part; 0: none
 
-	held []heldMsg      // the hold queue, in offer order, with non-decreasing release times
-	eng  *simEngine     // the receiver's engine of the messages in held
-	ev   kernel.EventID // the pending release event, for held[0]; 0: none
+	held   []heldMsg     // the hold queue, in offer order, with non-decreasing release times
+	eng    *simEngine    // the receiver's engine of the messages in held
+	cancel engine.Cancel // Cancel of the pending release event, for held[0]; nil: none
 
 	dropRand, delayRand *rand.Rand // the pair's streams, taken at the first draw
 }
@@ -57,16 +58,18 @@ type heldMsg struct {
 
 // DelayBetween delays every message sent from the actor at from's location to the actor at to's
 // location by a virtual duration drawn uniformly from [min, max], before it is offered to the
-// receiver's mailbox. Order within the pair is kept. min = max = 0 removes the delay. It panics
-// if min < 0 or max < min. Replies, timer messages, effect results and system messages are
-// never delayed. The call records lockstep.fault with op=delay (SFT-060).
+// receiver's mailbox. Order within the pair is kept. min = max = 0 removes the delay part of the
+// pair's rule; the rule goes when it has no drop part either and no message is held. It panics if
+// min < 0 or max < min. Replies, timer messages, effect results and system messages are never
+// delayed. The call records lockstep.fault with op=delay.
 func (s *Sim) DelayBetween(from, to lockstep.Address, min, max time.Duration) {
 	s.check()
 	if min < 0 || max < min {
 		panic(fmt.Sprintf("lockstep: sim: DelayBetween: invalid range [%s, %s]", min, max))
 	}
-	s.setPair(pairKeyOf(from, to), min != 0 || max != 0, func(r *pairRule) {
-		r.delay = min != 0 || max != 0
+	delays := min != 0 || max != 0
+	s.setPair(pairKeyOf(from, to), delays, func(r *pairRule) {
+		r.delay = delays
 		r.min, r.max = min, max
 	})
 	s.recordPairFault("delay",
@@ -78,8 +81,9 @@ func (s *Sim) DelayBetween(from, to lockstep.Address, min, max time.Duration) {
 }
 
 // DropBetween drops each message sent from the actor at from's location to the actor at to's
-// location with probability ppm/1_000_000, before it is offered. 0 removes the rule. It panics if
-// ppm > 1_000_000. The call records lockstep.fault with op=drop (SFT-060).
+// location with probability ppm/1_000_000, before it is offered. 0 removes the drop part of the
+// pair's rule; the rule goes when it has no delay part either and no message is held. It panics if
+// ppm > 1_000_000. The call records lockstep.fault with op=drop.
 func (s *Sim) DropBetween(from, to lockstep.Address, ppm uint32) {
 	s.check()
 	if ppm > maxPPM {
