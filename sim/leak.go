@@ -27,11 +27,15 @@ func (e *simEngine) hold(actor string, ef *heldEffect) {
 }
 
 // release removes ef from the effects held for actor: its result event ran or its Cancel
-// succeeded.
+// succeeded. An actor that holds no more effects leaves the map.
 func (e *simEngine) release(actor string, ef *heldEffect) {
 	list := e.held[actor]
 	for i, h := range list {
 		if h == ef {
+			if len(list) == 1 {
+				delete(e.held, actor)
+				return
+			}
 			e.held[actor] = append(list[:i:i], list[i+1:]...)
 			return
 		}

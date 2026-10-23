@@ -103,7 +103,6 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 		return notPending
 	}
 	actor, held := req.Actor.String(), &heldEffect{id: req.ID, name: req.Name}
-	e.hold(actor, held)
 	cancel := e.schedule(res.Latency, effectLabel, func() {
 		e.release(actor, held)
 		// The kernel never runs an event of an earlier incarnation; a system stopped since Do
@@ -112,6 +111,10 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 			done(res.Value, res.Err)
 		}
 	})
+	// The effect is held once its result event is scheduled, which the canSchedule check above
+	// guarantees: an effect never scheduled is never held, so it can never be reported as a leak
+	// (SIM-290). The event runs after Start returns, so the hold always precedes its release.
+	e.hold(actor, held)
 	return func() bool {
 		cancelled := cancel()
 		if cancelled {

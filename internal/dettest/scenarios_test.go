@@ -5,6 +5,7 @@ package dettest
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,8 @@ type toyObs struct {
 
 // toyRow is one scenario of DET-260: the toy systems' scenario table. body adds the nodes, drives
 // the run and registers the scenario's final check with s.World().Final(name, ...). after, when
-// set, checks what body recorded in obs once all seeds have run. scenario turns a row into the
+// set, checks what body recorded in obs once all seeds have run; it runs only on the row's default
+// seeds, so not when a variable of DET-270 step 1 picks other seeds. scenario turns a row into the
 // golden suite's scenario, which runs the same body with its own observer.
 type toyRow struct {
 	name     string
@@ -212,13 +214,16 @@ func pingpongFaultsBody(s *sim.Sim, _ *toyObs) {
 }
 
 // TestToys is AT-DET-17: every scenario of DET-260 passes its final check on its three seeds,
-// also with LOCKSTEP_CHECK_DETERMINISM=1, which runs each seed twice.
+// also with LOCKSTEP_CHECK_DETERMINISM=1, which runs each seed twice. The checks across seeds run
+// only on the default seeds: a seed override (DET-270 step 1) may run seeds that never show what
+// they look for.
 func TestToys(t *testing.T) {
+	overridden := skipReason(os.Getenv) != ""
 	for _, row := range toyRows {
 		t.Run(row.name, func(t *testing.T) {
 			var obs toyObs
 			row.run(t, &obs)
-			if row.after != nil && !t.Failed() {
+			if row.after != nil && !overridden && !t.Failed() {
 				row.after(t, &obs)
 			}
 		})
