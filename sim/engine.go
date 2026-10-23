@@ -112,7 +112,7 @@ func (e *simEngine) Now() time.Time { return e.n.Now() }
 // label (SIM-155, ENG-070). The Cancel it returns cancels that event.
 func (e *simEngine) AfterFunc(d time.Duration, label string, fn func()) engine.Cancel {
 	if !e.canSchedule() {
-		return func() bool { return false }
+		return notPending
 	}
 	id := e.n.After(d, label, fn)
 	return func() bool { return e.n.Cancel(id) }

@@ -142,7 +142,8 @@ func (e *simEngine) callHandler(h func(c EffectCall) EffectResult, c EffectCall)
 	return h(c), true
 }
 
-// notPending is the Cancel of an effect the engine never started on a dead engine (SIM-120).
+// notPending is the Cancel of work a dead engine never scheduled: an AfterFunc event or an effect
+// it never started (SIM-120).
 func notPending() bool { return false }
 
 // cancelOnce returns the Cancel of an effect for which nothing was scheduled: it reports true the
