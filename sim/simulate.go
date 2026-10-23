@@ -6,6 +6,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/hmdsefi/faultline"
@@ -31,7 +32,7 @@ type Options struct {
 func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 	t.Helper()
 	fo := setup(t, opts)
-	r := &runner{body: body}
+	r := &runner{body: body, system: slices.Clone(opts.System)}
 	defer r.end()
 	faultline.Run(t, fo, r.run)
 }
@@ -41,7 +42,7 @@ func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 func SimulateSeeds(t *testing.T, opts Options, body func(s *Sim), seeds ...uint64) {
 	t.Helper()
 	fo := setup(t, opts)
-	r := &runner{body: body}
+	r := &runner{body: body, system: slices.Clone(opts.System)}
 	defer r.end()
 	faultline.RunSeeds(t, fo, r.run, seeds...)
 }
@@ -75,8 +76,9 @@ func validate(opts Options) (faultline.Options, error) {
 
 // runner builds a Sim for every run of one Simulate or SimulateSeeds call.
 type runner struct {
-	body func(s *Sim)
-	cur  *Sim // the Sim of the latest run
+	body   func(s *Sim)
+	system []lockstep.Option // Options.System
+	cur    *Sim              // the Sim of the latest run
 }
 
 // run is the function passed to faultline: it ends the previous run's Sim (SIM-040), builds a
@@ -85,7 +87,7 @@ type runner struct {
 // the ones body registered.
 func (r *runner) run(w *faultline.World) {
 	r.end()
-	s := &Sim{w: w}
+	s := &Sim{w: w, system: r.system}
 	r.cur = s
 	s.registerChecks()
 	r.body(s)
