@@ -13,8 +13,8 @@ import (
 )
 
 // sim registers no fault planner and no role, and never calls World.Faults: kernel faults reach
-// lockstep nodes only through faultline (SFT-010). lockstep's own faults are the Sim methods below
-// and in pairs.go and pressure.go, recorded as lockstep.fault (SFT-030).
+// lockstep nodes only through faultline (SFT-010). lockstep's own faults are Sim methods, each
+// recorded as lockstep.fault (SFT-030).
 
 // InjectFail makes the actor at addr fail with err, as if its handler had called ctx.Fail(err):
 // the failure reaches its supervisor with source "injected". It takes effect at the actor's next
