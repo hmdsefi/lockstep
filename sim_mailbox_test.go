@@ -339,7 +339,7 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 	})
 
 	t.Run("jitter and duplicates", func(t *testing.T) {
-		stale := make(map[uint64]int) // seed -> envelopes the transport dropped as late or duplicate
+		stale := make(map[uint64]int) // seed -> stale-seq drops of late or duplicate envelopes
 		sim.Simulate(t, simOpts(20), func(s *sim.Sim) {
 			var got []int
 			var sendErrs []error
@@ -360,6 +360,9 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 			if len(sendErrs) != 0 {
 				tt.Errorf("Send returned %v, want nil every time", sendErrs)
 			}
+			if len(got) == 0 {
+				tt.Errorf("receiver observed no number")
+			}
 			for i := 1; i < len(got); i++ {
 				if got[i] <= got[i-1] {
 					tt.Errorf("observed numbers not strictly increasing at %d: %d after %d", i, got[i], got[i-1])
@@ -378,7 +381,13 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 			if len(delivers) != len(got) {
 				tt.Errorf("%d lockstep.deliver records for %d observed numbers", len(delivers), len(got))
 			}
-			stale[w.Seed()] = len(simRecords(w, n2, "lockstep.drop"))
+			n := 0
+			for _, r := range simRecords(w, n2, "lockstep.drop") {
+				if simAttr(r, "reason") == "stale-seq" {
+					n++
+				}
+			}
+			stale[w.Seed()] = n
 		})
 		// The scenario must exercise what it tests: the transport dropped late and duplicate copies.
 		total := 0

@@ -130,14 +130,14 @@ func TestATSUP37Determinism(t *testing.T) {
 		directive lockstep.Directive
 		verb      string
 		stopped   []string
-		started   int
+		started   int // Started calls of each of c1, c2 and c3
 	}{
 		{"all-for-one restart", lockstep.DirectiveRestart, "restart", []string{
 			"/user/s/c3 restarting: e", "/user/s/c2 restarting: e", "/user/s/c1 restarting: e",
-		}, 6},
+		}, 2},
 		{"all-for-one stop", lockstep.DirectiveStop, "stop", []string{
 			"/user/s/c3 failed: e", "/user/s/c2 failed: e", "/user/s/c1 failed: e",
-		}, 3},
+		}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runs := make(map[uint64]int)
@@ -168,8 +168,20 @@ func TestATSUP37Determinism(t *testing.T) {
 				if !slices.Equal(stopped, tc.stopped) {
 					tt.Errorf("Stopped observations %q, want %q", stopped, tc.stopped)
 				}
-				if len(starts) != tc.started {
-					tt.Errorf("%d Started calls %q, want %d", len(starts), starts, tc.started)
+				if len(starts) != len(supGroup)*tc.started {
+					tt.Errorf("%d Started calls %q, want %d", len(starts), starts, len(supGroup)*tc.started)
+				}
+				for _, name := range supGroup {
+					path := "/user/s/" + name
+					n := 0
+					for _, p := range starts {
+						if p == path {
+							n++
+						}
+					}
+					if n != tc.started {
+						tt.Errorf("%s started %d times, want %d", path, n, tc.started)
+					}
 				}
 				dirs := simRecords(w, n1, "lockstep.directive")
 				if len(dirs) != 1 || simAttr(dirs[0], "scope") != "all-for-one" || simAttr(dirs[0], "directive") != tc.verb {
