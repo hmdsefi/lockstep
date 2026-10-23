@@ -108,6 +108,14 @@ type cell[M any] struct {
 	endErr     error      // the error of the restart that ends the incarnation (SUP-190)
 	waitChild  Address    // the child whose stopped notice the stop or restart waits for, or zero
 
+	// tmu is the cell's timer lock (TMR §11): timers run on the engine's callbacks, which on the
+	// local engine are other goroutines than the turn. It is taken before mu and the queue's lock
+	// (a firing enqueues under it) and never while holding mu, so a turn that pops a timer message
+	// has released mu before it takes tmu. nextTimer and timers are guarded by tmu.
+	tmu       sync.Mutex
+	nextTimer TimerID               // the last TimerID allocated: survives restarts (TMR-040)
+	timers    map[TimerID]*timer[M] // timers.go
+
 	// sup is the cell's supervision of its children with the strategy of its WithStrategy option
 	// (SUP-170 to SUP-290). Turn-owned.
 	sup supervisor
