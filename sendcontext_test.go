@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -189,6 +190,43 @@ func TestSendContextNilContext(t *testing.T) {
 	if got := rendered(rec.Records(), before, tp.Address(), "lockstep.send", "lockstep.deliver", "lockstep.mailbox.full"); len(got) != 0 {
 		t.Errorf("records after the panicking calls: %q, want none", got)
 	}
+}
+
+// MBX-090, MBX-150, MBX-160: an outside sender waiting on a BlockSender mailbox whose actor stops
+// is woken by the stop's close. Its message becomes a dead letter with reason stopped, like the
+// queued one the stop drains, and SendContext returns nil.
+func TestSendContextTargetStopsWhileWaiting(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	tp := spawnTarget(t, sys, "t", 1, BlockSender)
+	to := tp.Address()
+	release := hold(t, sys, to)
+	defer release()
+	send(t, sys, tp, 1)
+	c := cellOf(t, sys, tp)
+	before := len(rec.Records())
+
+	ch := sendContextAsync(context.Background(), sys, tp, 2)
+	waitingSenders(t, c, 1)
+	if err := Stop(sys, to); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	release() // the stop runs before any user message, so the waiter never gets a slot
+	if err := sendReturned(t, ch); err != nil {
+		t.Errorf("SendContext to an actor that stopped while the sender waited = %v, want nil", err)
+	}
+	if n := c.user.Waiting(); n != 0 {
+		t.Errorf("%d senders still wait, want 0", n)
+	}
+	from := sys.user.String()
+	full := rendered(rec.Records(), before, to, "lockstep.mailbox.full")
+	sameLines(t, "mailbox.full records", full, []string{blockedFull(sys.user, to, "blocked", "2")})
+	// The drain (msg 1) and the woken sender (msg 2) record on different goroutines.
+	dead := rendered(rec.Records(), before, to, "lockstep.deadletter")
+	slices.Sort(dead)
+	sameLines(t, "dead letters", dead, []string{
+		"lockstep.deadletter from=" + from + " to=" + to.String() + " reason=stopped msg=1",
+		"lockstep.deadletter from=" + from + " to=" + to.String() + " reason=stopped msg=2",
+	})
 }
 
 // MBX-070, MBX §7: a context cancelled while the sender waits makes SendContext return
