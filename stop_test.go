@@ -524,9 +524,9 @@ func TestSpawnFromStopped(t *testing.T) {
 	}
 }
 
-// SUP-060 step 5, MBX-160: the final stop closes the queues and drains them, returning the Sent
-// and the Self entries each in queue order and the signals of the system queue, without its other
-// messages; a closed mailbox refuses every later entry and a closed system queue drops every later
+// SUP-060 step 5, MBX-160, SFT-040: the final stop closes the queues and drains them, returning the
+// Sent and the Self entries each in queue order and the signals and inject commands of the system
+// queue, without its other messages; a closed mailbox refuses every later entry and a closed system queue drops every later
 // message.
 func TestStopDrain(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -541,17 +541,19 @@ func TestStopDrain(t *testing.T) {
 	c.offerUser(entry{msg: "s1", kind: entrySelf, inc: c.inc}, nil, false)
 	c.offerUser(entry{msg: "m2", kind: entrySent}, nil, false)
 	sig := Terminated{Addr: gone(), Reason: NoActor}
+	inj := inject{err: errors.New("injected")}
 	c.pushSystem(stopped{child: gone()}, nil)
 	c.pushSystem(signalMsg{sig: sig}, nil)
-	sent, self, signals := c.closeQueues()
+	c.pushSystem(inj, nil)
+	sent, self, notRunning := c.closeQueues()
 	if len(sent) != 2 || sent[0].msg != "m1" || sent[1].msg != "m2" {
 		t.Errorf("drained Sent entries %+v, want m1, m2", sent)
 	}
 	if len(self) != 1 || self[0].msg != "s1" || self[0].inc != c.inc {
 		t.Errorf("drained Self entries %+v, want s1 of inc %d", self, c.inc)
 	}
-	if !slices.Equal(signals, []Signal{sig}) {
-		t.Errorf("drained signals %v, want %v", signals, sig)
+	if want := []any{sig, inj}; !slices.Equal(notRunning, want) {
+		t.Errorf("drained not-running system messages %v, want %v", notRunning, want)
 	}
 	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil, false); out != mailbox.Closed {
 		t.Errorf("a closed mailbox answered %v to an entry, want closed", out)

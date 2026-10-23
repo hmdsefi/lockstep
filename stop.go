@@ -227,10 +227,10 @@ func (c *cell[M]) finishStop() {
 // each Sent entry, in queue order, as a dead letter with reason stopped, from its sender to the
 // stopped actor's address (MBX §8); each Self entry, piped replies and effect results included, as
 // lockstep.drop reason incarnation-ended, a piped reply or an effect result described by its error
-// or its value (MBX §8); each signal left in the system queue as lockstep.drop reason
-// not-running. The other system messages are discarded without a record.
+// or its value (MBX §8); each signal and each inject command (SFT-040) left in the system queue as
+// lockstep.drop reason not-running. The other system messages are discarded without a record.
 func (c *cell[M]) drain() {
-	sent, self, signals := c.closeQueues()
+	sent, self, notRunning := c.closeQueues()
 	for _, e := range sent {
 		c.sys.deadLetter(e.from, c.addr, reasonStopped, e.msg)
 	}
@@ -244,8 +244,8 @@ func (c *cell[M]) drain() {
 		}
 		c.sys.recordDropEnded(c.addr, e.inc, msg)
 	}
-	for _, sig := range signals {
-		c.sys.recordDropNotRunning(c.addr, sig)
+	for _, m := range notRunning {
+		c.sys.recordDropNotRunning(c.addr, m)
 	}
 }
 
@@ -319,9 +319,9 @@ func (s *System) recordDropEnded(to Address, inc uint32, msg any) {
 	)
 }
 
-// recordDropNotRunning emits lockstep.drop with reason not-running (SUP §8) for the signal sig
-// discarded by the actor at to.
-func (s *System) recordDropNotRunning(to Address, sig Signal) {
+// recordDropNotRunning emits lockstep.drop with reason not-running (SUP §8) for msg, a signal or
+// an inject command, discarded by the actor at to.
+func (s *System) recordDropNotRunning(to Address, msg any) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
 		return
@@ -329,6 +329,6 @@ func (s *System) recordDropNotRunning(to Address, sig Signal) {
 	tr.Record("lockstep.drop",
 		engine.Attr{Key: "to", Value: to.String()},
 		engine.Attr{Key: "reason", Value: dropNotRunning},
-		engine.Attr{Key: "msg", Value: tr.Describe(sig)},
+		engine.Attr{Key: "msg", Value: tr.Describe(msg)},
 	)
 }

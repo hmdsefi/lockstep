@@ -30,6 +30,14 @@ type resume struct{ inc uint32 }
 // stop is a stop request (SUP-050). A cell keeps at most one (requestStop).
 type stop struct{ reason StopReason }
 
+// inject makes the cell fail with err as if its handler had called ctx.Fail(err), with source
+// injected (SFT-040). The simulation pushes it with Sim.InjectFail.
+type inject struct{ err error }
+
+// String describes the command for the lockstep.drop record of one a cell discards, without the
+// error, whose text is the caller's.
+func (inject) String() string { return "inject" }
+
 // failed reports that incarnation inc of child failed with err in source (SUP-150). For a factory
 // failure inc is the number of the last incarnation that began, 0 if none.
 type failed struct {
@@ -70,6 +78,7 @@ func (n cleanupFailed) asSignal() signalMsg {
 
 func (begin) isSysMsg()         {}
 func (end) isSysMsg()           {}
+func (inject) isSysMsg()        {}
 func (resume) isSysMsg()        {}
 func (stop) isSysMsg()          {}
 func (failed) isSysMsg()        {}
