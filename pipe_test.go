@@ -332,7 +332,7 @@ func TestPipeDropIncarnation(t *testing.T) {
 		msg:  pipedReply[any]{ask: ask, call: func() any { called = true; return "piped" }},
 		kind: entrySelf,
 		inc:  c.inc + 1,
-	}, nil)
+	}, nil, false)
 	send(t, sys, a, any("after"))
 	eng.RunUntilIdle()
 

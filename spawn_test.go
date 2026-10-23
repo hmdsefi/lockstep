@@ -237,11 +237,10 @@ func TestSpawnRecord(t *testing.T) {
 	}
 	_, errTaken := Spawn(sys, "a", idle[int]())
 	_, errName := Spawn(sys, "a/b", idle[int]())
-	errAdmit := errors.New("admission says no")
-	eng.SetAdmission(errAdmit, nil)
-	_, err = Spawn(sys, "c", idle[int]())
-	if err != errAdmit { //nolint:errorlint // the admission error is returned as it is until OVL
-		t.Errorf("Spawn refused by admission: err %v, want %v", err, errAdmit)
+	eng.SetAdmission(shedPressure, nil)
+	_, errAdmit := Spawn(sys, "c", idle[int]())
+	if !errors.Is(errAdmit, ErrOverloaded) || !errors.Is(errAdmit, shedPressure) {
+		t.Errorf("Spawn refused by admission: err %v, want ErrOverloaded wrapping %v", errAdmit, shedPressure)
 	}
 	if !errors.Is(errTaken, ErrNameTaken) {
 		t.Errorf("second Spawn of a: %v", errTaken)
@@ -255,7 +254,7 @@ func TestSpawnRecord(t *testing.T) {
 		{user, "addr=" + pg.String(), "name=$1", "type=string", "result=ok"},
 		{user, "name=a", "type=int", "result=" + errTaken.Error()},
 		{user, "name=a/b", "type=int", "result=" + errName.Error()},
-		{user, "name=c", "type=int", "result=admission says no"},
+		{user, "name=c", "type=int", "result=lockstep: spawn in /user: overloaded (pressure)"},
 	}
 	if !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("lockstep.spawn records:\n got %q\nwant %q", got, want)

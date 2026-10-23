@@ -43,8 +43,9 @@ type System struct {
 	// ACT-050).
 	guardians guardians
 
-	asks    askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
-	waiting waitSet  // the user mailboxes that outside senders wait on (MBX-075)
+	asks    askTable       // pending asks of this system's askers and tracked asks of its actors (MSG §11)
+	waiting waitSet        // the user mailboxes that outside senders wait on (MBX-075)
+	adm     admissionState // whether the engine's admission sheds (OVL-150)
 
 	// afterRegister, when set, is called by Spawn with the new cell between its registration and
 	// the push of its begin. It is a test hook; production code never sets it.
@@ -130,9 +131,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 	s.system = Address{node: s.node, path: "/system", uid: s.allocUID()}
 	s.reg.AddRoot(registry.Addr{Node: s.user.node, Path: s.user.path, UID: s.user.uid})
 	s.reg.AddRoot(registry.Addr{Node: s.system.node, Path: s.system.path, UID: s.system.uid})
-	// usage reports the live-actor count (OVL-020). The change handler's records, signals and
-	// Recheck calls are OVL-150's; until they exist a change does nothing.
-	eng.Admission.Bind(func(engine.AdmissionChange) {}, s.usage)
+	s.bindAdmission()
 	return s, nil
 }
 

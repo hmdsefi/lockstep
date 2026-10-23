@@ -537,9 +537,9 @@ func TestStopDrain(t *testing.T) {
 	}
 	eng.RunUntilIdle()
 	c := cellOf(t, sys, a)
-	c.offerUser(entry{msg: "m1", kind: entrySent}, nil)
-	c.offerUser(entry{msg: "s1", kind: entrySelf, inc: c.inc}, nil)
-	c.offerUser(entry{msg: "m2", kind: entrySent}, nil)
+	c.offerUser(entry{msg: "m1", kind: entrySent}, nil, false)
+	c.offerUser(entry{msg: "s1", kind: entrySelf, inc: c.inc}, nil, false)
+	c.offerUser(entry{msg: "m2", kind: entrySent}, nil, false)
 	sig := Terminated{Addr: gone(), Reason: NoActor}
 	c.pushSystem(stopped{child: gone()}, nil)
 	c.pushSystem(signalMsg{sig: sig}, nil)
@@ -553,7 +553,7 @@ func TestStopDrain(t *testing.T) {
 	if !slices.Equal(signals, []Signal{sig}) {
 		t.Errorf("drained signals %v, want %v", signals, sig)
 	}
-	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil); out != mailbox.Closed {
+	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil, false); out != mailbox.Closed {
 		t.Errorf("a closed mailbox answered %v to an entry, want closed", out)
 	}
 	c.pushSystem(begin{}, nil)
