@@ -96,7 +96,7 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 		panic("lockstep: Do: nil effect")
 	}
 	name := e.Name()
-	if !validEffectName(name) {
+	if !engine.ValidEffectName(name) {
 		panic(fmt.Sprintf("lockstep: Do: invalid effect name %q", name))
 	}
 	if done == nil {
@@ -186,23 +186,6 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 	// precede the engine's Cancel; otherwise EFF-090's order holds.
 	cancel()
 	return id
-}
-
-// validEffectName reports whether name matches ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ (EFF-010).
-func validEffectName(name string) bool {
-	if len(name) < 1 || len(name) > 64 {
-		return false
-	}
-	for i := range len(name) {
-		b := name[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		case i > 0 && (b == '.' || b == '_' || b == '-'):
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // pendingEffect is one effect of a cell that has no outcome yet (EFF §3, §11). It belongs to the

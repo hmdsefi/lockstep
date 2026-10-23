@@ -22,8 +22,9 @@ import (
 type tick struct{ timer bool }
 
 // AT-SIM-09, SIM-155: an actor timer runs on the node's local clock at the same virtual time as
-// a node event of the same local delay, ctx.Now() is the node's clock, and timers, ask timeouts
-// and restart backoffs run as kernel events labeled with the label passed to AfterFunc.
+// a node event of the same local delay, ctx.Now() is the node's clock, and timers, ask timeouts,
+// restart backoffs and effect timeouts run as kernel events labeled with the label passed to
+// AfterFunc.
 func TestATSIM09ClockAndLabels(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -31,6 +32,7 @@ func TestATSIM09ClockAndLabels(t *testing.T) {
 		var tickAt, refAt kernel.Time
 		var tickNow, nodeNow time.Time
 		ticks, refs, flakyStarts := 0, 0, 0
+		s.HandleEffect("prices.fetch", func(sim.EffectCall) sim.EffectResult { return sim.EffectResult{Latency: time.Hour} })
 		n1 = s.Node("n1", func(sys *lockstep.System) {
 			silent := spawn(sys, "silent", &actor[Ping]{})
 			spawn(sys, "a", &actor[tick]{
@@ -39,6 +41,7 @@ func TestATSIM09ClockAndLabels(t *testing.T) {
 					n1.After(100*time.Millisecond, "ref", func() { refs++; refAt = w.Sim.Now() })
 					r := lockstep.Ask(ctx, silent, buildPing(1), lockstep.WithTimeout(50*time.Millisecond))
 					lockstep.Pipe(ctx, r, func(int, error) tick { return tick{} })
+					lockstep.Do(ctx, fetch{}, func(int, error) tick { return tick{} }, lockstep.WithEffectTimeout(50*time.Millisecond))
 				},
 				receive: func(ctx *lockstep.Context[tick], m tick) {
 					if m.timer {
@@ -74,7 +77,7 @@ func TestATSIM09ClockAndLabels(t *testing.T) {
 				labels[r.Text]++
 			}
 		}
-		for _, label := range []string{"lockstep/timer", "lockstep/ask-timeout", "lockstep/backoff"} {
+		for _, label := range []string{"lockstep/timer", "lockstep/ask-timeout", "lockstep/backoff", "lockstep/effect-timeout"} {
 			if labels[label] != 1 {
 				tt.Errorf("%d kernel events labeled %s on n1, want 1", labels[label], label)
 			}

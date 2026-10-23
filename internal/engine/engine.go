@@ -127,6 +127,25 @@ type EffectRequest struct {
 	Run   func(ctx context.Context) (any, error) // the production implementation
 }
 
+// ValidEffectName reports whether name is a valid effect name: it matches
+// ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ (EFF-010). Do and the simulation's HandleEffect both check
+// names with it (EFF-010, EFF-410). Reserved names starting with "lockstep." are valid here.
+func ValidEffectName(name string) bool {
+	if len(name) < 1 || len(name) > 64 {
+		return false
+	}
+	for i := range len(name) {
+		b := name[i]
+		switch {
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		case i > 0 && (b == '.' || b == '_' || b == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Effects runs effects.
 type Effects interface {
 	// Start starts req. The engine calls done at most once, in engine context, never inside the

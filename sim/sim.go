@@ -29,6 +29,10 @@ type Sim struct {
 	byName map[string]*node
 	byID   map[kernel.NodeID]*node
 
+	// handlers is the effect handler table, shared by every node: Start reads it by the exact
+	// effect name and nothing ranges over it (EFF-410, SIM-330).
+	handlers map[string]func(c EffectCall) EffectResult
+
 	counts Counts
 }
 

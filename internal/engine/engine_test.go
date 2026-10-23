@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,5 +149,31 @@ func TestAdmissionValues(t *testing.T) {
 	}
 	if errors.Is(&engine.AdmissionError{Source: engine.SourceMemory}, io.EOF) {
 		t.Error("errors.Is(*AdmissionError, io.EOF) = true, want false")
+	}
+}
+
+// EFF-010, EFF-410: the effect name pattern ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.
+func TestValidEffectName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"", false},
+		{"a b", false},
+		{".x", false},
+		{"-x", false},
+		{"_x", false},
+		{"x/y", false},
+		{strings.Repeat("x", 64), true},
+		{strings.Repeat("x", 65), false},
+		{"0-a_b.c", true},
+		{"prices.fetch", true},
+		{"lockstep.x", true}, // valid by the pattern; HandleEffect rejects the reserved prefix itself
+		{"x", true},
+	}
+	for _, tc := range tests {
+		if got := engine.ValidEffectName(tc.name); got != tc.want {
+			t.Errorf("ValidEffectName(%q) = %t, want %t", tc.name, got, tc.want)
+		}
 	}
 }
