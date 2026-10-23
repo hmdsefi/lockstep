@@ -4,6 +4,8 @@
 package lockstep
 
 import (
+	"context"
+	"math/rand/v2"
 	"reflect"
 	"sync"
 
@@ -26,6 +28,16 @@ type actorCell interface {
 	// the entry the mailbox evicted. The outcome is Closed, and nothing is enqueued, when the cell
 	// has completed its final stop (MBX-150 (b)).
 	offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, entry)
+	// blocksSenders reports whether the user mailbox's policy is BlockSender.
+	blocksSenders() bool
+	// userQueue returns the user mailbox, to list it while senders wait on it (MBX-075).
+	userQueue() *mailbox.Queue[entry]
+	// offerWait offers the Sent entry e of an outside sender to the BlockSender user mailbox and
+	// waits while the mailbox is full, admit reports false or other senders wait, until the entry
+	// is enqueued, the mailbox closes or ctx ends (MBX-070); then the outcome is Rejected and the
+	// error ctx.Err(). waiting is called once, holding no lock, when the sender starts waiting. It
+	// schedules the cell when the mailbox took the entry (ENG-350). The caller holds no lock.
+	offerWait(ctx context.Context, e entry, admit func() bool, waiting func()) (mailbox.Outcome, error)
 	// mailboxState returns the number of entries in the user mailbox, its capacity and its policy,
 	// for the records of MBX §8.
 	mailboxState() (length, capacity int, policy MailboxPolicy)
@@ -80,6 +92,7 @@ type cell[M any] struct {
 	inc     uint32          // incarnation number: 0 at spawn, +1 per started incarnation (SUP-020)
 	actor   Actor[M]
 	ctx     *Context[M]
+	rng     *rand.Rand        // the incarnation's stream, nil until ctx.Rand asks for it (TMR-120)
 	starter Starter[M]        // the incarnation's optional interfaces, asserted once (ACT-100)
 	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
@@ -92,6 +105,14 @@ type cell[M any] struct {
 	stopReason StopReason // the reason of the one stop request
 	endErr     error      // the error of the restart that ends the incarnation (SUP-190)
 	waitChild  Address    // the child whose stopped notice the stop or restart waits for, or zero
+
+	// tmu is the cell's timer lock (TMR §11): timers run on the engine's callbacks, which on the
+	// local engine are other goroutines than the turn. It is taken before mu and the queue's lock
+	// (a firing enqueues under it) and never while holding mu, so a turn that pops a timer message
+	// has released mu before it takes tmu. nextTimer and timers are guarded by tmu.
+	tmu       sync.Mutex
+	nextTimer TimerID               // the last TimerID allocated: survives restarts (TMR-040)
+	timers    map[TimerID]*timer[M] // timers.go
 
 	// sup is the cell's supervision of its children with the strategy of its WithStrategy option
 	// (SUP-170 to SUP-290). Turn-owned.
@@ -157,6 +178,26 @@ func (c *cell[M]) offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, ent
 		c.schedule(from)
 	}
 	return out, evicted
+}
+
+// blocksSenders reports whether the user mailbox's policy is BlockSender (actorCell).
+func (c *cell[M]) blocksSenders() bool { return c.user.Policy() == mailbox.BlockSender }
+
+// userQueue returns the user mailbox (actorCell).
+func (c *cell[M]) userQueue() *mailbox.Queue[entry] { return c.user }
+
+// offerWait offers e to the BlockSender user mailbox and waits for a slot (actorCell). It takes no
+// cell lock: a waiter holding mu would keep the turn from popping and so from freeing a slot. The
+// queue's own closed state refuses the entry after the final stop, which closes the queue under
+// mu (MBX-150 (b)). A slot handed over by the turn's Pop or by Recheck comes with no Ready of its
+// own, so the cell is scheduled here; the Slot ignores a Ready for a cell that is scheduled or
+// running already.
+func (c *cell[M]) offerWait(ctx context.Context, e entry, admit func() bool, waiting func()) (mailbox.Outcome, error) {
+	out, _, err := c.user.OfferWaitNotify(ctx, e, admit, waiting)
+	if out == mailbox.Enqueued {
+		c.schedule(nil)
+	}
+	return out, err
 }
 
 // mailboxState returns the user mailbox's length, capacity and policy (actorCell).
