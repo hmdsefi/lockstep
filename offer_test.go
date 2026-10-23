@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -161,6 +162,33 @@ func TestATMBX11SendResultTable(t *testing.T) {
 				r.recs(from.String(), to.String(), r.policy.String()))
 		})
 	}
+
+	// The waiting row: an outside sender on a blocking engine waits for room, recorded as blocked
+	// when it starts waiting, and its message is delivered once the target consumes one. (The
+	// rejection when its context ends is AT-MBX-12's.) The deliver record's len is not compared:
+	// the released target consumes its mailbox meanwhile.
+	t.Run("BlockSender full, outside sender, blocking engine", func(t *testing.T) {
+		sys, rec := newRecordingSystem(t)
+		tp := spawnTarget(t, sys, "t", 1, BlockSender)
+		to := tp.Address()
+		release := hold(t, sys, to)
+		t.Cleanup(release)
+		send(t, sys, tp, 1)
+		before := len(rec.Records())
+		ch := sendContextAsync(context.Background(), sys, tp, 2)
+		waitingSenders(t, cellOf(t, sys, tp), 1)
+		release()
+		if err := sendReturned(t, ch); err != nil {
+			t.Errorf("Send = %v, want nil", err)
+		}
+		from := sys.user.String()
+		sameLines(t, "records", withoutLen(rendered(rec.Records(), before, to, "lockstep.deliver", "lockstep.mailbox.full", "lockstep.deadletter")),
+			withoutLen([]string{
+				"lockstep.mailbox.full from=" + from + " to=" + to.String() + " policy=block-sender action=blocked" +
+					" cause=capacity cap=1 len=1 msg=2",
+				"lockstep.deliver from=" + from + " to=" + to.String() + " seq=0 len=1 msg=2",
+			}))
+	})
 
 	// Eight goroutines send to one held actor: the outcomes add up, whatever the interleaving.
 	t.Run("concurrent senders", func(t *testing.T) {

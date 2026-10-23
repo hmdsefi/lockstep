@@ -25,6 +25,9 @@ import (
 // (SUP-300). A restart's end is followed by the child's ended notice, which starts the backoff,
 // after which begin is pushed (SUP-190, SUP-280); the child's stopped notice cancels a pending
 // begin and discards the child's state (SUP-250, SUP-290).
+//
+// Under AllForOne a restart or stop acts on the whole group (SUP-260): groupOp pushes one command
+// at a time, each acknowledged by the child's ended or stopped notice (group.go).
 type supervisor struct {
 	strategy Strategy
 	// guardian is set for the two guardians' supervisors (SUP-300).
@@ -37,6 +40,18 @@ type supervisor struct {
 	// Suspended; a resume of the cell resumes them, and its end or stop clears the list, since its
 	// stop sequence stops them (SUP-180, SUP-220).
 	escalated []failed
+
+	// group is the restart intensity of an AllForOne supervisor's whole group (SUP-260). It is
+	// reset when the supervisor's own incarnation ends, which stops the children it counts.
+	group supervise.Intensity
+	// op is the group operation that still has commands to push, or nil (SUP-260).
+	op *groupOp
+	// held holds the failed notices that reached the supervisor while op was pushing commands;
+	// nextHeld hands them out once it has pushed the last.
+	held []failed
+	// begins holds the delay timers of the group restarts that may still be pending, for the end
+	// of the supervisor's incarnation to cancel (SUP-260).
+	begins []*pendingBegin
 }
 
 // kidState is a supervisor's state for one child under OneForOne (SUP-250).
@@ -91,6 +106,13 @@ func (sv *supervisor) childFailed(sys *System, self Address, n failed, from engi
 		sys.recordDropStale(self, n)
 		return decision{}
 	}
+	if sv.op != nil {
+		// A group operation is pushing commands, and the notice may name a child it has yet to
+		// reach. It is decided once the operation has pushed its last command, when it is stale,
+		// or describes a child outside the group (SUP-260).
+		sv.held = append(sv.held, n)
+		return decision{}
+	}
 	d, err := sv.decide(n)
 	if err != nil {
 		if !sv.guardian {
@@ -118,7 +140,8 @@ func (sv *supervisor) current(sys *System, n failed) (actorCell, bool) {
 }
 
 // apply applies the directive d to the failed child of notice n and returns the directive
-// applied. A restart is admitted by restart intensity first (SUP-270): one more restart in the
+// applied. Under AllForOne a restart or stop acts on the group (startGroup). A restart is admitted
+// by restart intensity first (SUP-270): one more restart in the
 // window than MaxRestarts allows becomes an escalation, which a guardian applies as a stop
 // (SUP-300). It records lockstep.directive, with the restarts in the window for every directive,
 // then pushes the command (SUP-190 to SUP-210). An escalation at a cell pushes nothing: the caller
@@ -128,18 +151,26 @@ func (sv *supervisor) apply(sys *System, self Address, child actorCell, n failed
 ) supervise.Directive {
 	l := sv.strategy.limits()
 	now := sys.eng.Clock.Now()
+	allForOne := sv.strategy.scope == uint8(supervise.AllForOne)
 	var restarts int
 	var delay time.Duration
 	limit := false
 	if d == supervise.Restart {
-		k := sv.kid(n.child)
-		count, admitted := k.intensity.Admit(now, l)
+		// One Intensity for the group under AllForOne (SUP-260), one per child under OneForOne
+		// (SUP-250).
+		in := &sv.group
+		if !allForOne {
+			in = &sv.kid(n.child).intensity
+		}
+		count, admitted := in.Admit(now, l)
 		restarts = count
 		if admitted {
 			delay = supervise.Backoff(count, l)
 		} else {
 			d, limit = supervise.Escalate, true
 		}
+	} else if allForOne {
+		restarts = sv.group.Count(now, l)
 	} else if k := sv.kids[n.child]; k != nil {
 		restarts = k.intensity.Count(now, l)
 	}
@@ -150,17 +181,24 @@ func (sv *supervisor) apply(sys *System, self Address, child actorCell, n failed
 	sys.recordDirective(self, n, supervise.Scope(sv.strategy.scope), d, restarts, delay, limit, escalated)
 	switch d {
 	case supervise.Restart:
-		// OneForOne: the failed child only (SUP-190, SUP-250). AllForOne's group restart is
-		// SUP-260's; until it exists, an AllForOne strategy restarts the failed child alone.
+		if allForOne {
+			sv.startGroup(sys, self, n, true, delay, from) // SUP-260
+			break
+		}
 		k := sv.kids[n.child]
 		k.restarting, k.inc, k.delay = true, n.inc, delay
 		child.pushSystem(end{inc: n.inc, err: n.err}, from)
 	case supervise.Stop:
-		// The child stops for good with Failed(err) (SUP-200); AllForOne's group stop is
-		// SUP-260's. A stop request already queued keeps its reason (SUP-050).
+		if allForOne {
+			sv.startGroup(sys, self, n, false, 0, from) // SUP-260
+			break
+		}
+		// The child stops for good with Failed(err) (SUP-200). A stop request already queued keeps
+		// its reason (SUP-050).
 		child.requestStop(Failed(n.err), from)
 	case supervise.Resume:
-		child.pushSystem(resume{inc: n.inc}, from) // SUP-210; not counted toward intensity
+		// SUP-210, SUP-260: the failed child only; not counted toward intensity.
+		child.pushSystem(resume{inc: n.inc}, from)
 	case supervise.Escalate:
 		// SUP-220: the cell fails; the child stays Suspended.
 	}
@@ -216,7 +254,9 @@ func (c *cell[M]) afterDecision(n failed, dec decision) {
 // no longer is Suspended in the notice's incarnation has moved on and is skipped. A failure in the
 // factory or Started left no initialized state to resume: as Normalize does for a decider's
 // DirectiveResume (SUP-180), that child is restarted instead, through the decision path, intensity
-// included. If that fails the cell again, the children left stay in the list.
+// included. If that fails the cell again, the children left stay in the list. While a group
+// operation pushes commands, such a restart is held like any failed notice and decided after it
+// (SUP-260), so it cannot replace the running operation.
 func (c *cell[M]) resumeEscalated() {
 	for c.state == supervise.Running && len(c.sup.escalated) > 0 {
 		n := c.sup.escalated[0]
@@ -227,6 +267,10 @@ func (c *cell[M]) resumeEscalated() {
 		}
 		if d, _ := supervise.Normalize(supervise.Resume, n.source); d == supervise.Resume {
 			child.pushSystem(resume{inc: n.inc}, c)
+			continue
+		}
+		if c.sup.op != nil {
+			c.sup.held = append(c.sup.held, n)
 			continue
 		}
 		c.afterDecision(n, decision{d: c.sup.apply(c.sys, c.addr, child, n, supervise.Restart, c)})
@@ -242,6 +286,10 @@ func (c *cell[M]) resumeEscalated() {
 // does not wait for, of another incarnation, changes nothing. from is the ActorRef whose turn it
 // is.
 func (sv *supervisor) childEnded(sys *System, n ended, from engine.ActorRef) {
+	if op := sv.op; op != nil && op.restart && op.waits(n.child) && n.inc == op.wait.inc {
+		sv.stepGroup(sys, from) // SUP-260: the group's next end
+		return
+	}
 	k := sv.kids[n.child]
 	if k == nil || !k.restarting || k.inc != n.inc {
 		return
@@ -266,16 +314,18 @@ func (sv *supervisor) childEnded(sys *System, n ended, from engine.ActorRef) {
 
 // childStopped handles a child's stopped notice for supervision: it cancels the child's pending
 // begin, if any (SUP-290), and discards the child's state, its restart intensity included
-// (SUP-250).
-func (sv *supervisor) childStopped(child Address) {
-	k := sv.kids[child]
-	if k == nil {
-		return
+// (SUP-250). It also goes on with a group operation that waits for the child (SUP-260). from is
+// the ActorRef whose turn it is.
+func (sv *supervisor) childStopped(sys *System, child Address, from engine.ActorRef) {
+	if k := sv.kids[child]; k != nil {
+		if k.cancel != nil {
+			k.cancel()
+		}
+		delete(sv.kids, child)
 	}
-	if k.cancel != nil {
-		k.cancel()
+	if op := sv.op; op != nil && op.waits(child) {
+		sv.stepGroup(sys, from)
 	}
-	delete(sv.kids, child)
 }
 
 // beginRestart pushes begin to child after the backoff of the restart that ended incarnation inc
