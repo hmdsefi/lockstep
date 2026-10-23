@@ -24,11 +24,14 @@ import (
 // test resets what it owns at the start of its body, and assertions on records need the full trace.
 
 // simOpts returns sim.Options that run seeds seeds of 10 s of virtual time and keep every record.
+// Every seed runs twice and faultline compares the two traces (SIM-320), so these tests check
+// determinism in every go test run, not only under LOCKSTEP_CHECK_DETERMINISM=1.
 func simOpts(seeds int) sim.Options {
 	return sim.Options{Options: faultline.Options{
-		Seeds:    seeds,
-		Duration: 10 * time.Second,
-		Trace:    kernel.TraceConfig{Level: kernel.TraceFull},
+		Seeds:            seeds,
+		Duration:         10 * time.Second,
+		Trace:            kernel.TraceConfig{Level: kernel.TraceFull},
+		CheckDeterminism: true,
 	}}
 }
 
