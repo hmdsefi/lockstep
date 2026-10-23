@@ -881,7 +881,7 @@ func TestSUP090SpawnUnderRestartingParent(t *testing.T) {
 // registry is back to its size before P was spawned.
 func TestATSUP31NoOrphans(t *testing.T) {
 	sys, eng := newManualSystem(t)
-	before := sys.reg.Len()
+	before, liveBefore := sys.reg.Len(), sys.liveActors()
 	var paths []string
 	p, err := Spawn(sys, "p", actorOf[any](&fnActor[any]{started: func(ctx *Context[any]) {
 		for i := range 50 {
@@ -906,6 +906,9 @@ func TestATSUP31NoOrphans(t *testing.T) {
 	if n := sys.reg.Len(); n != before+151 {
 		t.Fatalf("registry holds %d entries after the spawns, want %d", n, before+151)
 	}
+	if n := sys.liveActors(); n != liveBefore+151 {
+		t.Fatalf("live count %d after the spawns, want %d", n, liveBefore+151)
+	}
 	if err := Stop(sys, p.Address()); err != nil {
 		t.Fatal(err)
 	}
@@ -920,6 +923,9 @@ func TestATSUP31NoOrphans(t *testing.T) {
 	}
 	if n := sys.reg.Len(); n != before {
 		t.Errorf("registry holds %d entries, want %d", n, before)
+	}
+	if n := sys.liveActors(); n != liveBefore {
+		t.Errorf("live count %d, want %d, its value before p was spawned", n, liveBefore)
 	}
 }
 

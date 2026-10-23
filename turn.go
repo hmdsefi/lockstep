@@ -191,7 +191,12 @@ func (c *cell[M]) begin() {
 	c.signals, _ = a.(SignalReceiver[M])
 	c.recordStart()
 	if c.starter != nil {
+		// OVL §3: a rebuild context is the Started of an incarnation a restart created (2 or
+		// later) and the first Started of an actor spawned from a rebuild context. Spawns from it
+		// are reserve spawns, so a restarted subtree rebuilds within the cap's reserve.
+		c.ctx.rebuild = c.inc >= 2 || c.rebuildSpawn
 		c.callHandler(supervise.InStarted, func() { c.starter.Started(c.ctx) })
+		c.ctx.rebuild = false
 	}
 	if c.state == supervise.Starting { // Started did not fail
 		c.setState(supervise.Running)

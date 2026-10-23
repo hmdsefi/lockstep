@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/engine/local"
+	"github.com/hmdsefi/lockstep/internal/overload"
 	"github.com/hmdsefi/lockstep/internal/registry"
 )
 
@@ -23,8 +24,12 @@ type System struct {
 	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
 
 	reg          *registry.Registry
-	user, system Address     // the guardians; neither is registered (ACT-030)
-	closing      atomic.Bool // shutting down or stopped: Spawn returns ErrStopped (ACT-050); set by Shutdown
+	user, system Address // the guardians; neither is registered (ACT-030)
+	// actors counts the live actors against the actor cap (OVL-010, OVL-020): Spawn takes a slot
+	// before it registers the child, and the stop sequence returns it when it removes the child
+	// from the registry. In-place restarts never touch it (OVL-160).
+	actors  *overload.Cap
+	closing atomic.Bool // shutting down or stopped: Spawn returns ErrStopped (ACT-050); set by Shutdown
 	// stopped is set when both guardians' children have stopped (ACT-050): Send, Ask and NewReply
 	// return ErrStopped and reply attempts are dropped (MSG-100, MSG-300, MSG-380, MSG-410). It is
 	// set under the ask table's lock (askTable.stop).
@@ -113,6 +118,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 		mbx:         cfg.mbx,
 		incarnation: eng.Epoch,
 		reg:         registry.New(),
+		actors:      overload.NewCap(cfg.maxActors),
 		epoch:       eng.Epoch,
 		seq:         1,
 		epochs:      []uint32{eng.Epoch},
@@ -124,9 +130,9 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 	s.system = Address{node: s.node, path: "/system", uid: s.allocUID()}
 	s.reg.AddRoot(registry.Addr{Node: s.user.node, Path: s.user.path, UID: s.user.uid})
 	s.reg.AddRoot(registry.Addr{Node: s.system.node, Path: s.system.path, UID: s.system.uid})
-	// Admission's change and usage callbacks are OVL's (plan 1.3); until then nothing changes and
-	// nothing is used.
-	eng.Admission.Bind(func(engine.AdmissionChange) {}, func() engine.Usage { return engine.Usage{} })
+	// usage reports the live-actor count (OVL-020). The change handler's records, signals and
+	// Recheck calls are OVL-150's; until they exist a change does nothing.
+	eng.Admission.Bind(func(engine.AdmissionChange) {}, s.usage)
 	return s, nil
 }
 

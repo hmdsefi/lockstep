@@ -83,12 +83,39 @@ func TestCapReleaseKeepsReserve(t *testing.T) {
 	}
 }
 
-func TestCapReleaseBelowZero(t *testing.T) {
-	c := overload.NewCap(2)
-	c.Release()
-	if ok, live, _, _ := c.Acquire(false); !ok || live != 0 {
-		t.Fatalf("Acquire after a stray Release = (%v, live %d); want admitted at live 0", ok, live)
+// OVL §4.2, §7: a Release with no slot taken panics; balanced Acquire and Release calls never do.
+func TestCapReleaseAtZero(t *testing.T) {
+	const want = "overload: Cap.Release at zero"
+	if got := releasePanic(overload.NewCap(2)); got != want {
+		t.Errorf("Release on a new Cap panicked with %v, want %q", got, want)
 	}
+
+	c := overload.NewCap(10)
+	for range 3 {
+		c.Acquire(false)
+	}
+	c.Acquire(true)
+	for range 4 {
+		if got := releasePanic(c); got != nil {
+			t.Fatalf("balanced Release panicked with %v", got)
+		}
+	}
+	if ok, live, _, _ := c.Acquire(false); !ok || live != 0 {
+		t.Errorf("Acquire after balanced Releases = (%v, live %d); want admitted at live 0", ok, live)
+	}
+	if got := releasePanic(c); got != nil {
+		t.Fatalf("balanced Release panicked with %v", got)
+	}
+	if got := releasePanic(c); got != want {
+		t.Errorf("extra Release panicked with %v, want %q", got, want)
+	}
+}
+
+// releasePanic calls c.Release and returns what it panicked with, or nil.
+func releasePanic(c *overload.Cap) (v any) {
+	defer func() { v = recover() }()
+	c.Release()
+	return nil
 }
 
 func TestOVL060CapConcurrent(t *testing.T) {

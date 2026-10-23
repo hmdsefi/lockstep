@@ -50,12 +50,21 @@ func (c *Cap) Acquire(reserve bool) (ok bool, live, limit, rsv int) {
 	}
 }
 
-// Release returns one slot. The count never goes below zero.
+// Release returns one slot. It panics with "overload: Cap.Release at zero" when no slot is taken:
+// a double release would make the count undercount live actors (OVL-060).
 func (c *Cap) Release() {
 	for {
 		n := c.live.Load()
-		if n <= 0 || c.live.CompareAndSwap(n, n-1) {
+		if n <= 0 {
+			panic("overload: Cap.Release at zero")
+		}
+		if c.live.CompareAndSwap(n, n-1) {
 			return
 		}
 	}
+}
+
+// Live returns the number of slots taken: the live actors the cap counts (OVL-020).
+func (c *Cap) Live() int {
+	return int(c.live.Load())
 }

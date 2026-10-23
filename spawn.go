@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -65,6 +66,10 @@ type spawnParent interface {
 	// whose stop has started, in its Stopped hook. A System reports false; Shutdown has its own
 	// flag (closing). Spawn calls it after spawnParent, so a Context is in its turn.
 	parentStopping() bool
+	// rebuilding reports whether the spawn is made from a rebuild context (OVL §3): the parent's
+	// Started hook runs for a restart, or is the first Started of an actor spawned from a rebuild
+	// context. A System reports false. Spawn calls it after spawnParent.
+	rebuilding() bool
 }
 
 func (s *System) nilSpawner() bool { return s == nil }
@@ -76,11 +81,14 @@ func (s *System) spawnParent() (*System, Address, engine.ActorRef) { return s, s
 
 func (*System) parentStopping() bool { return false }
 
+func (*System) rebuilding() bool { return false }
+
 // Spawn creates a child of parent named name and returns its PID. name "" asks for a generated
 // name "$<n>". factory is called at every start and restart, never by Spawn itself.
 //
 // Errors: ErrInvalidName, ErrInvalidOption, ErrStopped, ErrNameTaken, ErrActorCap and
 // ErrOverloaded (OVL), each wrapped as in §7. Spawn panics if parent, factory or an option is nil.
+// A spawn refused for any of these reasons registers nothing and takes no generated name.
 func Spawn[M any](parent Spawner, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
 	cfg := newSpawnConfig(opts)
 	var p spawnParent
@@ -94,24 +102,26 @@ func Spawn[M any](parent Spawner, name string, factory func() Actor[M], opts ...
 		panic("lockstep: Spawn with nil factory")
 	}
 	sys, parentAddr, from := p.spawnParent()
-	return spawn(sys, parentAddr, from, p.parentStopping(), name, factory, cfg)
+	return spawn(sys, parentAddr, from, p.parentStopping(), p.rebuilding(), name, factory, cfg)
 }
 
 // spawnSystem spawns a child of the system guardian, under /system (ACT-030). Only lockstep's own
-// packages spawn there; no exported API does.
+// packages spawn there; no exported API does. It is a reserve spawn (OVL §3).
 func spawnSystem[M any](sys *System, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
 	cfg := newSpawnConfig(opts)
 	if factory == nil {
 		panic("lockstep: Spawn with nil factory")
 	}
-	return spawn(sys, sys.system, nil, false, name, factory, cfg)
+	return spawn(sys, sys.system, nil, false, false, name, factory, cfg)
 }
 
 // spawn runs ACT-300 from step 3 on: it checks the name, the options, the system's and the
-// parent's state, the name's availability and admission, in that order, then registers the child,
-// records the spawn, pushes begin and schedules the child (ACT-340, ENG-350). from is the cell
-// whose turn spawns, or nil; stopping reports that it is the parent and is stopping (SUP-090).
-func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bool, name string,
+// parent's state, the name's availability, the actor cap and admission, in that order (OVL-040),
+// then registers the child, records the spawn, pushes begin and schedules the child (ACT-340,
+// ENG-350). from is the cell whose turn spawns, or nil; stopping reports that it is the parent and
+// is stopping (SUP-090); rebuild that the spawn is made from a rebuild context (OVL §3). A spawn
+// from a rebuild context and a spawn of a system actor are reserve spawns.
+func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping, rebuild bool, name string,
 	factory func() Actor[M], cfg *spawnConfig,
 ) (PID[M], error) {
 	typ := reflect.TypeFor[M]().String()
@@ -126,7 +136,13 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bo
 		return refuse(cfg.err)
 	}
 	c := newCell(sys, parent, factory, cfg.mailbox(sys.mbx), cfg.strategy)
-	if err := register(sys, c, parent, stopping, name); err != nil {
+	c.rebuildSpawn = rebuild
+	reserve := rebuild || spawnsSystemActor(parent.path)
+	if err := register(sys, c, parent, stopping, reserve, name); err != nil {
+		var capErr *capError
+		if errors.As(err, &capErr) {
+			sys.recordCap(capErr, reserve)
+		}
 		return refuse(err)
 	}
 	sys.recordSpawn(parent, c.addr, typ)
@@ -142,7 +158,12 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bo
 // either sees the shutdown's closing mark or is registered before the shutdown lists the
 // guardians' children (ACT-050). stopping reports that the parent is stopping (SUP-090): its stop
 // sequence's registry removal then never finds a child.
-func register[M any](sys *System, c *cell[M], parent Address, stopping bool, name string) error {
+//
+// Step 6 is the actor cap, then admission (OVL-040), both with reserve, which reports a reserve
+// spawn (OVL-030). The cap slot is taken before Registry.Add allocates a generated name, so a
+// refused spawn advances no name counter (ACT-320), and given back if admission refuses or Add
+// loses the name to a concurrent spawn: a refused spawn changes no count.
+func register[M any](sys *System, c *cell[M], parent Address, stopping, reserve bool, name string) error {
 	sys.spawnMu.RLock()
 	defer sys.spawnMu.RUnlock()
 	if sys.closing.Load() || stopping {
@@ -152,7 +173,11 @@ func register[M any](sys *System, c *cell[M], parent Address, stopping bool, nam
 	if name != "" && sys.reg.Taken(parent.path, name) {
 		return nameTaken()
 	}
-	if err := sys.eng.Admission.AdmitSpawn(false); err != nil {
+	if ok, live, limit, rsv := sys.actors.Acquire(reserve); !ok {
+		return &capError{parent: parent.path, live: live, limit: limit, reserve: rsv}
+	}
+	if err := sys.eng.Admission.AdmitSpawn(reserve); err != nil {
+		sys.actors.Release()
 		return err
 	}
 	// Hold c.mu until addr is set: whoever finds c through the registry takes c.mu before reading
@@ -165,6 +190,7 @@ func register[M any](sys *System, c *cell[M], parent Address, stopping bool, nam
 		return uid
 	}, actorCell(c))
 	if !ok {
+		sys.actors.Release()
 		return nameTaken() // a concurrent Spawn took the name after Taken
 	}
 	c.addr = Address{node: sys.node, path: path, uid: uid}
