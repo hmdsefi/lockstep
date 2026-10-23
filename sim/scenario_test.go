@@ -7,11 +7,15 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/faultline/artifact"
 )
 
 // scenarios are the child-process scenarios of this package, by name. Tests look them up by key
@@ -96,4 +100,51 @@ func coverArgs() []string {
 		return []string{"-test.gocoverdir=" + f.Value.String()}
 	}
 	return nil
+}
+
+// failure is the part of faultline's report of a failing seed that tests assert on.
+type failure struct {
+	Kind      string // invariant, final, panic, ...
+	Check     string // the check name
+	Signature string // <kind>:<check>
+	Message   string
+}
+
+// failingSeed runs scenario name in a child process with FAULTLINE_ARTIFACTS set to a temporary
+// directory, finds the one report.json beneath it and returns the failure it records. The test
+// fails if the child exits 0 or does not leave exactly one report.json. The scenario must run one
+// seed, so that faultline writes one report.
+func failingSeed(t *testing.T, name string) failure {
+	t.Helper()
+	dir := t.TempDir()
+	out, code := runScenario(t, name, "FAULTLINE_ARTIFACTS="+dir)
+	if code == 0 {
+		t.Fatalf("scenario %s exited 0, want a failing seed\n%s", name, out)
+	}
+	var reports []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == "report.json" {
+			reports = append(reports, path)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("scenario %s left %d report.json files under %s, want 1\n%s", name, len(reports), dir, out)
+	}
+	f, err := os.Open(reports[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	r, err := artifact.ReadReport(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Failure == nil {
+		t.Fatalf("scenario %s: report.json has status %q and no failure\n%s", name, r.Status, out)
+	}
+	return failure{Kind: r.Failure.Kind, Check: r.Failure.Check, Signature: r.Failure.Signature, Message: r.Failure.Message}
 }
