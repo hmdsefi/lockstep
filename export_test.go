@@ -23,3 +23,9 @@ func Hold(sys *System, addr Address) (release func()) {
 // EngineBlocking reports the Blocking flag of the engine bundle sys was built on, for the
 // simulation tests (SIM-220).
 func EngineBlocking(sys *System) bool { return sys.eng.Blocking }
+
+// SpawnSystem spawns a child of sys's system guardian, an actor under /system, which no exported
+// API does (OVL §3), for the simulation tests of OVL-110.
+func SpawnSystem[M any](sys *System, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
+	return spawnSystem(sys, name, factory, opts...)
+}
