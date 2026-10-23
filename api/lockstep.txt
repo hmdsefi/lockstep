@@ -1,3 +1,11 @@
+pkg github.com/hmdsefi/lockstep, const BlockSender = 3
+pkg github.com/hmdsefi/lockstep, const BlockSender MailboxPolicy
+pkg github.com/hmdsefi/lockstep, const DropNewest = 1
+pkg github.com/hmdsefi/lockstep, const DropNewest MailboxPolicy
+pkg github.com/hmdsefi/lockstep, const DropOldest = 2
+pkg github.com/hmdsefi/lockstep, const DropOldest MailboxPolicy
+pkg github.com/hmdsefi/lockstep, const FailSend = 0
+pkg github.com/hmdsefi/lockstep, const FailSend MailboxPolicy
 pkg github.com/hmdsefi/lockstep, const StopFailed = 2
 pkg github.com/hmdsefi/lockstep, const StopFailed StopKind
 pkg github.com/hmdsefi/lockstep, const StopNoActor = 6
@@ -23,6 +31,8 @@ pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor
 pkg github.com/hmdsefi/lockstep, func Stop(Sender, Address) error
 pkg github.com/hmdsefi/lockstep, func Unwatch[M any](*Context[M], Address)
 pkg github.com/hmdsefi/lockstep, func Watch[M any](*Context[M], Address) error
+pkg github.com/hmdsefi/lockstep, func WithDefaultMailbox(int, MailboxPolicy) Option
+pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
@@ -37,6 +47,7 @@ pkg github.com/hmdsefi/lockstep, method (Address) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) Path() string
 pkg github.com/hmdsefi/lockstep, method (Address) String() string
 pkg github.com/hmdsefi/lockstep, method (Address) UID() uint64
+pkg github.com/hmdsefi/lockstep, method (MailboxPolicy) String() string
 pkg github.com/hmdsefi/lockstep, method (PID[M]) Address() Address
 pkg github.com/hmdsefi/lockstep, method (PID[M]) IsZero() bool
 pkg github.com/hmdsefi/lockstep, method (PID[M]) String() string
@@ -49,6 +60,7 @@ pkg github.com/hmdsefi/lockstep, type Actor[M any] interface, Receive(*Context[M
 pkg github.com/hmdsefi/lockstep, type Address struct
 pkg github.com/hmdsefi/lockstep, type AskOption func(*askConfig)
 pkg github.com/hmdsefi/lockstep, type Context[M any] struct
+pkg github.com/hmdsefi/lockstep, type MailboxPolicy uint8
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type PID[M any] struct
 pkg github.com/hmdsefi/lockstep, type ReplyTo[R any] struct

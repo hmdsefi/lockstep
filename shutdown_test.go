@@ -703,10 +703,11 @@ func TestShutdownChildStoppedBeforeBegin(t *testing.T) {
 	}
 	c := cellOf(t, sys, pid)
 	c.mu.Lock()
-	c.sysq = fifo[sysMsg]{}
+	for _, ok := c.sysq.Pop(); ok; _, ok = c.sysq.Pop() { // drop the queued begin
+	}
 	c.stopReq = true
-	c.sysq.push(stop{reason: Normal})
-	c.sysq.push(begin{})
+	c.sysq.Push(stop{reason: Normal})
+	c.sysq.Push(begin{})
 	c.mu.Unlock()
 
 	if err := sys.Shutdown(context.Background()); err != nil {

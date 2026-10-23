@@ -539,9 +539,7 @@ func TestStopDrain(t *testing.T) {
 		t.Error("a closed mailbox accepted an entry")
 	}
 	c.pushSystem(begin{}, nil)
-	c.mu.Lock()
-	n, m := c.user.size(), c.sysq.size()
-	c.mu.Unlock()
+	n, m := c.user.Len(), c.sysq.Len()
 	if n != 0 || m != 0 {
 		t.Errorf("closed queues hold %d user and %d system messages, want none", n, m)
 	}

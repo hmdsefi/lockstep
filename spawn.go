@@ -15,10 +15,12 @@ import (
 type SpawnOption func(*spawnConfig)
 
 // spawnConfig is what the SpawnOptions of one Spawn configure. Option appliers only set fields and
-// report a bad value through fail; Spawn validates (ACT-300 step 3a). The settings themselves
-// arrive with their owner plans (MBX, SUP, SCH).
+// report a bad value through fail; Spawn validates (ACT-300 step 3a). The mailbox (MBX) is the
+// first setting; the others arrive with their owner plans (SUP, SCH).
 type spawnConfig struct {
-	err error // the first invalid option's error, in argument order
+	mbx    mailboxConfig // WithMailbox's value, meaningful when mbxSet
+	mbxSet bool
+	err    error // the first invalid option's error, in argument order
 }
 
 // fail records err, which wraps ErrInvalidOption, for the option being applied. Only the first
@@ -39,6 +41,15 @@ func newSpawnConfig(opts []SpawnOption) *spawnConfig {
 		o(c)
 	}
 	return c
+}
+
+// mailbox returns the capacity and policy of the new actor's mailbox: its WithMailbox if given
+// (the last one), else def, the system's default (MBX-010).
+func (c *spawnConfig) mailbox(def mailboxConfig) mailboxConfig {
+	if c.mbxSet {
+		return c.mbx
+	}
+	return def
 }
 
 // spawnParent is what Spawn needs from a Spawner; exactly *System and *Context[X] implement it.
@@ -113,7 +124,7 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bo
 	if cfg.err != nil {
 		return refuse(cfg.err)
 	}
-	c := &cell[M]{sys: sys, parent: parent, factory: factory}
+	c := newCell(sys, parent, factory, cfg.mailbox(sys.mbx))
 	if err := register(sys, c, parent, stopping, name); err != nil {
 		return refuse(err)
 	}

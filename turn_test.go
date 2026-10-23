@@ -52,9 +52,7 @@ func TestRunTurnBudget(t *testing.T) {
 	}
 
 	// A system message is processed whatever the budget, and makes more true until it is.
-	c.mu.Lock()
-	c.sysq.push(begin{})
-	c.mu.Unlock()
+	c.sysq.Push(begin{})
 	if !c.hasWork() {
 		t.Error("hasWork with a queued system message = false")
 	}
