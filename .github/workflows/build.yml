@@ -96,7 +96,7 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
       - name: determinism lint, boundaries, API snapshot, golden hashes, run-twice checks
-        run: go test -count=1 ./internal/dettest/...
+        run: go test -count=1 ./sim/... ./internal/dettest/...
 
   boundaries:
     name: boundaries (D5)

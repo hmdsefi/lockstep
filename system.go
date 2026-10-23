@@ -34,6 +34,10 @@ type System struct {
 	// return ErrStopped and reply attempts are dropped (MSG-100, MSG-300, MSG-380, MSG-410). It is
 	// set under the ask table's lock (askTable.stop).
 	stopped atomic.Bool
+	// discarded is set by Discard, when the simulation engine discards the system after a node
+	// crash (SUP-360): Spawn returns ErrStopped and Shutdown does nothing, on top of what stopped
+	// does. No actor runs again, so nothing else reads it.
+	discarded atomic.Bool
 	// spawnMu makes Spawn's closing check atomic with the child's registration: Spawn holds it for
 	// reading from the check through Registry.Add, and Shutdown sets closing holding it for writing.
 	// A child that registers is therefore one the shutdown's guardian sweep finds (ACT-050).
@@ -162,6 +166,9 @@ type shutdownState struct {
 // may shut down its own system) or on an engine that cannot block, such as the simulation
 // engine, it starts the shutdown and returns nil at once without waiting (ACT-060).
 func (s *System) Shutdown(ctx context.Context) error {
+	if s.discarded.Load() { // SUP-360: no Stopped hook runs, so there is no shutdown to start or wait for
+		return nil
+	}
 	s.shut.start.Do(s.startShutdown)
 	// ACT-060: only a caller outside engine context on a blocking engine waits. Once the engine
 	// has stopped, nothing calls it again (ENG-140).

@@ -10,11 +10,15 @@ import (
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
-// init sets the hook of ENG-200; it is the only init function of the package.
+// init sets the hook of ENG-200 and SIM's three hooks (SIM §5.9); it is the only init function of
+// the package.
 //
 //nolint:gochecknoinits // RFC-0001: internal/hooks is set at package init
 func init() {
 	hooks.NewSystem = buildSystem
+	hooks.Discard = discardHook
+	hooks.AskResolved = askResolvedHook
+	hooks.PendingAsks = pendingAsksHook
 }
 
 // buildSystem is hooks.NewSystem (ENG-200): it builds a system on eng with the options in opts,
