@@ -81,10 +81,11 @@ type runner struct {
 }
 
 // run is the function passed to faultline: it ends the previous run's Sim (SIM-040), builds a
-// new one on w and calls body with it.
+// new one on w, registers the named checks (SIM-300) and calls body with it.
 func (r *runner) run(w *faultline.World) {
 	r.end()
 	r.cur = &Sim{w: w}
+	r.cur.registerChecks()
 	r.body(r.cur)
 }
 

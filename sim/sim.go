@@ -11,6 +11,9 @@ import "github.com/hmdsefi/faultline"
 type Sim struct {
 	w     *faultline.World
 	ended bool
+
+	// slots holds the first failure stored for each named check, indexed like checkNames.
+	slots [len(checkNames)]error
 }
 
 // World returns the faultline World of this run.
