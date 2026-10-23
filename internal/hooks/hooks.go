@@ -18,6 +18,11 @@ type Built struct {
 // package lockstep is initialized. Called by sim (SIM-070); implemented by ACT (ENG-200).
 var NewSystem func(eng engine.Engine, opts any) (Built, error)
 
+// Address returns a as a lockstep.Address (ENG-020), so that sim can tell an effect handler the
+// address of the actor that called Do (EFF-400). It is nil until package lockstep is
+// initialized. Called by sim; implemented by ACT.
+var Address func(a engine.Address) any
+
 // PendingAsk is one pending ask of a system (MSG-370).
 type PendingAsk struct {
 	Ask     engine.Address // the ask address
