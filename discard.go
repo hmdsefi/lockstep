@@ -6,6 +6,7 @@ package lockstep
 import (
 	"fmt"
 
+	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
@@ -21,6 +22,28 @@ func hookSystem(hook string, sys any) *System {
 
 // discardHook is hooks.Discard (SIM-110).
 func discardHook(sys any) { hookSystem("Discard", sys).discard() }
+
+// injectFailHook is hooks.InjectFail (SFT-030): it pushes inject{err} to the system queue of the
+// live actor at addr, so that its next turn fails it with source injected (SFT-040). A path
+// address names the actor registered at its path, whatever its type (ACT-440). It returns an error
+// wrapping ErrNotFound if addr names no live actor of sys, a guardian included, and panics if err
+// is nil.
+func injectFailHook(sys any, addr engine.Address, err error) error {
+	s := hookSystem("InjectFail", sys)
+	if err == nil {
+		panic("lockstep: hooks.InjectFail: nil error")
+	}
+	a := addressOf(addr)
+	if a.IsZero() || a.node != s.node || s.isGuardian(a) {
+		return fmt.Errorf("%w: %s", ErrNotFound, a)
+	}
+	c, _, _ := s.resolve(a, nil)
+	if c == nil {
+		return fmt.Errorf("%w: %s", ErrNotFound, a)
+	}
+	c.pushSystem(inject{err: err}, nil)
+	return nil
+}
 
 // askResolvedHook is hooks.AskResolved (SIM-200): it reads the state of reply, a *Reply[R] of any
 // R, without waiting.
