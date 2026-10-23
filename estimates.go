@@ -129,12 +129,14 @@ func (s *System) Estimates(n int) []ActorEstimate {
 
 // collectEstimates appends the estimates of the live descendants of parent, in registry order:
 // each child, then its own descendants. The registry lists children in spawn order, so the walk is
-// the same for the same run (OVL §6); the caller sorts the result.
+// the same for the same run (OVL §6); the caller sorts the result. Each address is the registry's,
+// not read from the cell, which Spawn may still be setting up.
 func (s *System) collectEstimates(all []ActorEstimate, parent string) []ActorEstimate {
 	for _, k := range s.reg.Children(parent) {
 		if c, ok := s.estimatedCell(k); ok {
 			mailbox, state := c.estimate()
-			all = append(all, ActorEstimate{Addr: addressOf(c.Address()), MailboxBytes: mailbox, StateBytes: state})
+			addr := Address{node: k.Node, path: k.Path, uid: k.UID}
+			all = append(all, ActorEstimate{Addr: addr, MailboxBytes: mailbox, StateBytes: state})
 			all = s.collectEstimates(all, k.Path)
 		}
 	}

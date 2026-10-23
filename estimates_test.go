@@ -6,6 +6,7 @@ package lockstep
 import (
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -511,5 +512,49 @@ func TestOVL410ConcurrentSenders(t *testing.T) {
 	wantBytes(t, "at the end", sys, pid.Address(), 0, 0)
 	if got := sys.usage().Bytes; got != 0 {
 		t.Errorf("usage().Bytes = %d, want 0", got)
+	}
+}
+
+// OVL-430 on the local engine: Estimates walks the registry while Spawn registers new actors, and
+// takes each address from the registry, not from a cell Spawn may still be setting up. Run under
+// -race, this test fails if the walk reads a cell's address.
+func TestEstimatesWhileSpawning(t *testing.T) {
+	sys := newLocalSystem(t, WithMemoryEstimates())
+	const n = 100
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_ = sys.Estimates(n)
+		}
+	}()
+	want := make([]Address, 0, n)
+	for i := range n {
+		pid, err := Spawn(sys, "e"+strconv.Itoa(i), func() Actor[any] { return &memProbe{} })
+		if err != nil {
+			t.Fatalf("Spawn e%d: %v", i, err)
+		}
+		want = append(want, pid.Address())
+	}
+	close(done)
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Estimates goroutine did not stop within 10 s")
+	}
+	var got []Address
+	for _, e := range sys.Estimates(n) {
+		got = append(got, e.Addr)
+	}
+	slices.SortFunc(got, func(a, b Address) int { return strings.Compare(a.String(), b.String()) })
+	slices.SortFunc(want, func(a, b Address) int { return strings.Compare(a.String(), b.String()) })
+	if !slices.Equal(got, want) {
+		t.Errorf("Estimates lists %d addresses, want the %d spawned ones: %v", len(got), len(want), got)
 	}
 }
