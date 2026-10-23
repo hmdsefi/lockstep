@@ -224,9 +224,8 @@ func (c *cell[M]) finishStop() {
 // each Sent entry, in queue order, as a dead letter with reason stopped, from its sender to the
 // stopped actor's address (MBX §8); each Self entry, piped replies and effect results included, as
 // lockstep.drop reason incarnation-ended, a piped reply or an effect result described by its error
-// or its value (MBX §8); each signal
-// left in the system queue as lockstep.drop reason not-running. The other system messages are
-// discarded without a record.
+// or its value (MBX §8); each signal left in the system queue as lockstep.drop reason
+// not-running. The other system messages are discarded without a record.
 func (c *cell[M]) drain() {
 	sent, self, signals := c.closeQueues()
 	for _, e := range sent {

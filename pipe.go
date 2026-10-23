@@ -71,9 +71,9 @@ func (r *Reply[R]) resolution() any {
 }
 
 // processSelf handles one Self entry of the user mailbox: a timer message goes to processTimer and
-// an effect result to processEffectResult. It
-// returns the message that the turn's lockstep.turn record describes (ENG-340): the M that to
-// returned for a piped reply, none when the entry was discarded or to panicked.
+// an effect result to processEffectResult. It returns the message that the turn's lockstep.turn
+// record describes (ENG-340): the M that to returned for a piped reply, none when the entry was
+// discarded or to panicked.
 //
 // An entry of an incarnation that has ended is not delivered (MBX-170): a piped reply is recorded
 // only as lockstep.pipe.drop (MSG-620), any other Self entry as lockstep.drop reason
