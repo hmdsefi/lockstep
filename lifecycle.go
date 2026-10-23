@@ -215,6 +215,7 @@ func (c *cell[M]) resumeIncarnation(m resume) {
 	}
 	c.setState(supervise.Running)
 	c.resumeEscalated()
+	c.replayHeld()
 	for c.state == supervise.Running && len(c.kept) > 0 {
 		k := c.kept[0]
 		c.kept[0] = nil
