@@ -128,7 +128,8 @@ func TestATSIM16AskTimeoutAndRunEnd(t *testing.T) {
 }
 
 // SIM-200: Ask returns the node-down error for a node that is not booted yet, and stops
-// running the simulation as soon as the node goes down while the reply is pending.
+// running the simulation as soon as the node goes down while the reply is pending: the crash
+// discards the node's system, which resolves the ask with ErrStopped (SIM-110).
 func TestSIM200NodeDown(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -146,8 +147,8 @@ func TestSIM200NodeDown(t *testing.T) {
 		w.RunFor(time.Second)
 		n1.After(time.Second, "test/crash", n1.Crash)
 		_, err := sim.Ask(s, "n1", pid, buildPing(1))
-		if !errors.Is(err, lockstep.ErrStopped) || err.Error() != want {
-			tt.Errorf("Ask across a crash: %v, want %q wrapping ErrStopped", err, want)
+		if !errors.Is(err, lockstep.ErrStopped) {
+			tt.Errorf("Ask across a crash: %v, want an error wrapping ErrStopped", err)
 		}
 		if now, want := w.Sim.Now(), kernel.Time(2*time.Second); now != want {
 			tt.Errorf("Now() = %v after Ask, want the crash time %v", now, want)

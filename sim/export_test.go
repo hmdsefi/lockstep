@@ -33,6 +33,3 @@ func (s *Sim) Engine(name string) engine.Engine {
 	}
 	return engine.Engine{}
 }
-
-// MarkDead marks the engine of node name's latest boot dead, as a Stop does (SIM-120, SIM-195).
-func (s *Sim) MarkDead(name string) { s.lookup(name).eng.dead = true }

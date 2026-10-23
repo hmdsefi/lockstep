@@ -4,6 +4,7 @@
 package sim_test
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"testing"
@@ -110,8 +111,9 @@ func TestSIM140DeferredSendsKeepOrder(t *testing.T) {
 	}
 }
 
-// SIM-120, SIM-170: the simnet handler of a dead engine, whose node stays up, ignores every
-// arrival: an envelope reaches no actor and a payload that is not lockstep's fails nothing.
+// SIM-120, SIM-170, SIM-195: the simnet handler of a dead engine, whose node stays up after its
+// system shut down, ignores every arrival: an envelope reaches no actor and a payload that is not
+// lockstep's fails nothing.
 func TestSIM170DeadEngineIgnoresArrivals(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -119,7 +121,13 @@ func TestSIM170DeadEngineIgnoresArrivals(t *testing.T) {
 		n1 := s.Node("n1", noSetup)
 		n2 := s.Node("n2", receiver(&got))
 		w.RunFor(time.Millisecond)
-		s.MarkDead("n2")
+		if err := s.System("n2").Shutdown(context.Background()); err != nil {
+			tt.Fatalf("Shutdown: %v", err)
+		}
+		w.RunFor(time.Millisecond)
+		if s.Engine("n2").Clock.AfterFunc(time.Hour, "test/probe", func() {})() {
+			tt.Fatal("n2's engine is not dead after its system shut down")
+		}
 		if err := sim.Send(s, "n1", lockstep.PIDAt[Num]("n2", "/user/r"), Num{1}); err != nil {
 			tt.Fatalf("Send: %v", err)
 		}
