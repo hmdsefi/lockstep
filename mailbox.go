@@ -129,6 +129,8 @@ type entry struct {
 	from Address // the sender
 	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
 	seq  uint64  // the inbound envelope's Seq for the deliver record (MBX §8); 0 for a local send
-	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe sets it
-	kind entryKind
+	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe and the timers set it
+	// timer is the TimerID of a timer message, 0 for any other entry.
+	timer TimerID
+	kind  entryKind
 }

@@ -988,7 +988,7 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 	release := c.holdTurns()
 
 	send(t, sys, a, any("m1"))
-	c.offerSelf(entry{msg: "t1", kind: entrySelf, inc: c.inc}) // a timer message of the live incarnation
+	c.offerSelf(entry{msg: "t1", kind: entrySelf, inc: c.inc, timer: 1}) // a timer message of the live incarnation
 	piped := pipedReply[any]{ask: gone(), reply: 7, call: func() any { return "r" }}
 	c.offerSelf(entry{msg: piped, kind: entrySelf, inc: c.inc})
 	pipedErr := pipedReply[any]{ask: gone(), reply: ErrTimeout, call: func() any { return "e" }}
