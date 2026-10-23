@@ -12,12 +12,16 @@ import (
 )
 
 // Budget sets count-based admission budgets for every lockstep node. A node system starts
-// shedding (source "budget", spec OVL) when a count reaches its budget and stops when every count
-// is at or below ResumePercent percent of its budget. The zero value sets no budget.
+// shedding (source budget) when a count reaches its budget and stops when every count is at or
+// below ResumePercent percent of its budget. The zero value sets no budget.
 type Budget struct {
-	Actors        int   // live actors per node; 0: no actor budget
-	Bytes         int64 // the system's memory estimate (Sizer and MemSizer, OVL); 0: no byte budget
-	ResumePercent int   // 1 to 99; 0 means 80
+	// Actors is the budget of live actors per node; 0 sets no actor budget.
+	Actors int
+	// Bytes is the budget of the system's memory estimate (the lockstep.Sizer and
+	// lockstep.MemSizer estimates); 0 sets no byte budget.
+	Bytes int64
+	// ResumePercent is the resume mark in percent of each budget, 1 to 99; 0 means 80.
+	ResumePercent int
 }
 
 // defaultResumePercent is the resume mark of a Budget whose ResumePercent is 0 (SFT-130).
