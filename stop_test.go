@@ -384,8 +384,8 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 	if err := Stop(sys, p.Address()); !errors.Is(err, ErrNotFound) || err.Error() != want {
 		t.Errorf("Stop(path address) with none registered = %v, want ErrNotFound with text %q", err, want)
 	}
-	// Nothing is delivered after the stop: the path address resolves to no actor (MBX-150;
-	// the lockstep.deadletter record is plan 1.3's).
+	// Nothing is delivered after the stop: the path address resolves to no actor, a dead letter
+	// (MBX-150).
 	if o := sys.route(routeRequest{from: sys.user, to: p.Address(), typ: typeOf[int](), msg: 4}); o.kind != routeDead || o.reason != reasonNotFound {
 		t.Errorf("route to the path address after the stop = %+v, want a not-found dead letter", o)
 	}

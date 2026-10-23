@@ -27,7 +27,7 @@ func Stop(from Sender, addr Address) error {
 		return fmt.Errorf("%w: %s", ErrNotLocal, addr)
 	}
 	// A path address acts on the actor registered at its path, whatever its type (ACT-440).
-	c, _ := sys.resolve(addr, nil)
+	c, _, _ := sys.resolve(addr, nil)
 	if c == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, addr)
 	}
