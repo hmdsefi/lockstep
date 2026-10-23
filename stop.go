@@ -141,9 +141,13 @@ func (c *cell[M]) childStopped(child Address) {
 // asks are settled with no cell or registry lock held).
 func (c *cell[M]) finishStop() {
 	sys := c.sys
-	// Step 3: Stopped, then closing the owned resources (SUP-120), which belongs here.
-	if c.ctx != nil && c.stopper != nil {
-		c.callStopped()
+	// Step 3: Stopped, then closing the owned resources, whether or not the actor has a Stopped
+	// hook (SUP-100, SUP-120).
+	if c.ctx != nil {
+		if c.stopper != nil {
+			c.callStopped()
+		}
+		c.closeOwned()
 	}
 	c.mu.Lock()
 	c.liveInc = 0 // the incarnation has ended: Pipe's continuations drop (MSG-610)
@@ -193,10 +197,30 @@ func (c *cell[M]) drain() {
 }
 
 // callStopped calls Stopped with the stop's reason as a guarded call during the turn. A failure
-// in it (a panic or a Fail) is ignored and the stop continues: SUP-110's cleanup-failure record and
-// notice do not exist yet.
+// in it (a panic or a Fail) is a cleanup failure (SUP-110): it is reported and the stop continues
+// as if Stopped had returned.
 func (c *cell[M]) callStopped() {
-	_, _ = c.callGuarded(func() { c.stopper.Stopped(c.ctx, c.stopReason) })
+	if failed, err := c.callGuarded(func() { c.stopper.Stopped(c.ctx, c.stopReason) }); failed {
+		c.failCleanup(err)
+	}
+}
+
+// failCleanup reports a failure of Stopped (SUP-110): it records lockstep.fail with source
+// stopped and pushes cleanupFailed to the supervisor. It is never decided and never counts toward
+// restart intensity, and the cell keeps its state: the stop it is in goes on.
+func (c *cell[M]) failCleanup(err error) {
+	c.recordFail(supervise.InStopped, err)
+	c.sys.notifyCleanupFailed(c.parent, cleanupFailed{child: c.addr, inc: c.inc, err: err}, c)
+}
+
+// notifyCleanupFailed pushes the cleanupFailed notice n to the supervisor parent, the cell whose
+// turn pushes being from. A guardian has no cell, and the supervision of top-level and system
+// actors by the guardians (SUP-300) does not exist yet: a guardian child's notice is dropped here.
+func (s *System) notifyCleanupFailed(parent Address, n cleanupFailed, from engine.ActorRef) {
+	if s.isGuardian(parent) {
+		return
+	}
+	s.pushToParent(parent, n, from)
 }
 
 // pushTerminated pushes Terminated{key, reason} to the watcher of one entry of a stopped actor's

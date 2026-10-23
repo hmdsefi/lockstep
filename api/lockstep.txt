@@ -50,6 +50,7 @@ pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) Own(io.Closer)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Stop()

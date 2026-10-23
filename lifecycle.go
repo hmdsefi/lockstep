@@ -56,8 +56,6 @@ type ended struct {
 type stopped struct{ child Address }
 
 // cleanupFailed reports that Stopped of incarnation inc of child failed with err (SUP-110).
-//
-//nolint:unused // the fields are read once supervisors report cleanup failures (SUP-110)
 type cleanupFailed struct {
 	child Address
 	inc   uint32
