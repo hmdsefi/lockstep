@@ -311,8 +311,8 @@ func TestDiscardRunsNothing(t *testing.T) {
 	}
 }
 
-// MSG-430: an ask resolves exactly once when Discard races with replies; each lockstep.reply
-// record names one ask once.
+// MSG-430: an ask resolves exactly once when Discard races with replies: each ask has one
+// lockstep.reply record that is not late.
 func TestDiscardRacesReplies(t *testing.T) {
 	sys, eng := simSystem(t)
 	b := &silent{}
@@ -350,6 +350,12 @@ func TestDiscardRacesReplies(t *testing.T) {
 		if rec.Kind != "lockstep.reply" {
 			continue
 		}
+		// A reply attempt that passed the stopped check just before Discard set the mark finds no
+		// pending ask and is recorded as late (MSG-420): legitimate, so only the other outcomes
+		// count as a resolution.
+		if slices.Contains(rec.Attrs, engine.Attr{Key: "outcome", Value: "late"}) {
+			continue
+		}
 		for _, at := range rec.Attrs {
 			if at.Key == "ask" {
 				seen[at.Value]++
@@ -367,10 +373,51 @@ func TestDiscardRacesReplies(t *testing.T) {
 	}
 	for ask, count := range seen {
 		if count != 1 {
-			t.Errorf("%d lockstep.reply records for %s, want 1", count, ask)
+			t.Errorf("%d resolving lockstep.reply records for %s, want 1", count, ask)
 		}
 	}
 	if len(seen) != n {
-		t.Errorf("%d asks have a lockstep.reply record, want %d", len(seen), n)
+		t.Errorf("%d asks have a resolving lockstep.reply record, want %d", len(seen), n)
+	}
+}
+
+// MSG-320, MSG-430: an ask whose timeout fired before Discard stays timed out, and one whose
+// timeout has not fired resolves with ErrStopped and its timer never fires.
+func TestDiscardAtTimeoutBoundary(t *testing.T) {
+	sys, eng := simSystem(t)
+	bp, err := lockstep.Spawn(sys, "b", func() lockstep.Actor[askMsg] { return &silent{} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	send := func(rt lockstep.ReplyTo[int]) askMsg { return askMsg{rt: rt} }
+	early := lockstep.Ask(sys, bp, send, lockstep.WithTimeout(time.Hour))
+	late := lockstep.Ask(sys, bp, send, lockstep.WithTimeout(time.Hour+time.Nanosecond))
+	eng.RunUntilIdle()
+
+	eng.Advance(time.Hour) // early's timer fires exactly now; late's has one nanosecond left
+	if !hooks.AskResolved(early) || hooks.AskResolved(late) {
+		t.Fatalf("AskResolved early, late = %t, %t; want true, false", hooks.AskResolved(early), hooks.AskResolved(late))
+	}
+	if got := hooks.PendingAsks(sys); len(got) != 1 {
+		t.Fatalf("PendingAsks = %v, want only the late ask", got)
+	}
+	hooks.Discard(sys)
+	eng.Advance(time.Hour)
+
+	if _, err := early.Await(context.Background()); !errors.Is(err, lockstep.ErrTimeout) {
+		t.Errorf("early: err = %v, want ErrTimeout", err)
+	}
+	if _, err := late.Await(context.Background()); !errors.Is(err, lockstep.ErrStopped) {
+		t.Errorf("late: err = %v, want ErrStopped", err)
+	}
+	timeouts := 0
+	for _, rec := range eng.Records() {
+		if rec.Kind == "lockstep.timeout" {
+			timeouts++
+		}
+	}
+	if timeouts != 1 {
+		t.Errorf("%d lockstep.timeout records, want 1", timeouts)
 	}
 }
