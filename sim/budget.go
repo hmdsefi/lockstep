@@ -5,6 +5,7 @@ package sim
 
 import (
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/hmdsefi/lockstep"
@@ -18,7 +19,7 @@ type Budget struct {
 	// Actors is the budget of live actors per node; 0 sets no actor budget.
 	Actors int
 	// Bytes is the budget of the system's memory estimate (the lockstep.Sizer and
-	// lockstep.MemSizer estimates); 0 sets no byte budget.
+	// lockstep.MemSizer estimates), at most math.MaxInt64/100; 0 sets no byte budget.
 	Bytes int64
 	// ResumePercent is the resume mark in percent of each budget, 1 to 99; 0 means 80.
 	ResumePercent int
@@ -27,6 +28,10 @@ type Budget struct {
 // defaultResumePercent is the resume mark of a Budget whose ResumePercent is 0 (SFT-130).
 const defaultResumePercent = 80
 
+// maxBudgetBytes is the largest valid Budget.Bytes: SFT-140 multiplies byte counts by up to 100,
+// which overflows int64 above it (SFT-130).
+const maxBudgetBytes = math.MaxInt64 / 100
+
 // problem returns what makes b invalid (SFT-130), or "" if it is valid.
 func (b Budget) problem() string {
 	switch {
@@ -34,6 +39,8 @@ func (b Budget) problem() string {
 		return fmt.Sprintf("Actors %d is negative", b.Actors)
 	case b.Bytes < 0:
 		return fmt.Sprintf("Bytes %d is negative", b.Bytes)
+	case b.Bytes > maxBudgetBytes:
+		return fmt.Sprintf("Bytes %d exceeds %d", b.Bytes, int64(maxBudgetBytes))
 	case b.ResumePercent < 0 || b.ResumePercent > 99:
 		return fmt.Sprintf("ResumePercent %d is outside 0..99", b.ResumePercent)
 	}
