@@ -24,6 +24,10 @@ func Hold(sys *System, addr Address) (release func()) {
 // simulation tests (SIM-220).
 func EngineBlocking(sys *System) bool { return sys.eng.Blocking }
 
+// SkipEffectCancelAtStop makes a stop of an actor of sys leave its pending effects uncancelled,
+// so the simulation's leak check finds them (AT-SIM-26). A restart still cancels them.
+func SkipEffectCancelAtStop(sys *System) { sys.skipEffectCancel.Store(true) }
+
 // SpawnSystem spawns a child of sys's system guardian, an actor under /system, which no exported
 // API does (OVL §3), for the simulation tests of OVL-110.
 func SpawnSystem[M any](sys *System, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
