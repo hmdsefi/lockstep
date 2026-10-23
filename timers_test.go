@@ -365,7 +365,8 @@ func TestTMR070CancelledTimerMessageDropped(t *testing.T) {
 }
 
 // TMR-050, TMR-070 on the local engine, where callbacks run on other goroutines: an After(0) and
-// an Every arrive, the Every until it is cancelled. Run with -race.
+// an Every arrive, the Every until it is cancelled. Run with -race. The Every's interval is long
+// enough that the After(0) arrives first even on a loaded machine.
 func TestTimersOnLocalEngine(t *testing.T) {
 	sys, _ := newRecordingSystem(t)
 	got := make(chan string, 64)
@@ -374,7 +375,7 @@ func TestTimersOnLocalEngine(t *testing.T) {
 	ticks := 0
 	a.started = func(ctx *Context[any]) {
 		ctx.After(0, "once")
-		id = ctx.Every(time.Millisecond, "tick")
+		id = ctx.Every(20*time.Millisecond, "tick")
 	}
 	a.receive = func(ctx *Context[any], msg any) {
 		if msg == "tick" {
@@ -404,7 +405,7 @@ func TestTimersOnLocalEngine(t *testing.T) {
 	if want := []string{"once", "tick", "tick", "tick"}; !slices.Equal(seen, want) {
 		t.Errorf("received %q, want %q", seen, want)
 	}
-	time.Sleep(20 * time.Millisecond) // a tick after the cancel would reach got
+	time.Sleep(50 * time.Millisecond) // a tick after the cancel would reach got
 	select {
 	case m := <-got:
 		t.Errorf("received %q after the cancel", m)
