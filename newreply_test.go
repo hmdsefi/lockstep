@@ -187,8 +187,7 @@ func TestATMSG31PendingAsks(t *testing.T) {
 }
 
 // MSG-390, R47: a request that carries a NewReply's ReplyTo is an ordinary Send. Its error returns
-// to the caller and leaves the reply pending until the caller answers it. (The ErrMailboxFull
-// form of AT-MSG-40 arrives with plan 1.3's mailbox capacity.)
+// to the caller and leaves the reply pending until the caller answers it.
 func TestNewReplySendError(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	eng.SetDeliverError(errX)
