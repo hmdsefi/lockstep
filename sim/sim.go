@@ -124,7 +124,8 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 
 	// Install the node's simnet handler (SIM-170).
 
-	// Apply the node's pressure state to e's admission gate (SFT-125).
+	// Apply the node's pressure state to e's admission gate (SFT-125). This step comes with SFT's
+	// pressure support in plan 1.5; until then a node has no pressure state.
 
 	ln.sys, ln.host = sys, b.Host
 	ln.setup(sys)
