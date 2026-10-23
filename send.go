@@ -4,10 +4,13 @@
 package lockstep
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/mailbox"
@@ -24,6 +27,16 @@ var ErrMailboxFull = errors.New("lockstep: mailbox full")
 // (ErrMailboxFull, MBX), the admission error (ErrOverloaded, OVL), and a synchronous transport
 // error, wrapped (MSG-110). Send panics if from is nil or is a Context outside its turn.
 func Send[M any](from Sender, to PID[M], msg M) error {
+	return SendContext(context.Background(), from, to, msg)
+}
+
+// SendContext is Send, except that when from is a *System, the target's policy is BlockSender
+// and the message cannot be enqueued yet, it waits until the message is enqueued or ctx ends, and
+// then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
+func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) error {
+	if ctx == nil {
+		panic("lockstep: SendContext: nil context") // MBX §7, before the Sender checks
+	}
 	sys, fromAddr, fromRef := mustSender(from).sendOrigin() // panics for a Context outside its turn (ACT-120)
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
@@ -34,13 +47,17 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 		return sys.errStopped()
 	}
 	sys.recordSend(fromAddr, to.addr, msg)
-	return sys.route(routeRequest{
+	r := routeRequest{
 		from:    fromAddr,
 		fromRef: fromRef,
 		to:      to.addr,
 		typ:     reflect.TypeFor[M](),
 		msg:     msg,
-	}).err
+	}
+	if _, outside := from.(*System); outside {
+		r.wait = ctx // only an outside sender may wait (MBX-090)
+	}
+	return sys.route(r).err
 }
 
 // mustSender returns from's senderInfo. It panics with ACT's nil Sender message if from is nil or
@@ -110,6 +127,11 @@ type routeRequest struct {
 	msg     any             // the M value
 	ask     Address         // MBX-092's ask address of an Ask request, zero for every other message
 	seq     uint64          // the inbound envelope's Seq (MBX-120), 0 for a local send
+	// wait is set only for an outside sender, a Send or SendContext from a *System: the context that
+	// ends its wait for room in a BlockSender mailbox on a blocking engine (MBX-090). It is nil for
+	// every sender that never waits: an actor, an Ask request, an inbound envelope (MBX-120) and a
+	// message the interposer held, which the engine offers.
+	wait context.Context
 }
 
 // routeKind is the kind of a routing outcome.
@@ -121,7 +143,7 @@ const (
 	routeHanded                        // handed to Transport.Deliver, which returned nil
 	routeFailed                        // Transport.Deliver returned an error
 	routeHeld                          // the engine's interposer took the message and offers it later (ENG-150)
-	routeRefused                       // the mailbox's policy refused or dropped the message (MBX-090)
+	routeRefused                       // the mailbox's policy refused or dropped the message, or a wait for room ended (MBX-090)
 )
 
 // outcome is the result of routing one message. Send maps it to MSG-110's result. For an Ask
@@ -132,7 +154,7 @@ type outcome struct {
 	kind   routeKind
 	cell   actorCell // routeEnqueued: the target's cell
 	reason string    // routeDead: one of the reason constants
-	err    error     // routeFailed: the wrapped transport error; routeRefused: ErrMailboxFull wrapped, nil for a drop
+	err    error     // routeFailed: the wrapped transport error; routeRefused: ErrMailboxFull wrapped, nil for a drop, ctx.Err() of an ended wait
 }
 
 // route routes r by its target address (MSG-110): to the local actor, a dead letter, or the
@@ -152,7 +174,7 @@ func (s *System) route(r routeRequest) outcome {
 func (s *System) deliverLocal(r routeRequest) outcome {
 	if ip := s.eng.Interposer; ip != nil {
 		held := r
-		held.fromRef = nil
+		held.fromRef, held.wait = nil, nil
 		if ip.Interpose(r.from.engine(), r.to.engine(), r.msg, func() { s.offer(held) }) {
 			return outcome{kind: routeHeld}
 		}
@@ -164,8 +186,10 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 // (MBX-150). The message goes to the user mailbox of the actor now registered at the address, so a
 // held message whose target stopped meanwhile is a dead letter. The queue's outcome becomes
 // MBX-090's result and records: Send returns nil for an enqueued message, a drop and a dead
-// letter, and an error wrapping ErrMailboxFull for a refusal. BlockSender acts as FailSend here:
-// the offer never waits.
+// letter, and an error wrapping ErrMailboxFull for a refusal. The error and the records name the
+// target as the sender named it. Only an outside sender (r.wait set) to a BlockSender mailbox on
+// a blocking engine waits for room (offerWaiting); for every other sender BlockSender acts as
+// FailSend.
 //
 // An ask request becomes tracked by its target before it is offered (MSG-310, MSG-340), so the
 // reply attempt that removes the entry (MSG-410) cannot come first. A request that the mailbox
@@ -184,19 +208,40 @@ func (s *System) offer(r routeRequest) outcome {
 		return s.deadRequest(r, reason)
 	}
 	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
-	out, evicted := c.offerUser(entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, kind: entrySent}, r.fromRef)
+	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, kind: entrySent}
+	var out mailbox.Outcome
+	var evicted entry
+	if r.wait != nil && s.eng.Blocking && c.blocksSenders() {
+		var err error
+		if out, err = s.offerWaiting(c, r, e); err != nil {
+			// The context ended before the entry got a slot: a rejection, never reported to
+			// askRefused (MBX-092). A tracked request was not enqueued, so its target does not
+			// track it.
+			if tracked {
+				s.asks.untrack(r.ask)
+			}
+			s.recordMailboxFull(c, r, "rejected", nil)
+			return outcome{kind: routeRefused, err: err}
+		}
+	} else {
+		out, evicted = c.offerUser(e, r.fromRef)
+	}
 	switch out {
 	case mailbox.Enqueued:
 		s.recordDeliver(c, r)
 		return outcome{kind: routeEnqueued, cell: c}
 	case mailbox.Rejected:
-		err := mailboxFullError(owner)
+		err := mailboxFullError(r.to)
 		s.recordMailboxFull(c, r, "rejected", nil)
-		s.askRefused(r.ask, owner, err)
+		if tracked {
+			s.askRefused(r.ask, owner, err)
+		}
 		return outcome{kind: routeRefused, err: err}
 	case mailbox.DroppedNewest:
 		s.recordMailboxFull(c, r, "dropped-newest", nil)
-		s.askRefused(r.ask, owner, mailboxFullError(owner))
+		if tracked {
+			s.askRefused(r.ask, owner, mailboxFullError(r.to))
+		}
 		return outcome{kind: routeRefused}
 	case mailbox.DroppedOldest:
 		s.recordMailboxFull(c, r, "dropped-oldest", &evicted)
@@ -213,6 +258,26 @@ func (s *System) offer(r routeRequest) outcome {
 	s.deadLetter(r.from, r.to, reasonStopped, r.msg)
 	return outcome{kind: routeDead, reason: reasonStopped}
 }
+
+// offerWaiting offers e, the message of the outside sender of r, to c's BlockSender mailbox and
+// waits while the mailbox is full or other senders wait, until the entry is enqueued, the mailbox
+// closes, or r.wait ends (MBX-070, MBX-090). It records lockstep.mailbox.full action blocked when
+// the sender starts waiting; the caller records the outcome. It returns r.wait's error when the
+// context ended first. While it waits the mailbox is listed in s.waiting (MBX-075): it is listed
+// before the offer, so a recheck that follows a change of admission cannot miss a sender that
+// starts waiting meanwhile. The caller holds no lock.
+func (s *System) offerWaiting(c actorCell, r routeRequest, e entry) (mailbox.Outcome, error) {
+	q := c.userQueue()
+	s.waiting.add(q)
+	defer s.waiting.remove(q)
+	return c.offerWait(r.wait, e, s.admits, func() { s.recordMailboxFull(c, r, "blocked", nil) })
+}
+
+// admits reports whether the system admits a waiting outside sender's message now (MBX-075): no
+// overload source is on (OVL-150) and the target is not stuck (OVL-520). Phase 1 sheds nothing and
+// marks no actor stuck, so it admits every message. It is called with a mailbox's lock held and
+// takes no lock.
+func (*System) admits() bool { return true }
 
 // resolve returns the cell the local address to names and the cell's full address, or nil and
 // the dead-letter reason. A full address needs an actor registered with exactly that path and uid
@@ -276,20 +341,21 @@ func mailboxFullError(owner Address) error { return fmt.Errorf("%w: %s", ErrMail
 
 // askRefused is called for each sent entry that carries the ask address ask, which a mailbox
 // policy refused or dropped, and for the entry DropOldest evicted (MBX-092): target is the address
-// of the mailbox's actor and err the error of the refusal. It removes ask from the tracked asks, if
-// it is there, and issues the reply attempt Fail(err) for ask from target (MSG-345). For an asker
-// on this system the attempt is applied before askRefused returns; for an asker on another node it
-// goes through the transport. A zero ask is no request, and nothing happens. The caller holds no
-// cell lock.
+// of the mailbox's actor and err the error of the refusal. If ask is among the tracked asks, it
+// removes it and issues the reply attempt Fail(err) for ask from target (MSG-345). For an asker on
+// this system the attempt is applied before askRefused returns; for an asker on another node it
+// goes through the transport. An ask that is not tracked has nothing to fail: the target's stop
+// has failed it already (MSG-340), or it is no longer pending. A zero ask is no request, and
+// nothing happens. The caller holds no cell lock.
 func (s *System) askRefused(ask, target Address, err error) {
-	if ask.IsZero() {
+	if ask.IsZero() || !s.asks.untrack(ask) {
 		return
 	}
-	s.asks.untrack(ask)
 	s.replyAttempt(ask, target, nil, err)
 }
 
-// recordDeliver emits lockstep.deliver (MBX §8) for the entry of r that c's mailbox took.
+// recordDeliver emits lockstep.deliver (MBX §8) for the entry of r that c's mailbox took. to is the
+// target as the sender named it.
 func (s *System) recordDeliver(c actorCell, r routeRequest) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
@@ -298,7 +364,7 @@ func (s *System) recordDeliver(c actorCell, r routeRequest) {
 	length, _, _ := c.mailboxState()
 	tr.Record("lockstep.deliver",
 		engine.Attr{Key: "from", Value: r.from.String()},
-		engine.Attr{Key: "to", Value: c.Address().String()},
+		engine.Attr{Key: "to", Value: r.to.String()},
 		engine.Attr{Key: "seq", Value: strconv.FormatUint(r.seq, 10)},
 		engine.Attr{Key: "len", Value: strconv.Itoa(length)},
 		engine.Attr{Key: "msg", Value: tr.Describe(r.msg)},
@@ -306,8 +372,8 @@ func (s *System) recordDeliver(c actorCell, r routeRequest) {
 }
 
 // recordMailboxFull emits lockstep.mailbox.full (MBX §8) for the message of r that met the full
-// mailbox of c and was not shed. action is rejected, dropped-newest or dropped-oldest; for
-// dropped-oldest, dropped is the entry the mailbox evicted.
+// mailbox of c and was not shed. action is rejected, dropped-newest, dropped-oldest or blocked;
+// for dropped-oldest, dropped is the entry the mailbox evicted.
 func (s *System) recordMailboxFull(c actorCell, r routeRequest, action string, dropped *entry) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
@@ -316,7 +382,7 @@ func (s *System) recordMailboxFull(c actorCell, r routeRequest, action string, d
 	length, capacity, policy := c.mailboxState()
 	attrs := []engine.Attr{
 		{Key: "from", Value: r.from.String()},
-		{Key: "to", Value: c.Address().String()},
+		{Key: "to", Value: r.to.String()},
 		{Key: "policy", Value: policy.String()},
 		{Key: "action", Value: action},
 		{Key: "cause", Value: "capacity"},
@@ -345,4 +411,54 @@ func (s *System) deadLetter(from, to Address, reason string, msg any) {
 		engine.Attr{Key: "reason", Value: reason},
 		engine.Attr{Key: "msg", Value: tr.Describe(msg)},
 	)
+}
+
+// waitSet lists the user mailboxes that outside senders wait on, or are about to wait on, so that
+// the System can call Recheck on every one of them when it starts admitting messages again
+// (MBX-075). A mailbox is listed once per waiting sender. The list is a slice, so a recheck visits
+// the mailboxes in a fixed order. mu is a leaf: no other lock is taken while it is held, so
+// Recheck, which takes a queue's mutex, is called after releasing it.
+type waitSet struct {
+	mu sync.Mutex
+	qs []*mailbox.Queue[entry]
+}
+
+// add lists q for one more waiting sender.
+func (w *waitSet) add(q *mailbox.Queue[entry]) {
+	w.mu.Lock()
+	w.qs = append(w.qs, q)
+	w.mu.Unlock()
+}
+
+// remove takes one listing of q, which add made, off the list.
+func (w *waitSet) remove(q *mailbox.Queue[entry]) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, x := range w.qs {
+		if x == q {
+			w.qs = slices.Delete(w.qs, i, i+1)
+			return
+		}
+	}
+	panic("lockstep: waitSet.remove of an unlisted mailbox")
+}
+
+// len returns the number of listings.
+func (w *waitSet) len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.qs)
+}
+
+// recheck calls Recheck on every listed mailbox, once each, in listing order, without holding mu
+// (MBX-075).
+func (w *waitSet) recheck() {
+	w.mu.Lock()
+	qs := slices.Clone(w.qs)
+	w.mu.Unlock()
+	for i, q := range qs {
+		if slices.Index(qs[:i], q) < 0 {
+			q.Recheck()
+		}
+	}
 }
