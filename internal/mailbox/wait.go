@@ -29,6 +29,15 @@ type waiter[T any] struct {
 //
 // admit is called with the queue's lock held; it must not block or call the queue.
 func (q *Queue[T]) OfferWait(ctx context.Context, v T, admit func() bool) (Outcome, T, error) {
+	return q.OfferWaitNotify(ctx, v, admit, nil)
+}
+
+// OfferWaitNotify is OfferWait, except that it calls waiting, if not nil, once when the entry
+// joins the line, before it waits for the first time; it is not called when OfferWait returns
+// without waiting. waiting runs without the queue's lock held, so it may call the queue; the
+// entry may be handed a slot, or the queue closed, while it runs. If waiting panics, the entry
+// leaves the line, unless it was handed a slot meanwhile, and the panic propagates.
+func (q *Queue[T]) OfferWaitNotify(ctx context.Context, v T, admit func() bool, waiting func()) (Outcome, T, error) {
 	var zero T
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -50,6 +59,9 @@ func (q *Queue[T]) OfferWait(ctx context.Context, v T, admit func() bool) (Outco
 
 	w := &waiter[T]{v: v, admit: admit}
 	q.waiters = append(q.waiters, w)
+	if waiting != nil {
+		q.notify(w, waiting)
+	}
 	// The callback takes the lock so that its Broadcast cannot fall between this goroutine's check
 	// of ctx and its cond.Wait. stop never waits for a running callback, so calling it with the
 	// lock held cannot deadlock.
@@ -83,6 +95,22 @@ func (q *Queue[T]) Waiting() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.waiters)
+}
+
+// notify calls waiting for w, which has just joined the line, without the queue's lock held. The
+// caller holds q.mu, and holds it again when notify returns or panics; a panic of waiting takes w
+// out of the line if it is still in it.
+func (q *Queue[T]) notify(w *waiter[T], waiting func()) {
+	q.mu.Unlock()
+	done := false
+	defer func() {
+		q.mu.Lock()
+		if !done && w.state == waitInLine {
+			q.leave(w)
+		}
+	}()
+	waiting()
+	done = true
 }
 
 // wake wakes every waiter so each one checks its context. It runs when a waiter's context ends.

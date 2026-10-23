@@ -35,7 +35,8 @@ type System struct {
 	spawnMu sync.RWMutex
 	shut    shutdownState
 
-	asks askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
+	asks    askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
+	waiting waitSet  // the user mailboxes that outside senders wait on (MBX-075)
 
 	uidMu   sync.Mutex
 	epoch   uint32 // the epoch of the next uid

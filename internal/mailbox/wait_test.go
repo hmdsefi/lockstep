@@ -472,3 +472,63 @@ func TestConcurrentWaiters(t *testing.T) {
 		t.Fatalf("Waiting = %d at the end, want 0", q.Waiting())
 	}
 }
+
+// OfferWaitNotify calls waiting once, without the queue's lock, when the entry joins the line, and
+// not at all when the entry is enqueued or refused without waiting.
+func TestOfferWaitNotify(t *testing.T) {
+	q := New[int](1, BlockSender)
+	calls := 0
+	count := func() { calls++ }
+	if out, _, err := q.OfferWaitNotify(context.Background(), 1, nil, count); out != Enqueued || err != nil || calls != 0 {
+		t.Fatalf("OfferWaitNotify with room = %v, %v after %d waiting calls, want Enqueued, nil after none", out, err, calls)
+	}
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	if out, _, err := q.OfferWaitNotify(done, 2, nil, count); out != Rejected || !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("OfferWaitNotify, full, ctx done = %v, %v after %d waiting calls, want Rejected, context.Canceled after none", out, err, calls)
+	}
+
+	var inLine atomic.Int64
+	ch := make(chan waitResult, 1)
+	go func() {
+		out, v, err := q.OfferWaitNotify(context.Background(), 3, nil, func() {
+			inLine.Add(int64(q.Waiting())) // takes the lock: waiting runs without it
+		})
+		ch <- waitResult{out, v, err}
+	}()
+	waitFor(t, "the waiting call", func() bool { return inLine.Load() != 0 })
+	if n := inLine.Load(); n != 1 {
+		t.Fatalf("Waiting() inside waiting = %d, want 1", n)
+	}
+	if v, _, _ := q.Pop(); v != 1 {
+		t.Fatalf("Pop = %d, want 1", v)
+	}
+	wantResult(t, "OfferWaitNotify", result(t, ch), Enqueued, nil)
+	if v, _, _ := q.Pop(); v != 3 {
+		t.Fatalf("Pop = %d, want 3", v)
+	}
+}
+
+// A panic of waiting takes the entry out of the line and propagates; the queue keeps working.
+func TestOfferWaitNotifyPanic(t *testing.T) {
+	q := New[int](1, BlockSender)
+	q.Offer(1, Sent, false)
+	func() {
+		defer func() {
+			if r := recover(); r != "boom" {
+				t.Fatalf("recovered %v, want boom", r)
+			}
+		}()
+		_, _, _ = q.OfferWaitNotify(context.Background(), 2, nil, func() { panic("boom") })
+	}()
+	if n := q.Waiting(); n != 0 {
+		t.Fatalf("Waiting() = %d after the panic, want 0", n)
+	}
+	q.Pop()
+	if out, _ := q.Offer(3, Sent, false); out != Enqueued {
+		t.Fatalf("Offer after the panic = %v, want Enqueued", out)
+	}
+	if v, _, _ := q.Pop(); v != 3 {
+		t.Fatalf("Pop = %d, want 3: the panicked entry was enqueued", v)
+	}
+}
