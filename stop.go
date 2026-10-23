@@ -9,6 +9,7 @@ import (
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/registry"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // Stop asks the actor at addr to stop with reason Normal and returns without waiting. A parent
@@ -35,24 +36,14 @@ func Stop(from Sender, addr Address) error {
 	return nil
 }
 
-// stop is a stop request on a cell's system queue (SUP-050). A cell keeps at most one
-// (requestStop).
-type stop struct{ reason StopReason }
-
-func (stop) isSysMsg() {}
-
-// stopped is the notice a parent's system queue gets when its child completes its final stop
-// (SUP-060 step 7). A stopping parent waits for it before it stops its next child.
-type stopped struct{ child Address }
-
-func (stopped) isSysMsg() {}
-
 // The interim stop sequence. It runs in the cell's own turns, without failures, restarts, timers
 // or owned resources: plan 1.3's SUP-060 replaces it behind the same entry points (requestStop and
 // the stop and stopped messages).
 
 // stopping reports whether the cell's stop has started (turn-owned state).
-func (c *cell[M]) stopping() bool { return c.state == cellStopping || c.state == cellStopped }
+func (c *cell[M]) stopping() bool {
+	return c.state == supervise.Stopping || c.state == supervise.Stopped
+}
 
 // startStop processes the stop request (SUP-060 step 1): the cell takes no more user messages,
 // the incarnation's watches leave every watcher list and its watched set (SUP-340, ACT-640), and
@@ -61,7 +52,7 @@ func (c *cell[M]) startStop(reason StopReason) {
 	if c.stopping() {
 		return // unreachable: requestStop queues one request (SUP-050)
 	}
-	c.state = cellStopping
+	c.setState(supervise.Stopping)
 	c.stopReason = reason
 	if c.ctx != nil {
 		c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
@@ -104,7 +95,7 @@ func childReason(r StopReason) StopReason {
 // waits for moves it to the next child; any other (a child that stopped on its own, while the
 // cell runs or waits for another child) changes nothing, since that child has left the registry.
 func (c *cell[M]) childStopped(child Address) {
-	if c.state != cellStopping || child != c.waitChild {
+	if c.state != supervise.Stopping || child != c.waitChild {
 		return
 	}
 	c.waitChild = Address{}
@@ -134,7 +125,7 @@ func (c *cell[M]) finishStop() {
 		sys.replyAttempt(ask, c.addr, nil, failure)
 	}
 
-	c.state = cellStopped
+	c.setState(supervise.Stopped)
 	sys.recordStop(c.addr, c.inc, c.stopReason)
 	for _, w := range watchers {
 		sys.pushTerminated(w, c.stopReason, c)
@@ -142,15 +133,11 @@ func (c *cell[M]) finishStop() {
 	sys.notifyParent(c.parent, c.addr, c)
 }
 
-// callStopped calls Stopped with the stop's reason during the turn. A panic is recovered and
-// ignored: reporting it as a cleanup failure (SUP-110) is plan 1.3's.
+// callStopped calls Stopped with the stop's reason as a guarded call during the turn. A failure
+// in it (a panic or a Fail) is ignored and the stop continues: SUP-110's cleanup-failure record and
+// notice do not exist yet.
 func (c *cell[M]) callStopped() {
-	c.enter()
-	defer func() {
-		c.ctx.inTurn.Store(false)
-		_ = recover() // SUP-110's lockstep.fail record and cleanupFailed notice are plan 1.3's
-	}()
-	c.stopper.Stopped(c.ctx, c.stopReason)
+	_, _ = c.callGuarded(func() { c.stopper.Stopped(c.ctx, c.stopReason) })
 }
 
 // pushTerminated pushes Terminated{key, reason} to the watcher of one entry of a stopped actor's
@@ -174,12 +161,7 @@ func (s *System) notifyParent(parent, child Address, from engine.ActorRef) {
 		s.guardianChildStopped(child, from)
 		return
 	}
-	uid, a, ok := s.reg.Lookup(parent.path)
-	c, _ := a.(actorCell)
-	if !ok || c == nil || uid != parent.uid {
-		return // no parent is registered under that uid: there is nobody to notify
-	}
-	c.pushSystem(stopped{child: child}, from)
+	s.pushToParent(parent, stopped{child: child}, from)
 }
 
 // recordStop emits lockstep.stop (SUP §8) for a cell that reached Stopped: inc is its last

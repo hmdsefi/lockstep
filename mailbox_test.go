@@ -11,6 +11,7 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine/enginetest"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 	"github.com/hmdsefi/lockstep/internal/mailbox"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // spawnInt spawns an idle actor named name on sys with opts and returns its cell.
@@ -191,7 +192,7 @@ func TestHoldDefersTurns(t *testing.T) {
 	}
 	eng.RunUntilIdle()
 	c := cellOf(t, sys, pid)
-	if c.state != cellStarting || len(got) != 0 || c.user.Len() != 3 {
+	if c.state != supervise.Starting || len(got) != 0 || c.user.Len() != 3 {
 		t.Fatalf("held: state %v, received %v, queued %d; want starting, none, 3", c.state, got, c.user.Len())
 	}
 	if c.RunTurn(1) {

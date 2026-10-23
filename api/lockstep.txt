@@ -1,5 +1,13 @@
 pkg github.com/hmdsefi/lockstep, const BlockSender = 3
 pkg github.com/hmdsefi/lockstep, const BlockSender MailboxPolicy
+pkg github.com/hmdsefi/lockstep, const DirectiveEscalate = 3
+pkg github.com/hmdsefi/lockstep, const DirectiveEscalate Directive
+pkg github.com/hmdsefi/lockstep, const DirectiveRestart = 1
+pkg github.com/hmdsefi/lockstep, const DirectiveRestart Directive
+pkg github.com/hmdsefi/lockstep, const DirectiveResume = 4
+pkg github.com/hmdsefi/lockstep, const DirectiveResume Directive
+pkg github.com/hmdsefi/lockstep, const DirectiveStop = 2
+pkg github.com/hmdsefi/lockstep, const DirectiveStop Directive
 pkg github.com/hmdsefi/lockstep, const DropNewest = 1
 pkg github.com/hmdsefi/lockstep, const DropNewest MailboxPolicy
 pkg github.com/hmdsefi/lockstep, const DropOldest = 2
@@ -18,11 +26,13 @@ pkg github.com/hmdsefi/lockstep, const StopRestarting = 5
 pkg github.com/hmdsefi/lockstep, const StopRestarting StopKind
 pkg github.com/hmdsefi/lockstep, const StopShutdown = 4
 pkg github.com/hmdsefi/lockstep, const StopShutdown StopKind
+pkg github.com/hmdsefi/lockstep, func AllForOne(func(error) Directive) Strategy
 pkg github.com/hmdsefi/lockstep, func Ask[M any, R any](Sender, PID[M], func(ReplyTo[R]) M, ...AskOption) *Reply[R]
 pkg github.com/hmdsefi/lockstep, func Failed(error) StopReason
 pkg github.com/hmdsefi/lockstep, func Lookup[M any](*System, string) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func New(...Option) *System
 pkg github.com/hmdsefi/lockstep, func NewReply[R any](Sender, ...AskOption) (ReplyTo[R], *Reply[R])
+pkg github.com/hmdsefi/lockstep, func OneForOne(func(error) Directive) Strategy
 pkg github.com/hmdsefi/lockstep, func PIDAt[M any](string, string) PID[M]
 pkg github.com/hmdsefi/lockstep, func Pipe[R any, M any](*Context[M], *Reply[R], func(R, error) M)
 pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
@@ -33,12 +43,17 @@ pkg github.com/hmdsefi/lockstep, func Stop(Sender, Address) error
 pkg github.com/hmdsefi/lockstep, func Unwatch[M any](*Context[M], Address)
 pkg github.com/hmdsefi/lockstep, func Watch[M any](*Context[M], Address) error
 pkg github.com/hmdsefi/lockstep, func WithDefaultMailbox(int, MailboxPolicy) Option
+pkg github.com/hmdsefi/lockstep, func WithGuardianStrategy(Strategy) Option
 pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
+pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
+pkg github.com/hmdsefi/lockstep, method (*PanicError) Error() string
+pkg github.com/hmdsefi/lockstep, method (*PanicError) Unwrap() error
 pkg github.com/hmdsefi/lockstep, method (*Reply[R]) Await(context.Context) (R, error)
 pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
 pkg github.com/hmdsefi/lockstep, method (*System) Node() string
@@ -48,6 +63,7 @@ pkg github.com/hmdsefi/lockstep, method (Address) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) Path() string
 pkg github.com/hmdsefi/lockstep, method (Address) String() string
 pkg github.com/hmdsefi/lockstep, method (Address) UID() uint64
+pkg github.com/hmdsefi/lockstep, method (Directive) String() string
 pkg github.com/hmdsefi/lockstep, method (MailboxPolicy) String() string
 pkg github.com/hmdsefi/lockstep, method (PID[M]) Address() Address
 pkg github.com/hmdsefi/lockstep, method (PID[M]) IsZero() bool
@@ -60,10 +76,19 @@ pkg github.com/hmdsefi/lockstep, type Actor[M any] interface { Receive }
 pkg github.com/hmdsefi/lockstep, type Actor[M any] interface, Receive(*Context[M], M)
 pkg github.com/hmdsefi/lockstep, type Address struct
 pkg github.com/hmdsefi/lockstep, type AskOption func(*askConfig)
+pkg github.com/hmdsefi/lockstep, type ChildFailed struct
+pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Child Address
+pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Cleanup bool
+pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Directive Directive
+pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Err error
 pkg github.com/hmdsefi/lockstep, type Context[M any] struct
+pkg github.com/hmdsefi/lockstep, type Directive uint8
 pkg github.com/hmdsefi/lockstep, type MailboxPolicy uint8
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type PID[M any] struct
+pkg github.com/hmdsefi/lockstep, type PanicError struct
+pkg github.com/hmdsefi/lockstep, type PanicError struct, Stack []byte
+pkg github.com/hmdsefi/lockstep, type PanicError struct, Value any
 pkg github.com/hmdsefi/lockstep, type ReplyTo[R any] struct
 pkg github.com/hmdsefi/lockstep, type Reply[R any] struct
 pkg github.com/hmdsefi/lockstep, type Sender interface { unexported methods }
@@ -80,6 +105,12 @@ pkg github.com/hmdsefi/lockstep, type StopReason struct, Err error
 pkg github.com/hmdsefi/lockstep, type StopReason struct, Kind StopKind
 pkg github.com/hmdsefi/lockstep, type Stopper[M any] interface { Stopped }
 pkg github.com/hmdsefi/lockstep, type Stopper[M any] interface, Stopped(*Context[M], StopReason)
+pkg github.com/hmdsefi/lockstep, type Strategy struct
+pkg github.com/hmdsefi/lockstep, type Strategy struct, Decider func(error) Directive
+pkg github.com/hmdsefi/lockstep, type Strategy struct, MaxBackoff time.Duration
+pkg github.com/hmdsefi/lockstep, type Strategy struct, MaxRestarts int
+pkg github.com/hmdsefi/lockstep, type Strategy struct, MinBackoff time.Duration
+pkg github.com/hmdsefi/lockstep, type Strategy struct, Window time.Duration
 pkg github.com/hmdsefi/lockstep, type System struct
 pkg github.com/hmdsefi/lockstep, type Terminated struct
 pkg github.com/hmdsefi/lockstep, type Terminated struct, Addr Address

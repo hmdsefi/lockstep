@@ -15,6 +15,8 @@ type systemConfig struct {
 	fixed bool          // the node name comes from an engine: WithNodeName is ignored (ACT-015)
 	mbx   mailboxConfig // the default mailbox of the system's actors (MBX-010)
 
+	guardian Strategy // the user guardian's strategy (SUP-370)
+
 	at     int // 1-based position of the option being applied
 	nodeAt int // position of the WithNodeName whose name is in node; 0 if none
 	err    error
@@ -51,7 +53,7 @@ func WithNodeName(name string) Option {
 // engineNode is the node name of the engine the system is built on (ACT-015): it replaces the
 // default and WithNodeName is ignored. The error is the first invalid setting in argument order.
 func newConfig(opts []Option, engineNode string) (*systemConfig, error) {
-	c := &systemConfig{node: defaultNode, mbx: defaultMailbox}
+	c := &systemConfig{node: defaultNode, mbx: defaultMailbox, guardian: OneForOne(nil)}
 	if engineNode != "" {
 		c.node, c.fixed = engineNode, true
 	}
