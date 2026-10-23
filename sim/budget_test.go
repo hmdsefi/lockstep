@@ -6,6 +6,7 @@ package sim_test
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -199,6 +200,9 @@ var (
 	_ = scenario("budget-bytes", func(t *testing.T) {
 		sim.Simulate(t, sim.Options{Budget: sim.Budget{Bytes: -1}}, printBody)
 	})
+	_ = scenario("budget-bytes-max", func(t *testing.T) {
+		sim.Simulate(t, sim.Options{Budget: sim.Budget{Bytes: math.MaxInt64/100 + 1}}, printBody)
+	})
 	_ = scenario("budget-resume", func(t *testing.T) {
 		sim.SimulateSeeds(t, sim.Options{Budget: sim.Budget{ResumePercent: 100}}, printBody, 1)
 	})
@@ -207,7 +211,8 @@ var (
 	})
 )
 
-// AT-SFT-19, SFT-130, SIM-020: an invalid Options.Budget fails the test with
+// AT-SFT-19, SFT-130, SIM-020: an invalid Options.Budget (a negative count, Bytes above
+// math.MaxInt64/100, ResumePercent outside 0..99) fails the test with
 // "lockstep: sim: Options.Budget: <problem>" before any seed runs.
 func TestATSFT19InvalidBudget(t *testing.T) {
 	for _, tc := range []struct {
@@ -216,6 +221,7 @@ func TestATSFT19InvalidBudget(t *testing.T) {
 	}{
 		{"budget-actors", "lockstep: sim: Options.Budget: Actors -1 is negative"},
 		{"budget-bytes", "lockstep: sim: Options.Budget: Bytes -1 is negative"},
+		{"budget-bytes-max", "lockstep: sim: Options.Budget: Bytes 92233720368547759 exceeds 92233720368547758"},
 		{"budget-resume", "lockstep: sim: Options.Budget: ResumePercent 100 is outside 0..99"},
 		{"budget-resume-negative", "lockstep: sim: Options.Budget: ResumePercent -1 is outside 0..99"},
 	} {
