@@ -34,6 +34,10 @@ type Sim struct {
 	handlers map[string]func(c EffectCall) EffectResult
 
 	counts Counts
+
+	// pairs holds the pair rules of DelayBetween and DropBetween by pair; it is read by key only
+	// (SFT-060, SIM-330).
+	pairs map[pairKey]*pairRule
 }
 
 // node is one lockstep node and the state of its latest boot.
