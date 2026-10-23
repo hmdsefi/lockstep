@@ -28,11 +28,11 @@ func slot(check string) int {
 }
 
 // store keeps err in the slot of check unless the slot already holds a failure: a slot keeps the
-// first failure stored in it (SIM-300). A nil err stores nothing. It never fails the test itself;
+// first failure stored in it (SIM-300). A nil err leaves the slot empty. It never fails the test itself;
 // the check registered for the slot returns the failure to faultline (SIM-305).
 func (s *Sim) store(check string, err error) {
 	i := slot(check)
-	if err != nil && s.slots[i] == nil {
+	if s.slots[i] == nil {
 		s.slots[i] = err
 	}
 }
