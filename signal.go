@@ -23,7 +23,7 @@ type SignalReceiver[M any] interface {
 // travel only through the system queue: they never count against the user mailbox's capacity and
 // never go through Send. For a Terminated, seq is the sequence number of the Watch call it answers
 // (ACT-630); the public Terminated has no such field. For an Overloaded, inc is the incarnation
-// whose subscription it answers (OVL-170).
+// whose subscription it answers and seq the subscription's number in it (OVL-170).
 type signalMsg struct {
 	sig Signal
 	seq uint64
@@ -55,8 +55,9 @@ func (c *cell[M]) receiveSignal(m signalMsg) {
 // A Terminated whose Addr is not in the incarnation's watched set, or is there under another Watch
 // call's sequence number, is skipped; the address leaves the set when the Terminated is delivered
 // (ACT-630). An actor without SignalReceiver consumes the watch the same way, so a later Watch of
-// the address registers again. An Overloaded is skipped unless the incarnation that made the
-// subscription it answers is the live one and still subscribed (OVL-170).
+// the address registers again. An Overloaded is skipped unless it answers the live subscription:
+// the incarnation that made it is the live one, it is still subscribed, and it has not
+// unsubscribed and subscribed again since (OVL-170).
 func (c *cell[M]) deliverSignal(m signalMsg) {
 	sig := m.sig
 	switch s := sig.(type) {
@@ -66,7 +67,7 @@ func (c *cell[M]) deliverSignal(m signalMsg) {
 		}
 		c.ctx.watched.remove(s.Addr)
 	case Overloaded:
-		if m.inc != c.inc || !c.ctx.overloadSub {
+		if m.inc != c.inc || !c.ctx.overloadSub || m.seq != c.ctx.overloadGen {
 			return
 		}
 	}

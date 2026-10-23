@@ -30,9 +30,11 @@ type admissionState struct {
 func (s *System) bindAdmission() { s.eng.Admission.Bind(s.admissionChanged, s.usage) }
 
 // admissionChanged handles one source change (OVL-150). It records event=on or event=off, then
-// updates the shedding state, and on a change to admitting calls Recheck on every user mailbox
-// that outside senders wait on (MBX-075). The record comes first, so a waiter that the change
-// releases records its delivery after it. The state is updated before the mailboxes are listed:
+// updates the shedding state and, if the combined state changed, queues Overloaded to the
+// subscribers (OVL-180); state update and signals go out together under the delivery lock. On a
+// change to admitting it then calls Recheck on every user mailbox that outside senders wait on
+// (MBX-075). The record comes first, so a waiter that the change releases records its delivery
+// after it. The state is updated before the mailboxes are listed:
 // a sender that starts waiting meanwhile either sees the system admitting or is listed (its
 // mailbox is listed before it offers). It runs in engine context or on any goroutine, never
 // concurrently with itself (§4.3), and takes no lock that Spawn or Send hold while they ask

@@ -51,7 +51,8 @@ func (c *Context[M]) SubscribeOverload() {
 		return
 	}
 	c.overloadSub = true
-	cl.sys.subscribeOverload(cl, c.inc)
+	c.overloadGen++
+	cl.sys.subscribeOverload(cl, c.inc, c.overloadGen)
 }
 
 // UnsubscribeOverload cancels the subscription of the current incarnation.
@@ -64,10 +65,13 @@ func (c *Context[M]) UnsubscribeOverload() {
 	c.cell.sys.unsubscribeOverload(c.cell, c.inc)
 }
 
-// overloadSub is one subscription: the incarnation inc of cell (OVL-170).
+// overloadSub is one subscription: the incarnation inc of cell (OVL-170). gen numbers the
+// incarnation's subscriptions (Context.overloadGen); the signals queued for it are tagged with it, so a
+// signal of an earlier subscription is dropped on delivery after the incarnation subscribes again.
 type overloadSub struct {
 	cell actorCell
 	inc  uint32
+	gen  uint64
 }
 
 // overloadSubs are the System's subscriptions, in subscription order (OVL-180).
@@ -109,14 +113,14 @@ func (o *overloadSubs) remove(c actorCell, inc uint32) {
 // queues Overloaded{Active: true} with the values of the change that started the period, ahead of
 // any later signal (OVL-190). It queues the signal of a change to a subscriber that the change
 // finds in the list, so the subscription and the change are ordered by deliver.
-func (s *System) subscribeOverload(c actorCell, inc uint32) {
+func (s *System) subscribeOverload(c actorCell, inc uint32, gen uint64) {
 	s.ovl.deliver.Lock()
 	defer s.ovl.deliver.Unlock()
 	s.ovl.mu.Lock()
-	s.ovl.list = append(s.ovl.list, overloadSub{cell: c, inc: inc})
+	s.ovl.list = append(s.ovl.list, overloadSub{cell: c, inc: inc, gen: gen})
 	s.ovl.mu.Unlock()
 	if start, shedding := s.adm.shedPeriod(); shedding {
-		c.pushSystem(signalMsg{sig: overloadedBy(start, true), inc: inc}, c)
+		c.pushSystem(signalMsg{sig: overloadedBy(start, true), seq: gen, inc: inc}, c)
 	}
 }
 
@@ -126,12 +130,12 @@ func (s *System) unsubscribeOverload(c actorCell, inc uint32) { s.ovl.remove(c, 
 
 // signalOverload queues Overloaded for change ch, which changed the combined state to
 // ch.Shedding, to every subscriber, in subscription order (OVL-180). The signal carries the
-// subscription's incarnation, so one that outlives it is dropped on delivery (OVL-170). The
-// caller holds s.ovl.deliver.
+// subscription's incarnation and generation, so one that outlives its subscription is dropped on
+// delivery (OVL-170). The caller holds s.ovl.deliver.
 func (s *System) signalOverload(ch engine.AdmissionChange) {
 	sig := overloadedBy(ch, ch.Shedding)
 	for _, sub := range s.ovl.snapshot() {
-		sub.cell.pushSystem(signalMsg{sig: sig, inc: sub.inc}, nil)
+		sub.cell.pushSystem(signalMsg{sig: sig, seq: sub.gen, inc: sub.inc}, nil)
 	}
 }
 

@@ -37,6 +37,9 @@ type Context[M any] struct {
 	// SubscribeOverload and UnsubscribeOverload set it, signal delivery reads it, and the stop
 	// sequence clears it in the turn that starts the end of the incarnation.
 	overloadSub bool
+	// overloadGen counts the incarnation's subscriptions, so that a signal queued for one is not
+	// delivered to a later one. Turn-owned.
+	overloadGen uint64
 
 	// owned is the incarnation's resource list in registration order (SUP-120). Turn-owned:
 	// Own appends in a turn of this incarnation, and the stop sequence closes the list after

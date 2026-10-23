@@ -174,8 +174,8 @@ func TestOVL170StaleSignalIsNotDelivered(t *testing.T) {
 	subscribe(t, sys, eng, pid) // incarnation 2
 
 	c := cellOf(t, sys, pid)
-	c.pushSystem(signalMsg{sig: Overloaded{Active: true, Reason: OverloadPressure}, inc: 1}, nil)
-	c.pushSystem(signalMsg{sig: Overloaded{Active: true, Reason: OverloadMemory}, inc: 2}, nil)
+	c.pushSystem(signalMsg{sig: Overloaded{Active: true, Reason: OverloadPressure}, seq: 1, inc: 1}, nil)
+	c.pushSystem(signalMsg{sig: Overloaded{Active: true, Reason: OverloadMemory}, seq: 1, inc: 2}, nil)
 	eng.RunUntilIdle()
 	wantGot(t, log, []gotOverload{{"s", Overloaded{Active: true, Reason: OverloadMemory}}})
 }
@@ -263,8 +263,7 @@ func TestOVL190InitialSignalPrecedesLaterOnes(t *testing.T) {
 	})
 }
 
-// UnsubscribeOverload cancels the subscription; with none it does nothing; a signal queued before
-// it is not delivered after it.
+// UnsubscribeOverload cancels the subscription; with none it does nothing.
 func TestUnsubscribeOverload(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var log []gotOverload
@@ -279,13 +278,50 @@ func TestUnsubscribeOverload(t *testing.T) {
 	eng.ChangeAdmission(pressure(true, true))
 	eng.RunUntilIdle()
 	wantGot(t, log, nil)
+}
 
-	// Subscribe again, then unsubscribe in the same turn that the signal of the change waits behind.
-	eng.ChangeAdmission(pressure(false, false))
+// A signal queued before UnsubscribeOverload is not delivered after it: the change and the
+// unsubscription happen in one turn, so the signal is still queued when the actor unsubscribes.
+func TestUnsubscribeOverloadDropsQueuedSignal(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var log []gotOverload
+	pid := spawnWatcher(t, sys, eng, &overloadWatcher{who: "a", log: &log})
 	subscribe(t, sys, eng, pid)
-	eng.ChangeAdmission(pressure(true, true)) // queued for the next turn
-	inTurn(t, sys, eng, pid, func(ctx *Context[any]) { ctx.UnsubscribeOverload() })
-	wantGot(t, log, []gotOverload{{"a", Overloaded{Active: true, Reason: OverloadPressure}}})
+	inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+		eng.ChangeAdmission(pressure(true, true))
+		ctx.UnsubscribeOverload()
+	})
+	wantGot(t, log, nil)
+}
+
+// OVL-170, OVL-190: a signal queued for an earlier subscription of the incarnation is not
+// delivered after it unsubscribes and subscribes again.
+func TestOVL190ResubscribeDropsEarlierSignals(t *testing.T) {
+	t.Run("subscribed again while shedding", func(t *testing.T) {
+		sys, eng := newManualSystem(t)
+		var log []gotOverload
+		pid := spawnWatcher(t, sys, eng, &overloadWatcher{who: "a", log: &log})
+		subscribe(t, sys, eng, pid)
+		inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+			eng.ChangeAdmission(pressure(true, true))
+			ctx.UnsubscribeOverload()
+			ctx.SubscribeOverload()
+		})
+		wantGot(t, log, []gotOverload{{"a", Overloaded{Active: true, Reason: OverloadPressure}}})
+	})
+	t.Run("subscribed again while admitting", func(t *testing.T) {
+		sys, eng := newManualSystem(t)
+		var log []gotOverload
+		pid := spawnWatcher(t, sys, eng, &overloadWatcher{who: "a", log: &log})
+		subscribe(t, sys, eng, pid)
+		inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+			eng.ChangeAdmission(pressure(true, true))
+			ctx.UnsubscribeOverload()
+			eng.ChangeAdmission(pressure(false, false))
+			ctx.SubscribeOverload()
+		})
+		wantGot(t, log, nil)
+	})
 }
 
 // The subscription calls need a turn of the incarnation, and Stopped, which runs after the end of
