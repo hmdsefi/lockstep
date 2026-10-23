@@ -45,6 +45,9 @@ func (r PressureRule) problem() string {
 // (faultline World.RecoveryStart), and an episode still active there ends there. While an episode
 // is active the node's System sheds work: it refuses normal spawns and sheds sent messages. It
 // panics if node is not a lockstep node or rule is invalid.
+//
+// Pressure episodes are not faultline faults: schedule.json does not list them, a run replays them
+// exactly from its seed, and faultline cannot minimize them.
 func (s *Sim) Pressure(node string, rule PressureRule) {
 	s.check()
 	ln := s.lookup(node)
@@ -55,8 +58,11 @@ func (s *Sim) Pressure(node string, rule PressureRule) {
 	pr.next(s.w.Sim.Now())
 }
 
-// PressureFor puts node under memory pressure now, for d of virtual time. It panics if node is
-// not a lockstep node or d <= 0.
+// PressureFor puts node under memory pressure now, for d of virtual time. It draws nothing from
+// the node's stream, so it does not shift the episodes of a Pressure rule, and it ignores the
+// recovery start: the episode ends d from now even when that is past it. Like Pressure's episodes,
+// the episode is not listed in schedule.json and cannot be minimized. It panics if node is not a
+// lockstep node or d <= 0.
 func (s *Sim) PressureFor(node string, d time.Duration) {
 	s.check()
 	ln := s.lookup(node)
