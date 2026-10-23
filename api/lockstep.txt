@@ -70,6 +70,7 @@ pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, func WithWatchdog(time.Duration) Option
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) After(time.Duration, M) TimerID
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelEffect(EffectID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Every(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
@@ -186,6 +187,7 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/sim, func Ask[M any, R any](*Sim, string, lockstep.PID[M], func(lockstep.ReplyTo[R]) M, ...lockstep.AskOption) (R, error)
 pkg github.com/hmdsefi/lockstep/sim, func Send[M any](*Sim, string, lockstep.PID[M], M) error
 pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Sim))
 pkg github.com/hmdsefi/lockstep/sim, func SimulateSeeds(*testing.T, Options, func(*Sim), ...uint64)
@@ -211,3 +213,4 @@ pkg github.com/hmdsefi/lockstep/sim, type Options struct
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, System []lockstep.Option
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, embedded faultline.Options
 pkg github.com/hmdsefi/lockstep/sim, type Sim struct
+pkg github.com/hmdsefi/lockstep/sim, var ErrRunEnded error

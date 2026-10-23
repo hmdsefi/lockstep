@@ -4,10 +4,12 @@
 package lockstep
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"time"
 
@@ -33,6 +35,7 @@ const (
 	outcomeTimeout    = "timeout"
 	outcomeOverloaded = "overloaded"
 	outcomeRefused    = "refused"
+	outcomeCancelled  = "cancelled"
 )
 
 // Effect is an operation that waits: a network call, file I/O, a database query, CPU work over a
@@ -82,8 +85,8 @@ func WithEffectTimeout(d time.Duration) EffectOption {
 // Do starts effect e for the actor of ctx and returns its ID. When the effect's outcome is
 // delivered, a later turn of the actor calls done with the result, or with the zero T and
 // ErrTimeout or ErrOverloaded, and passes done's return value to Receive. done runs on the
-// actor's turn, never concurrently with Receive. If the incarnation ends first, done is never
-// called.
+// actor's turn, never concurrently with Receive. If the incarnation ends or CancelEffect cancels
+// the effect first, done is never called.
 //
 // Do panics if e is nil, e.Name() is invalid, done is nil, or an option is invalid.
 func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...EffectOption) EffectID {
@@ -205,8 +208,9 @@ func validEffectName(name string) bool {
 // pendingEffect is one effect of a cell that has no outcome yet (EFF §3, §11). It belongs to the
 // incarnation inc that called Do. id, name, inc and bind never change; cancelRun is guarded by the
 // cell's emu, and the effect is pending exactly while the cell's table holds it. Do sets
-// cancelTimer before it calls Effects.Start, and only effectDone, which the engine calls after
-// Start, reads it.
+// cancelTimer before it calls Effects.Start, and it is read only after Start: by effectDone, which
+// the engine calls after Start, and by cancelEffect, which runs in the cell's turn after Do has
+// returned.
 type pendingEffect[M any] struct {
 	id   EffectID
 	name string
@@ -237,6 +241,40 @@ func (c *cell[M]) takeEffect(pe *pendingEffect[M]) (cancelRun engine.Cancel, ok 
 	}
 	delete(c.effects, pe.id)
 	return pe.cancelRun, true
+}
+
+// cancelEffect cancels pe if it is still pending (EFF-100, EFF-110) and reports whether it did: it
+// cancels the timeout timer, calls the engine's Cancel, then records outcome=cancelled. done is
+// never called for it, and an engine result that arrives anyway is ignored (EFF-060). Only the
+// cell's turn calls it, so Do has returned and cancelTimer and cancelRun are set. It runs no user
+// code.
+func (c *cell[M]) cancelEffect(pe *pendingEffect[M]) bool {
+	cancelRun, ok := c.takeEffect(pe)
+	if !ok {
+		return false
+	}
+	pe.cancelTimer()
+	if cancelRun != nil {
+		cancelRun()
+	}
+	c.recordEffectDone(pe.inc, pe.id, pe.name, outcomeCancelled, nil)
+	return true
+}
+
+// cancelEffects cancels every pending effect of the cell, in ID order, as the incarnation ends
+// (EFF-100). The table holds the live incarnation's effects only: an earlier incarnation's were
+// cancelled when it ended.
+func (c *cell[M]) cancelEffects() {
+	c.emu.Lock()
+	pes := make([]*pendingEffect[M], 0, len(c.effects))
+	for _, pe := range c.effects { //lockstep:maporder the effects are sorted by ID below
+		pes = append(pes, pe)
+	}
+	c.emu.Unlock()
+	slices.SortFunc(pes, func(a, b *pendingEffect[M]) int { return cmp.Compare(a.id, b.id) })
+	for _, pe := range pes {
+		c.cancelEffect(pe)
+	}
 }
 
 // effectDone is the done function that Do gives the engine (EFF-060). It runs in engine context,
