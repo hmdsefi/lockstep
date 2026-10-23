@@ -69,7 +69,7 @@ func (s *Sim) DelayBetween(from, to lockstep.Address, min, max time.Duration) {
 		r.delay = min != 0 || max != 0
 		r.min, r.max = min, max
 	})
-	s.recordPairFault("delay",
+	s.recordFault(0, "delay",
 		kernel.Attr{Key: "from", Value: from.String()},
 		kernel.Attr{Key: "to", Value: to.String()},
 		kernel.Attr{Key: "min", Value: min.String()},
@@ -86,7 +86,7 @@ func (s *Sim) DropBetween(from, to lockstep.Address, ppm uint32) {
 		panic("lockstep: sim: DropBetween: ppm " + strconv.FormatUint(uint64(ppm), 10) + " > 1000000")
 	}
 	s.setPair(pairKeyOf(from, to), ppm != 0, func(r *pairRule) { r.dropPPM = ppm })
-	s.recordPairFault("drop",
+	s.recordFault(0, "drop",
 		kernel.Attr{Key: "from", Value: from.String()},
 		kernel.Attr{Key: "to", Value: to.String()},
 		kernel.Attr{Key: "ppm", Value: strconv.FormatUint(uint64(ppm), 10)},
@@ -116,13 +116,4 @@ func (s *Sim) prunePair(r *pairRule) {
 	if !r.delay && r.dropPPM == 0 && len(r.held) == 0 && s.pairs[r.key] == r {
 		delete(s.pairs, r.key)
 	}
-}
-
-// recordPairFault emits lockstep.fault for the fault op on node 0, with op as its first
-// attribute followed by attrs (SFT §8).
-func (s *Sim) recordPairFault(op string, attrs ...kernel.Attr) {
-	all := make([]kernel.Attr, 0, len(attrs)+1)
-	all = append(all, kernel.Attr{Key: "op", Value: op})
-	all = append(all, attrs...)
-	s.w.Sim.Emit(kernel.Record{Kind: "lockstep.fault", Text: "fault " + op, Attrs: all})
 }
