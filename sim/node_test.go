@@ -92,23 +92,24 @@ func TestSIM060LaterNodeAndLinkChanges(t *testing.T) {
 	sim.Simulate(t, sim.Options{Options: faultline.Options{Seeds: 1}}, func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		n1 := s.Node("n1", noSetup)
+		n2 := s.Node("n2", noSetup)
 		w.RunFor(time.Millisecond)
 		plain := simnet.Link{Jitter: 50 * time.Millisecond}
-		w.Net.SetLink(n1.ID(), n1.ID(), plain)
+		w.Net.SetLink(n1.ID(), n2.ID(), plain)
 		other := w.AddServer("other", func(*kernel.Node) {}) // not a lockstep node
-		n2 := s.Node("n2", noSetup)
-		for _, p := range [][2]*kernel.Node{{n1, n2}, {n2, n1}} {
+		n3 := s.Node("n3", noSetup)
+		for _, p := range [][2]*kernel.Node{{n1, n3}, {n3, n1}, {n2, n3}, {n3, n2}, {n2, n1}} {
 			if !w.Net.Link(p[0].ID(), p[1].ID()).FIFO {
 				tt.Errorf("link %s -> %s is not FIFO", p[0].Name(), p[1].Name())
 			}
 		}
-		for _, p := range [][2]*kernel.Node{{n2, other}, {other, n2}} {
+		for _, p := range [][2]*kernel.Node{{n3, other}, {other, n3}} {
 			if w.Net.Link(p[0].ID(), p[1].ID()).FIFO {
 				tt.Errorf("link %s -> %s to a node that is not a lockstep node is FIFO", p[0].Name(), p[1].Name())
 			}
 		}
-		if got := w.Net.Link(n1.ID(), n1.ID()); got != plain {
-			tt.Errorf("Link(n1, n1) = %+v, want %+v", got, plain)
+		if got := w.Net.Link(n1.ID(), n2.ID()); got != plain {
+			tt.Errorf("Link(n1, n2) = %+v after adding n3, want %+v", got, plain)
 		}
 	})
 }
