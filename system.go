@@ -52,6 +52,10 @@ type System struct {
 	estimates bool
 	memBytes  atomic.Int64
 
+	// effectSeq is the last EffectID assigned: Do numbers the effects of every actor of the system
+	// from it (EFF-020).
+	effectSeq atomic.Uint64
+
 	asks    askTable       // pending asks of this system's askers and tracked asks of its actors (MSG §11)
 	waiting waitSet        // the user mailboxes that outside senders wait on (MBX-075)
 	adm     admissionState // whether the engine's admission sheds (OVL-150)
