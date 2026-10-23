@@ -191,8 +191,9 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 // pendingEffect is one effect of a cell that has no outcome yet (EFF §3, §11). It belongs to the
 // incarnation inc that called Do. id, name, inc and bind never change; cancelRun is guarded by the
 // cell's emu, and the effect is pending exactly while the cell's table holds it. Do sets
-// cancelTimer before it calls Effects.Start, and only effectDone, which the engine calls after
-// Start, reads it.
+// cancelTimer before it calls Effects.Start, and it is read only after Start: by effectDone, which
+// the engine calls after Start, and by cancelEffect, which runs in the cell's turn after Do has
+// returned.
 type pendingEffect[M any] struct {
 	id   EffectID
 	name string
