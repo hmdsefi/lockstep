@@ -35,11 +35,11 @@ type Sim struct {
 
 	counts Counts
 
-	// events counts the pending node events of every engine by label and class (SIM-250).
-	// askGen changes whenever the number of pending ask timeouts does, so whenever an ask starts
-	// or resolves; graphGen is the askGen of the last time lockstep/deadlock read the pending
-	// asks (SIM-260).
-	events           eventCounts
+	// events counts the pending node events of every engine by label and class, and world the
+	// pending world events sim scheduled (SIM-250). askGen changes whenever the number of pending
+	// ask timeouts does, so whenever an ask starts or resolves; graphGen is the askGen of the last
+	// time lockstep/deadlock read the pending asks (SIM-260).
+	events, world    eventCounts
 	askGen, graphGen uint64
 }
 
@@ -149,10 +149,11 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 
 // crashed is the crash hook of s, registered once per run with w.Sim.OnCrash (SIM-110). The
 // kernel runs it after node n is down and kernel.crash is recorded, and not for a crash before
-// the first boot. For a lockstep node it marks the engine dead, stops counting the events the
-// kernel drops with the crash (SIM-250), discards the node's system and leaves the node without
-// one, in that order: the engine is dead before Discard resolves the pending asks, so none of
-// that is recorded (SIM-120). Discarding runs no Stopped hook, closes
+// the first boot. For a lockstep node it marks the engine dead, discards the node's system,
+// leaves the node without one and subtracts the node events the kernel drops with the crash from
+// the counts (SIM-250), in that order: the engine is dead before Discard resolves the pending
+// asks, so none of that is recorded (SIM-120), and the ask timeouts that Discard cancels are
+// subtracted by their Cancel before the rest is dropped. Discarding runs no Stopped hook, closes
 // nothing and records no lockstep.stop (SUP-360), and the discarded actors are not checked for
 // leaks. Other nodes are not sim's.
 func (s *Sim) crashed(n *kernel.Node) {
@@ -162,11 +163,13 @@ func (s *Sim) crashed(n *kernel.Node) {
 	}
 	if ln.eng != nil {
 		ln.eng.kill()
-		ln.eng.dropPending()
 	}
 	if ln.sys != nil {
 		hooks.Discard(ln.sys)
 		ln.sys = nil
+	}
+	if ln.eng != nil {
+		ln.eng.dropPending()
 	}
 }
 

@@ -16,11 +16,11 @@ import (
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
-// quiescent reports whether no lockstep activity is left (SIM-250): no pending node event of
-// class activity that sim scheduled, and no simnet copy in flight. Pending ask timeouts, one per
-// pending ask, and background timers may remain.
+// quiescent reports whether no lockstep activity is left (SIM-250): no pending node or world event
+// of class activity that sim scheduled, and no simnet copy in flight. Pending ask timeouts, one
+// per pending ask, and events of class background may remain.
 func (s *Sim) quiescent() bool {
-	return s.events.activity == 0 && s.w.Net.Stats().InFlight == 0
+	return s.events.activity == 0 && s.world.activity == 0 && s.w.Net.Stats().InFlight == 0
 }
 
 // checkDeadlock is the lockstep/deadlock invariant, which runs after every event (SIM-250,

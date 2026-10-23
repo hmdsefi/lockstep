@@ -20,19 +20,19 @@ import (
 // turnLabel is the label of the kernel event that runs one turn (SIM-150).
 const turnLabel = "lockstep/turn"
 
-// labelClass is the class of the label of a node event sim schedules: how a pending event with
-// that label counts for quiescence (ENG-070, SIM-250).
+// labelClass is the class of the label of an event sim schedules: how a pending event with that
+// label counts for quiescence (ENG-070, SIM-250).
 type labelClass uint8
 
 const (
 	classActivity   labelClass = iota // lockstep activity: keeps the world busy
 	classAsk                          // an ask timeout: one per pending ask (MSG-320), not activity
-	classBackground                   // periodic housekeeping that never ends on its own: ignored
+	classBackground                   // not lockstep activity, such as periodic housekeeping: ignored
 )
 
-// labelClasses holds the class of every label sim schedules node events with: its own events and
-// ENG-070's AfterFunc labels. A label it does not list starts with "lockstep/" and is lockstep
-// activity (SIM §3). It is read by key only.
+// labelClasses holds the class of every label sim schedules events with: its own node events,
+// ENG-070's AfterFunc labels and SFT's events. A label it does not list starts with "lockstep/"
+// and is lockstep activity (SIM §3). It is read by key only.
 var labelClasses = map[string]labelClass{
 	turnLabel:                      classActivity, // SIM-150
 	sendLabel:                      classActivity, // SIM-160
@@ -47,6 +47,8 @@ var labelClasses = map[string]labelClass{
 	"lockstep/remote/dial-timeout": classActivity,
 	"lockstep/remote/fail":         classActivity,
 	"lockstep/remote/recv":         classActivity,
+	"lockstep/delay":               classActivity,   // SFT-090: a held message's release
+	"lockstep/pressure":            classBackground, // SFT pressure is not lockstep activity
 }
 
 // classOf returns the class of label (ENG-070): its entry in labelClasses, or activity.
@@ -57,23 +59,21 @@ func classOf(label string) labelClass {
 	return classActivity
 }
 
-// eventCounts counts pending node events by label and by class (SIM-250). byLabel is read by key
-// only; labels lists each label byLabel has held, in the order it was first counted, so the
-// counts are walked in a fixed order (SIM-330).
+// eventCounts counts pending events by label and by class (SIM-250). byLabel is read by key only.
 type eventCounts struct {
 	byLabel  map[string]int
-	labels   []string
 	activity int // events of class activity
 	asks     int // ask timeouts, so pending asks
 }
 
-// add adds n, which may be negative, to the count of label and of its class.
+// add adds n, which may be negative, to the count of label and of its class. It panics if the
+// count of label would go below zero: every event is counted once and subtracted once.
 func (c *eventCounts) add(label string, n int) {
+	if c.byLabel[label]+n < 0 {
+		panic(fmt.Sprintf("lockstep: sim: pending %s events below zero", label)) // unreachable
+	}
 	if c.byLabel == nil {
 		c.byLabel = make(map[string]int)
-	}
-	if _, ok := c.byLabel[label]; !ok {
-		c.labels = append(c.labels, label)
 	}
 	c.byLabel[label] += n
 	switch classOf(label) {
@@ -111,9 +111,13 @@ type simEngine struct {
 	dead bool
 
 	// events counts the node events this engine scheduled that have neither run nor been
-	// cancelled, and that its node's crash has not dropped (SIM-250). The Sim's counts are the
-	// sums over its engines.
-	events eventCounts
+	// cancelled, and that its node's crash has not dropped (SIM-250); labels lists each label
+	// events has counted, in the order it was first counted, so dropPending walks the counts in a
+	// fixed order (SIM-330). The Sim's node counts are the sums over its engines. dropped is set
+	// once dropPending has subtracted every event still pending.
+	events  eventCounts
+	labels  []string
+	dropped bool
 }
 
 // newEngine returns the engine of incarnation inc of node n, with its bundle (SIM-070, SIM §5.3).
@@ -155,7 +159,7 @@ func (e *simEngine) Ready(a engine.ActorRef) {
 // postTurn posts the kernel event that runs one turn of a with budget 1 and queues the next turn
 // when Slot.End says so; the runtime does not call Ready for it (ENG-350).
 func (e *simEngine) postTurn(a engine.ActorRef) {
-	e.schedule(0, turnLabel, func() {
+	e.post(turnLabel, func() {
 		slot := a.Slot()
 		slot.Begin()
 		more := a.RunTurn(1)
@@ -165,14 +169,27 @@ func (e *simEngine) postTurn(a engine.ActorRef) {
 	})
 }
 
-// schedule schedules fn as an event of e's node, labeled label, after the local duration d (0
-// posts it at the current time), and returns the Cancel of that event. Every node event sim
-// schedules goes through it, so the event counts as pending in e's counts and the Sim's until it
-// runs, its Cancel returns true or its node crashes (SIM-250). The caller has checked
-// canSchedule.
+// pendingEvent is one counted event: its label, and whether it has been subtracted from the
+// counts. Each counted event is subtracted exactly once: when it runs, when its Cancel returns
+// true, or, for a node event, by its node's crash (SIM-250).
+type pendingEvent struct {
+	label   string
+	settled bool
+}
+
+// post is schedule with d = 0 for an event nobody cancels: it posts fn as an event of e's node at
+// the current time, as kernel.Node.Post does, and counts it.
+func (e *simEngine) post(label string, fn func()) { e.schedule(0, label, fn) }
+
+// schedule schedules fn as an event of e's node, labeled label, after the local duration d, and
+// returns the Cancel of that event. It is the one counted path for node events: every node event
+// sim schedules goes through it, so the event counts as pending, by its label's class, in e's
+// counts and the Sim's until it runs, its Cancel returns true or its node crashes (SIM-250). The
+// caller has checked canSchedule; on a down node nothing is scheduled or counted.
 func (e *simEngine) schedule(d time.Duration, label string, fn func()) engine.Cancel {
+	ev := &pendingEvent{label: label}
 	id := e.n.After(d, label, func() {
-		e.settle(label)
+		e.settle(ev)
 		fn()
 	})
 	if id == 0 { // the node is down: nothing was scheduled
@@ -183,38 +200,93 @@ func (e *simEngine) schedule(d time.Duration, label string, fn func()) engine.Ca
 		if !e.n.Cancel(id) {
 			return false
 		}
-		e.settle(label)
+		e.settle(ev)
 		return true
 	}
 }
 
-// count adds n pending events labeled label to e's counts and the Sim's. A change in the number
-// of ask timeouts is a change in the set of pending asks, which starts a new generation of the
-// wait-for graph (SIM-260).
+// count adds n pending events labeled label to e's counts and the Sim's node counts.
 func (e *simEngine) count(label string, n int) {
+	if _, ok := e.events.byLabel[label]; !ok {
+		e.labels = append(e.labels, label)
+	}
 	e.events.add(label, n)
-	e.s.events.add(label, n)
-	if classOf(label) == classAsk {
-		e.s.askGen++
-	}
+	e.s.countNode(label, n)
 }
 
-// settle counts one pending event labeled label as gone because it runs or was cancelled, unless
-// dropPending has counted it already.
-func (e *simEngine) settle(label string) {
-	if e.events.byLabel[label] > 0 {
-		e.count(label, -1)
+// settle subtracts ev from the counts because it runs or was cancelled, unless it was subtracted
+// already, by an earlier settle or by dropPending.
+func (e *simEngine) settle(ev *pendingEvent) {
+	if ev.settled || e.dropped {
+		return
 	}
+	ev.settled = true
+	e.count(ev.label, -1)
 }
 
-// dropPending counts every event e still has pending as gone. The crash hook calls it: the kernel
-// drops a crashed incarnation's events without running them (SIM-250).
+// dropPending subtracts every event e still has pending from the counts, and makes a later settle
+// of those events subtract nothing. The crash hook calls it: the kernel drops a crashed
+// incarnation's events without running them (SIM-250).
 func (e *simEngine) dropPending() {
-	for _, label := range e.events.labels {
+	for _, label := range e.labels {
 		if n := e.events.byLabel[label]; n > 0 {
 			e.count(label, -n)
 		}
 	}
+	e.dropped = true
+}
+
+// countNode adds n pending node events labeled label to the Sim's node counts. A change in the
+// number of ask timeouts is a change in the set of pending asks, which starts a new generation of
+// the wait-for graph (SIM-260).
+func (s *Sim) countNode(label string, n int) {
+	s.events.add(label, n)
+	if classOf(label) == classAsk {
+		s.askGen++
+	}
+}
+
+// worldAt schedules fn as a world event labeled label at virtual time t, as w.Sim.At does, and
+// returns its Cancel. worldAtFront is the same with w.Sim.AtFront. They are the counted path for
+// world events: a world event sim schedules with a "lockstep/" label goes through one of them, so
+// it counts as pending, by its label's class, in the Sim's world counts until it runs or its
+// Cancel returns true (SIM-250). A world event survives crashes, so the crash hook never touches
+// these counts.
+func (s *Sim) worldAt(t kernel.Time, label string, fn func()) engine.Cancel {
+	return s.scheduleWorld(s.w.Sim.At, t, label, fn)
+}
+
+// worldAtFront is worldAt with w.Sim.AtFront: the event runs before the seeded events at t and
+// takes no scheduler draw.
+func (s *Sim) worldAtFront(t kernel.Time, label string, fn func()) engine.Cancel {
+	return s.scheduleWorld(s.w.Sim.AtFront, t, label, fn)
+}
+
+// scheduleWorld schedules fn with at, w.Sim.At or w.Sim.AtFront, and counts it in s.world until
+// it runs or its Cancel returns true.
+func (s *Sim) scheduleWorld(at func(kernel.Time, string, func()) kernel.EventID, t kernel.Time, label string, fn func()) engine.Cancel {
+	ev := &pendingEvent{label: label}
+	id := at(t, label, func() {
+		s.settleWorld(ev)
+		fn()
+	})
+	s.world.add(label, 1)
+	return func() bool {
+		if !s.w.Sim.Cancel(id) {
+			return false
+		}
+		s.settleWorld(ev)
+		return true
+	}
+}
+
+// settleWorld subtracts the world event ev from s.world, unless it was subtracted already.
+func (s *Sim) settleWorld(ev *pendingEvent) {
+	if ev.settled {
+		return
+	}
+	ev.settled = true
+	s.world.add(ev.label, -1)
 }
 
 // kill marks the engine dead, so it ignores every seam call from now on (SIM-120). It is the one
