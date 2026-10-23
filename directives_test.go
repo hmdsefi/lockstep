@@ -162,6 +162,39 @@ func TestATSUP17SuspendedKeepsSignals(t *testing.T) {
 	}
 }
 
+// SUP-160, ACT-630: when a restart ends a Suspended incarnation, a kept Terminated whose watch the
+// incarnation had cancelled is skipped without a record, as a delivery would skip it; a kept
+// Terminated of a current watch is recorded as lockstep.drop reason not-running.
+func TestDropKeptSkipsStaleTerminated(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	cancelled := PIDAt[any]("local", "/user/gone1").Address()
+	current := PIDAt[any]("local", "/user/gone2").Address()
+	var c PID[any]
+	spawnR(t, sys, "s", &rProbe{obs: new([]string), onStart: func(ctx *Context[any]) {
+		c = spawnR(t, ctx, "c", &rProbe{obs: new([]string), onStart: func(ctx *Context[any]) {
+			if ctx.inc != 1 {
+				return
+			}
+			// Neither address is alive: each Watch queues a Terminated with reason NoActor.
+			for _, a := range []Address{cancelled, current} {
+				if err := Watch(ctx, a); err != nil {
+					panic(err)
+				}
+			}
+			Unwatch(ctx, cancelled)
+			panic("boom") // C is Suspended before it pops the two Terminated signals
+		}})
+	}}, WithStrategy(deciding(DirectiveRestart)))
+	eng.RunUntilIdle()
+
+	if _, inc := cellOf(t, sys, c).lifecycle(); inc != 2 {
+		t.Fatalf("C inc = %d, want 2 after the restart", inc)
+	}
+	term := Terminated{Addr: current, Reason: NoActor}
+	sameRecords(t, recordsOf(eng.Records(), "lockstep.drop"), "lockstep.drop",
+		[]string{"to=" + c.String(), "reason=not-running", "msg=" + sys.eng.Tracer.Describe(term)})
+}
+
 // SUP-160, SUP-210: a Suspended supervisor keeps its children's failed and ended notices and
 // handles them in arrival order after its resume. S decides C2's restart and pushes end, then
 // escalates C1's failure; while S is Suspended, C2's ended notice and C3's failed notice arrive.

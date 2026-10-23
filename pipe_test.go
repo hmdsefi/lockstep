@@ -312,8 +312,8 @@ func TestATMSG27PipeMisuseAndFanOut(t *testing.T) {
 }
 
 // MSG-620: the runtime discards a piped reply that a different incarnation dequeues, calls neither
-// to nor Receive, and emits lockstep.pipe.drop. Restarts arrive with plan 1.3, so the entry is
-// built by hand with another incarnation's number.
+// to nor Receive, and emits lockstep.pipe.drop. The entry is built by hand with another
+// incarnation's number.
 func TestPipeDropIncarnation(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	eng.SetBudget(32)
