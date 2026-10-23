@@ -23,3 +23,7 @@ func Hold(sys *System, addr Address) (release func()) {
 // EngineBlocking reports the Blocking flag of the engine bundle sys was built on, for the
 // simulation tests (SIM-220).
 func EngineBlocking(sys *System) bool { return sys.eng.Blocking }
+
+// SkipEffectCancelAtStop makes a stop of an actor of sys leave its pending effects uncancelled,
+// so the simulation's leak check finds them (AT-SIM-26). A restart still cancels them.
+func SkipEffectCancelAtStop(sys *System) { sys.skipEffectCancel.Store(true) }
