@@ -15,7 +15,6 @@ import (
 // results are never refused and never count toward capacity.
 type MailboxPolicy uint8
 
-// The full-mailbox policies. Their values and order are those of mailbox.Policy.
 const (
 	// FailSend refuses the message: Send returns an error wrapping ErrMailboxFull. The default.
 	FailSend MailboxPolicy = iota
@@ -25,7 +24,7 @@ const (
 	// new one. Send returns nil.
 	DropOldest
 	// BlockSender makes an outside sender (a *System) wait until the mailbox has room and the
-	// System admits messages again, or until its context ends. For a sender inside an actor, and
+	// System admits messages again (OVL), or until its context ends. For a sender inside an actor, and
 	// on engines that cannot make a caller wait (simulation), it behaves as FailSend.
 	BlockSender
 )
@@ -48,9 +47,10 @@ func (p MailboxPolicy) String() string {
 
 // WithMailbox sets the spawned actor's mailbox capacity and full-mailbox policy. It never
 // panics: if capacity < 1 or policy is not one of the four constants, Spawn returns an error
-// wrapping ErrInvalidOption. Of several valid WithMailbox options the last one counts.
+// wrapping ErrInvalidOption (ACT).
 func WithMailbox(capacity int, policy MailboxPolicy) SpawnOption {
 	return func(c *spawnConfig) {
+		// Of several valid WithMailbox options the last one counts.
 		m := mailboxConfig{capacity, policy}
 		if err := m.validate(); err != nil {
 			c.fail(err)
@@ -62,10 +62,10 @@ func WithMailbox(capacity int, policy MailboxPolicy) SpawnOption {
 
 // WithDefaultMailbox sets the capacity and policy of every actor spawned in the system without
 // WithMailbox. Without it the default is 1024 and FailSend. It never panics: an invalid capacity
-// or policy makes New panic with an error wrapping ErrInvalidOption. Of several valid
-// WithDefaultMailbox options the last one counts.
+// or policy makes New panic with an error wrapping ErrInvalidOption (ACT).
 func WithDefaultMailbox(capacity int, policy MailboxPolicy) Option {
 	return func(c *systemConfig) {
+		// Of several valid WithDefaultMailbox options the last one counts.
 		m := mailboxConfig{capacity, policy}
 		if err := m.validate(); err != nil {
 			c.fail(err)
