@@ -72,7 +72,7 @@ func (e *simEngine) Interpose(from, to engine.Address, msg any, offer func()) bo
 		{Key: "delay", Value: d.String()},
 		{Key: "release", Value: release.String()},
 	})
-	if r.ev == 0 {
+	if r.cancel == nil {
 		s.scheduleRelease(r)
 	}
 	return true
@@ -80,17 +80,19 @@ func (e *simEngine) Interpose(from, to engine.Address, msg any, offer func()) bo
 
 // scheduleRelease schedules the release event of r's head (SFT-090).
 func (s *Sim) scheduleRelease(r *pairRule) {
-	r.ev = s.atDelay(r.held[0].release, func() { s.release(r) })
+	r.cancel = s.atDelay(r.held[0].release, func() { s.release(r) })
 }
 
-// atDelay schedules fn as a world event labeled lockstep/delay at virtual time t.
-func (s *Sim) atDelay(t kernel.Time, fn func()) kernel.EventID {
-	return s.w.Sim.At(t, delayLabel, fn)
+// atDelay schedules fn as a world event labeled lockstep/delay at virtual time t, counted as
+// pending activity until it runs or its Cancel returns true (SIM-250).
+func (s *Sim) atDelay(t kernel.Time, fn func()) engine.Cancel {
+	return s.worldAt(t, delayLabel, fn)
 }
 
-// postDelay posts fn as a node event of n labeled lockstep/delay: it runs when n resumes.
-func (s *Sim) postDelay(n *kernel.Node, fn func()) kernel.EventID {
-	return n.Post(delayLabel, fn)
+// postDelay posts fn as a counted node event of e's node labeled lockstep/delay: on a paused node
+// it runs when the node resumes. e must be able to schedule (SIM-250).
+func (e *simEngine) postDelay(fn func()) engine.Cancel {
+	return e.schedule(0, delayLabel, fn)
 }
 
 // release is the release event of r (SFT-090). If the receiver's incarnation changed, its node is
@@ -98,7 +100,7 @@ func (s *Sim) postDelay(n *kernel.Node, fn func()) kernel.EventID {
 // again to the node and continues on resume. Otherwise every held message whose release time has
 // come is offered, in order, without interposition, and the event is scheduled for the new head.
 func (s *Sim) release(r *pairRule) {
-	r.ev = 0
+	r.cancel = nil
 	e := r.eng
 	if e.dead || e.inc != e.n.Incarnation() || e.n.State() == kernel.NodeDown {
 		s.discardHeld(r)
@@ -106,7 +108,7 @@ func (s *Sim) release(r *pairRule) {
 		return
 	}
 	if e.n.State() == kernel.NodePaused {
-		r.ev = s.postDelay(e.n, func() { s.release(r) })
+		r.cancel = e.postDelay(func() { s.release(r) })
 		return
 	}
 	now := s.w.Sim.Now()
@@ -117,7 +119,7 @@ func (s *Sim) release(r *pairRule) {
 		h.offer()
 	}
 	if len(r.held) > 0 {
-		if r.ev == 0 {
+		if r.cancel == nil {
 			s.scheduleRelease(r)
 		}
 		return
@@ -128,9 +130,9 @@ func (s *Sim) release(r *pairRule) {
 
 // discardHeld drops r's held messages and cancels its pending release event.
 func (s *Sim) discardHeld(r *pairRule) {
-	if r.ev != 0 {
-		s.w.Sim.Cancel(r.ev)
-		r.ev = 0
+	if r.cancel != nil {
+		r.cancel()
+		r.cancel = nil
 	}
 	clear(r.held)
 	r.held = nil

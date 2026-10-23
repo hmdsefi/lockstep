@@ -36,6 +36,18 @@ func burstTo(to lockstep.PID[Num]) *actor[burst] {
 	}}
 }
 
+// burstVia is burstTo for a target that changes: it sends to *to, read at every send, so a test
+// can address the PID of B's latest incarnation.
+func burstVia(to *lockstep.PID[Num]) *actor[burst] {
+	return &actor[burst]{receive: func(ctx *lockstep.Context[burst], b burst) {
+		for n := b.From; n < b.From+b.N; n++ {
+			if err := lockstep.Send(ctx, *to, Num{n}); err != nil {
+				panic(err)
+			}
+		}
+	}}
+}
+
 // arrival is one message B received, and when.
 type arrival struct {
 	n  int
@@ -329,8 +341,9 @@ func TestATSFT10CrashDiscardsHeld(t *testing.T) {
 			sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 				w, tt := s.World(), s.World().T()
 				var got []arrival
-				s.Node("n1", func(sys *lockstep.System) { spawn(sys, "a", burstTo(pidB("n2"))) })
-				n2 := s.Node("n2", func(sys *lockstep.System) { spawn(sys, "b", timedReceiver(w, &got)) })
+				var b lockstep.PID[Num] // the PID of B's latest incarnation, which A sends to
+				s.Node("n1", func(sys *lockstep.System) { spawn(sys, "a", burstVia(&b)) })
+				n2 := s.Node("n2", func(sys *lockstep.System) { b = spawn(sys, "b", timedReceiver(w, &got)) })
 				s.DelayBetween(pidA().Address(), pidB("n2").Address(), 50*time.Millisecond, 50*time.Millisecond)
 				w.RunFor(time.Millisecond)
 				if err := sim.Send(s, "n1", pidA(), burst{From: 1, N: 2}); err != nil {
@@ -340,10 +353,14 @@ func TestATSFT10CrashDiscardsHeld(t *testing.T) {
 				if n := len(ofKind(w.Sim.Records(), "lockstep.delay")); n != 2 {
 					tt.Fatalf("%d lockstep.delay records before the crash, want 2", n)
 				}
+				oldB := b
 				n2.Crash()
 				w.RunFor(tc.restart - 10*time.Millisecond)
 				n2.Restart()
 				w.RunFor(5 * time.Millisecond)
+				if b == oldB {
+					tt.Fatalf("B's new incarnation has the old PID %s", b)
+				}
 				sentAt := w.Sim.Now()
 				if err := sim.Send(s, "n1", pidA(), burst{From: 3, N: 1}); err != nil {
 					tt.Fatalf("Send 3: %v", err)
@@ -593,4 +610,63 @@ func TestSFT090PausedReceiver(t *testing.T) {
 			tt.Error("no lockstep/delay event on n2 after the resume")
 		}
 	})
+}
+
+// SFT-090: a node that is paused when the release event runs, and crashes before it resumes, loses
+// the node event that would continue the release. The next message for the pair, sent to the new
+// incarnation, is held behind nothing, gets its own release and arrives after its delay; the
+// message held for the old incarnation is never offered.
+func TestSFT090PausedThenCrashedReceiver(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var got []arrival
+		var b lockstep.PID[Num]
+		s.Node("n1", func(sys *lockstep.System) { spawn(sys, "a", burstVia(&b)) })
+		n2 := s.Node("n2", func(sys *lockstep.System) { b = spawn(sys, "b", timedReceiver(w, &got)) })
+		s.DelayBetween(pidA().Address(), pidB("n2").Address(), 50*time.Millisecond, 50*time.Millisecond)
+		w.RunFor(time.Millisecond)
+		if err := sim.Send(s, "n1", pidA(), burst{From: 1, N: 1}); err != nil {
+			tt.Fatalf("Send 1: %v", err)
+		}
+		w.RunFor(10 * time.Millisecond)
+		n2.Pause()
+		w.RunFor(100 * time.Millisecond) // past the release time: the release is posted to the node
+		n2.Crash()
+		n2.Restart()
+		w.RunFor(5 * time.Millisecond)
+		sentAt := w.Sim.Now()
+		if err := sim.Send(s, "n1", pidA(), burst{From: 2, N: 1}); err != nil {
+			tt.Fatalf("Send 2: %v", err)
+		}
+		w.RunFor(time.Second)
+
+		if len(got) != 1 || got[0].n != 2 || got[0].at < sentAt.Add(50*time.Millisecond) {
+			tt.Errorf("B got %v, want only message 2, no earlier than %v", got, sentAt.Add(50*time.Millisecond))
+		}
+	})
+}
+
+// askCycleDelayed is the scenario of TestSIM250DelayedRequestKeepsWorldBusy: A on n1 asks B on n2
+// at 10ms, B keeps the request and asks A, and B's request to A is held for 1s.
+var _ = scenario("deadlock-delayed-request", func(t *testing.T) {
+	sim.Simulate(t, fullTrace(1), func(s *sim.Sim) {
+		p := &pairRun{}
+		addPair(s, p)
+		s.DelayBetween(lockstep.PIDAt[Wait]("n2", "/user/b").Address(), lockstep.PIDAt[Wait]("n1", "/user/a").Address(), time.Second, time.Second)
+		start(s, p.pidA)
+		s.World().RunFor(10 * time.Second)
+	})
+})
+
+// SIM-250, SFT-090: a request held by DelayBetween keeps the world from being quiescent, so an ask
+// cycle that exists only as asks pending is not reported before the release: both asks are
+// pending at about 10ms, but the failure comes after B's request is released at 1s.
+func TestSIM250DelayedRequestKeepsWorldBusy(t *testing.T) {
+	a, _ := failingSeedArtifact(t, "deadlock-delayed-request")
+	if f := a.Report.Failure; f.Check != sim.CheckDeadlock {
+		t.Fatalf("failure check %q, want %q", f.Check, sim.CheckDeadlock)
+	}
+	if at := time.Duration(a.Report.Failure.AtNS); at < time.Second+10*time.Millisecond || at >= 5*time.Second {
+		t.Errorf("deadlock reported at %v, want after the 1s release of B's request and before the ask timeouts", at)
+	}
 }
