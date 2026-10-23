@@ -954,7 +954,8 @@ func TestATSUP38NoActor(t *testing.T) {
 // AT-MBX-21: MBX-160, SUP-060 step 5. After Stopped, the drain dead-letters the Sent entries in
 // queue order, with the sender as from and the stopped actor as to, then records every Self entry,
 // a piped reply included, as lockstep.drop incarnation-ended, and every signal left in the system
-// queue as lockstep.drop not-running; lockstep.stop follows.
+// queue as lockstep.drop not-running; lockstep.stop follows. A piped reply's record describes the
+// reply's value, or its error (MBX §8).
 func TestATMBX21DrainAtStop(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	tr := eng.Engine().Tracer
@@ -972,8 +973,10 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 
 	send(t, sys, a, any("m1"))
 	c.offerSelf(entry{msg: "t1", kind: entrySelf, inc: c.inc}) // a timer message of the live incarnation
-	piped := pipedReply[any]{ask: gone(), call: func() any { return "r" }}
+	piped := pipedReply[any]{ask: gone(), reply: 7, call: func() any { return "r" }}
 	c.offerSelf(entry{msg: piped, kind: entrySelf, inc: c.inc})
+	pipedErr := pipedReply[any]{ask: gone(), reply: ErrTimeout, call: func() any { return "e" }}
+	c.offerSelf(entry{msg: pipedErr, kind: entrySelf, inc: c.inc})
 	inTurn(t, sys, eng, s, func(ctx *Context[any]) {
 		if err := Send(ctx, a, any("m2")); err != nil {
 			t.Errorf("Send m2: %v", err)
@@ -1002,7 +1005,8 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 		{"lockstep.deadletter", "from=" + sys.user.String(), to, "reason=stopped", "msg=" + tr.Describe("m1")},
 		{"lockstep.deadletter", "from=" + s.String(), to, "reason=stopped", "msg=" + tr.Describe("m2")},
 		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe("t1")},
-		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe(piped)},
+		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe(7)},
+		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe(ErrTimeout)},
 		{"lockstep.drop", to, "reason=not-running", "msg=" + tr.Describe(sig)},
 		{"lockstep.stop", "actor=" + a.String(), "inc=1", "reason=normal", "err="},
 	}
@@ -1016,6 +1020,36 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 	}
 	if n := len(recordsOf(recs, "lockstep.pipe.drop")); n != 0 {
 		t.Errorf("%d lockstep.pipe.drop records, want 0: the drain records the piped reply as lockstep.drop", n)
+	}
+}
+
+// MBX §8, MSG-610: a piped reply that Pipe enqueued and the drain records is described by the
+// reply's value, or by its error when that is non-nil.
+func TestDrainDescribesPipedReply(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	tr := eng.Engine().Tracer
+	pid, _ := spawnRunner(t, sys, eng, "a")
+	before := len(eng.Records())
+	inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+		ok := newReply[int](sys)
+		ok.resolve(5, nil)
+		ok.fire()
+		to := func(v int, err error) any { return v }
+		Pipe(ctx, ok, to)
+		Pipe(ctx, resolvedReply[int](sys, ErrTimeout), to)
+		if err := Stop(ctx, pid.Address()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	var got []string
+	for _, attrs := range recordsOf(eng.Records()[before:], "lockstep.drop") {
+		if slices.Contains(attrs, "reason=incarnation-ended") {
+			got = append(got, attrs[len(attrs)-1])
+		}
+	}
+	want := []string{"msg=" + tr.Describe(5), "msg=" + tr.Describe(ErrTimeout)}
+	if !slices.Equal(got, want) {
+		t.Errorf("drained piped replies recorded %q, want %q", got, want)
 	}
 }
 
