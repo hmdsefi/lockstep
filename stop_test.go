@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/lockstep/internal/mailbox"
 )
 
 // hookActor is a test actor with a Receive and a Stopped hook; a nil function does nothing.
@@ -376,8 +378,8 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 	if err := Stop(sys, p.Address()); !errors.Is(err, ErrNotFound) || err.Error() != want {
 		t.Errorf("Stop(path address) with none registered = %v, want ErrNotFound with text %q", err, want)
 	}
-	// Nothing is delivered after the stop: the path address resolves to no actor (MBX-150;
-	// the lockstep.deadletter record is plan 1.3's).
+	// Nothing is delivered after the stop: the path address resolves to no actor, a dead letter
+	// (MBX-150).
 	if o := sys.route(routeRequest{from: sys.user, to: p.Address(), typ: typeOf[int](), msg: 4}); o.kind != routeDead || o.reason != reasonNotFound {
 		t.Errorf("route to the path address after the stop = %+v, want a not-found dead letter", o)
 	}
@@ -535,8 +537,8 @@ func TestStopDrain(t *testing.T) {
 	if len(sent) != 2 || sent[0].msg != "m1" || sent[1].msg != "m2" {
 		t.Errorf("drained Sent entries %+v, want m1, m2", sent)
 	}
-	if c.offerUser(entry{msg: "late", kind: entrySent}, nil) {
-		t.Error("a closed mailbox accepted an entry")
+	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil); out != mailbox.Closed {
+		t.Errorf("a closed mailbox answered %v to an entry, want closed", out)
 	}
 	c.pushSystem(begin{}, nil)
 	n, m := c.user.Len(), c.sysq.Len()

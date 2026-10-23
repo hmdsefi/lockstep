@@ -48,6 +48,16 @@ func TestInboundUserMessages(t *testing.T) {
 	if want := []int{1, 2, 6, 7}; !slices.Equal(*log, want) {
 		t.Errorf("log %v, want %v", *log, want)
 	}
+
+	// MBX-150: each message that reached no actor is a dead letter from the envelope's sender,
+	// with the reason of its case.
+	from := " from=" + remoteSender.String()
+	sameLines(t, "dead letters", renderKind(eng.Records(), "lockstep.deadletter"), []string{
+		"lockstep.deadletter" + from + " to=" + Address{node: "local", path: a.Address().Path(), uid: a.Address().UID() + 100}.String() + " reason=stopped msg=3",
+		"lockstep.deadletter" + from + " to=" + Address{node: "local", path: "/user/zz"}.String() + " reason=not-found msg=4",
+		"lockstep.deadletter" + from + " to=" + Address{node: "local", path: "/user/zz", uid: 5}.String() + " reason=stopped msg=5",
+		"lockstep.deadletter" + from + " to=" + path.String() + " reason=not-found msg=8",
+	})
 }
 
 // ENG-150, MBX-120: an inbound user message goes through the interposer first, and a held one is

@@ -20,10 +20,15 @@ type actorCell interface {
 	// msgType returns reflect.TypeFor[M](): the exact type identity of ACT-530, for Lookup's
 	// ErrWrongType message and for path addresses (ACT-440).
 	msgType() reflect.Type
-	// offerUser appends e to the user mailbox and schedules the cell (ENG-350). from is the cell
-	// whose turn enqueues, or nil. It reports false, and enqueues nothing, when the mailbox is
-	// closed: the cell has completed its final stop (MBX-150 (b)).
-	offerUser(e entry, from engine.ActorRef) bool
+	// offerUser offers the Sent entry e to the user mailbox without waiting and returns the
+	// queue's outcome (MBX-040, MBX-050). It schedules the cell when the mailbox took an entry
+	// (ENG-350). from is the cell whose turn enqueues, or nil. For DroppedOldest it also returns
+	// the entry the mailbox evicted. The outcome is Closed, and nothing is enqueued, when the cell
+	// has completed its final stop (MBX-150 (b)).
+	offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, entry)
+	// mailboxState returns the number of entries in the user mailbox, its capacity and its policy,
+	// for the records of MBX §8.
+	mailboxState() (length, capacity int, policy MailboxPolicy)
 	// pushSystem appends m to the system queue and schedules the cell (ENG-350); a closed queue
 	// drops m. from is the cell whose turn pushes, or nil.
 	pushSystem(m sysMsg, from engine.ActorRef)
@@ -121,24 +126,28 @@ func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
 	c.schedule(from)
 }
 
-// offerUser appends e to the user mailbox and then schedules the cell (ENG-350). from is the cell
-// whose turn enqueues, or nil (actorCell). It reports false, and enqueues nothing, when the
-// mailbox is closed (MBX-150 (b)). The queue's policy decides what a full mailbox does with the
-// entry (MBX-040 to MBX-060); until the send results of MBX-090 exist, a full mailbox reports true
-// whether or not the entry was kept.
-func (c *cell[M]) offerUser(e entry, from engine.ActorRef) bool {
+// offerUser offers e to the user mailbox and then, if the mailbox took an entry, schedules the
+// cell (ENG-350). from is the cell whose turn enqueues, or nil (actorCell). The queue's policy
+// decides what a full mailbox does with the entry (MBX-040 to MBX-060); nothing is shed here
+// (OVL's forceFull is false). A closed cell refuses with Closed (MBX-150 (b)). It holds no lock
+// when it returns, so the caller may call askRefused for the entries the outcome names.
+func (c *cell[M]) offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, entry) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return false
+		return mailbox.Closed, entry{}
 	}
-	out, _ := c.user.Offer(e, e.kind.queueKind(), false)
+	out, evicted := c.user.Offer(e, e.kind.queueKind(), false)
 	c.mu.Unlock()
-	if out == mailbox.Closed {
-		return false
+	if out == mailbox.Enqueued || out == mailbox.DroppedOldest {
+		c.schedule(from)
 	}
-	c.schedule(from)
-	return true
+	return out, evicted
+}
+
+// mailboxState returns the user mailbox's length, capacity and policy (actorCell).
+func (c *cell[M]) mailboxState() (length, capacity int, policy MailboxPolicy) {
+	return c.user.Len(), c.user.Capacity(), MailboxPolicy(c.user.Policy())
 }
 
 // offerSelf appends the Self entry e of incarnation e.inc to the user mailbox and schedules the

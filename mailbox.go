@@ -128,7 +128,7 @@ type entry struct {
 	msg  any     // the M
 	from Address // the sender
 	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
-	seq  uint64  //nolint:unused // the inbound envelope's Seq for MBX §8's deliver record; 0 for a local send
+	seq  uint64  // the inbound envelope's Seq for the deliver record (MBX §8); 0 for a local send
 	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe sets it
 	kind entryKind
 }
