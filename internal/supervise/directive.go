@@ -37,8 +37,8 @@ const (
 	InInjected // a failure the simulation injected with Sim.InjectFail (SFT-040)
 )
 
-// String returns "factory", "started", "receive", "signal", "stopped", "decider", "escalate", "injected", or
-// "Source(<n>)" for a value outside InFactory..InInjected.
+// String returns "factory", "started", "receive", "signal", "stopped", "decider", "escalate",
+// "injected", or "Source(<n>)" for a value outside InFactory..InInjected.
 func (s Source) String() string {
 	switch s {
 	case InFactory:
