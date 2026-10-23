@@ -195,6 +195,8 @@ pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Client(string, func(*lockstep
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Counts() Counts
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) HandleEffect(string, func(EffectCall) EffectResult)
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Node(string, func(*lockstep.System), ...kernel.NodeOption) *kernel.Node
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Pressure(string, PressureRule)
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) PressureFor(string, time.Duration)
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) System(string) *lockstep.System
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) World() *faultline.World
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Effect() any
@@ -225,5 +227,9 @@ pkg github.com/hmdsefi/lockstep/sim, type EffectResult struct, Value any
 pkg github.com/hmdsefi/lockstep/sim, type Options struct
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, System []lockstep.Option
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, embedded faultline.Options
+pkg github.com/hmdsefi/lockstep/sim, type PressureRule struct
+pkg github.com/hmdsefi/lockstep/sim, type PressureRule struct, Every time.Duration
+pkg github.com/hmdsefi/lockstep/sim, type PressureRule struct, MaxFor time.Duration
+pkg github.com/hmdsefi/lockstep/sim, type PressureRule struct, MinFor time.Duration
 pkg github.com/hmdsefi/lockstep/sim, type Sim struct
 pkg github.com/hmdsefi/lockstep/sim, var ErrRunEnded error
