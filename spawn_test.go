@@ -216,7 +216,7 @@ func TestSpawnDoesNotCallFactory(t *testing.T) {
 
 	// A sender can reach a cell between its registration and the push of begin (ENG-350 lets it
 	// call Ready): that turn processes nothing, and the message waits for the start.
-	raw := newCell(sys, Address{}, func() Actor[int] { calls++; return &fnActor[int]{} }, sys.mbx)
+	raw := newCell(sys, Address{}, func() Actor[int] { calls++; return &fnActor[int]{} }, sys.mbx, OneForOne(nil))
 	raw.user.Offer(entry{msg: 1, kind: entrySent}, mailbox.Sent, false)
 	if more := raw.RunTurn(1); more || calls != 1 || raw.user.Len() != 1 {
 		t.Errorf("turn before begin: more %v, factory calls %d, queued %d; want false, 1, 1", more, calls, raw.user.Len())

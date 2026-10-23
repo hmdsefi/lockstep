@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmdsefi/lockstep/internal/engine/enginetest"
 	"github.com/hmdsefi/lockstep/internal/engine/local"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // newManualSystem returns a system built through the ACT-015 constructor with opts on a manual
@@ -128,4 +129,19 @@ func inProbe[M any](t *testing.T, sys *System, pid PID[M], fn func(ctx *Context[
 		t.Fatalf("inProbe(%v): %v", pid, err)
 	}
 	return v
+}
+
+// stepUntilSuspended runs the engine's turns one at a time until c is Suspended, so the test sees
+// a failed cell before its supervisor's turn decides the failure. It fails the test if the engine
+// runs out of turns first.
+func stepUntilSuspended[M any](t *testing.T, eng *enginetest.Engine, c *cell[M]) {
+	t.Helper()
+	for {
+		if st, _ := c.lifecycle(); st == supervise.Suspended {
+			return
+		}
+		if !eng.Step() {
+			t.Fatalf("%v never became suspended", c.addr)
+		}
+	}
 }

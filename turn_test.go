@@ -74,12 +74,11 @@ func TestRunTurnRecoversPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c := cellOf(t, sys, pid)
 	send(t, sys, pid, 1)
 	send(t, sys, pid, 2)
 	send(t, sys, pid, 3)
-	eng.RunUntilIdle() // panics if the handler's panic escapes RunTurn
-
-	c := cellOf(t, sys, pid)
+	stepUntilSuspended(t, eng, c) // panics if the handler's panic escapes RunTurn
 	if !slices.Equal(got, []int{1}) {
 		t.Errorf("received %v, want [1]", got)
 	}
@@ -113,9 +112,9 @@ func TestRunTurnRecoversPanic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		send(t, sys, p, 1)
-		eng.RunUntilIdle()
 		c := cellOf(t, sys, p)
+		send(t, sys, p, 1)
+		stepUntilSuspended(t, eng, c)
 		if c.state != supervise.Suspended || c.inc != 0 || c.ctx != nil {
 			t.Errorf("%s factory: state %v, inc %d, ctx %p; want suspended, 0, nil", name, c.state, c.inc, c.ctx)
 		}
@@ -158,7 +157,7 @@ func TestTurnRecordPanickingReceive(t *testing.T) {
 	}
 	eng.RunUntilIdle()
 	send(t, sys, pid, 7)
-	eng.RunUntilIdle()
+	eng.Step() // the failing turn; the restart's turns follow
 	turns := recordsOf(eng.Records(), "lockstep.turn")
 	want := []string{"actor=" + pid.String(), "system=0", "user=1", "msg=" + sys.eng.Tracer.Describe(7)}
 	if last := turns[len(turns)-1]; !slices.Equal(last, want) {

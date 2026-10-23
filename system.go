@@ -34,6 +34,9 @@ type System struct {
 	// A child that registers is therefore one the shutdown's guardian sweep finds (ACT-050).
 	spawnMu sync.RWMutex
 	shut    shutdownState
+	// guardians supervises the guardians' children and runs the shutdown's sweep (SUP-300,
+	// ACT-050).
+	guardians guardians
 
 	asks    askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
 	waiting waitSet  // the user mailboxes that outside senders wait on (MBX-075)
@@ -115,7 +118,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 		epochs:      []uint32{eng.Epoch},
 		shut:        shutdownState{done: make(chan struct{})},
 	}
-	s.shut.sweep.sys = s
+	s.guardians.init(s, cfg.guardian)
 	// ACT-030: the user guardian first, then the system guardian, with uids 1 and 2 of the epoch.
 	s.user = Address{node: s.node, path: "/user", uid: s.allocUID()}
 	s.system = Address{node: s.node, path: "/system", uid: s.allocUID()}
@@ -130,7 +133,6 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 // shutdownState is the progress of a system's shutdown (ACT-050, ACT-060, ENG-140).
 type shutdownState struct {
 	start sync.Once     // the first Shutdown call starts the shutdown; later calls never start another
-	sweep guardianSweep // stops the guardians' children, in engine context
 	done  chan struct{} // closed when the system is stopped and phase=done is recorded (ACT-060)
 	over  atomic.Bool   // done is closed
 
@@ -163,135 +165,17 @@ func (s *System) Shutdown(ctx context.Context) error {
 }
 
 // startShutdown is the first Shutdown call's start (ACT-050): it marks the system shutting down,
-// so every later Spawn returns ErrStopped, records phase=begin and schedules the guardian sweep,
+// so every later Spawn returns ErrStopped, records phase=begin and schedules the guardians' sweep,
 // which stops the actors in later engine callbacks (ACT-060).
 func (s *System) startShutdown() {
 	s.spawnMu.Lock()
 	s.closing.Store(true)
 	s.spawnMu.Unlock()
 	s.recordShutdown("begin")
-	s.shut.sweep.push(sweepMsg{start: true}, nil)
+	s.guardians.push(sweepStart{}, nil)
 }
 
-// guardianChildStopped is a guardian's stopped notice (SUP-060 step 7): child, a child of the
-// user or the system guardian, completed its final stop during the turn of from. During a
-// shutdown the notice is queued for the guardian sweep, which handles it in a later turn of its
-// own, as a parent cell handles its children's notices. Before a shutdown no guardian waits.
-func (s *System) guardianChildStopped(child Address, from engine.ActorRef) {
-	if s.closing.Load() {
-		s.shut.sweep.push(sweepMsg{child: child}, from)
-	}
-}
-
-// guardianSweep stops the guardians' children for Shutdown (ACT-050): the user guardian's children,
-// then, after every one of them has completed its stop, the system guardian's, each guardian's one
-// subtree at a time in reverse spawn order, with reason Shutdown. The guardians have no cell (ACT-030);
-// the sweep is the engine.ActorRef that runs their part of SUP-060 step 2 in engine context. Its
-// queue takes the start and the guardians' stopped notices from any goroutine; the engine
-// schedules it like a cell (ENG-350), so a notice is handled after the turns already scheduled.
-type guardianSweep struct {
-	sys  *System
-	slot engine.Slot
-
-	mu sync.Mutex
-	q  fifo[sweepMsg] // guarded by mu
-
-	// turn-owned
-	phase shutdownPhase
-	wait  Address // the guardian's child whose final stop the sweep waits for, or zero
-}
-
-// sweepMsg is one message of the guardian sweep: the start, or a guardian child's stopped notice.
-type sweepMsg struct {
-	start bool
-	child Address
-}
-
-// shutdownPhase is the guardian whose children the sweep stops (ACT-050).
-type shutdownPhase uint8
-
-const (
-	sweepIdle   shutdownPhase = iota // not started
-	sweepUser                        // stopping the user guardian's children
-	sweepSystem                      // stopping the system guardian's children
-	sweepDone                        // every guardian child has stopped
-)
-
-// Address returns the user guardian's address (engine.ActorRef).
-func (g *guardianSweep) Address() engine.Address { return g.sys.user.engine() }
-
-// Slot returns the sweep's scheduling state (engine.ActorRef).
-func (g *guardianSweep) Slot() *engine.Slot { return &g.slot }
-
-// push queues m and schedules the sweep (ENG-350). from is the cell whose turn pushes, or nil.
-func (g *guardianSweep) push(m sweepMsg, from engine.ActorRef) {
-	g.mu.Lock()
-	g.q.push(m)
-	g.mu.Unlock()
-	g.sys.ready(g, from)
-}
-
-func (g *guardianSweep) pop() (sweepMsg, bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.q.pop()
-}
-
-// RunTurn handles every queued message (engine.ActorRef). It runs no actor code, records no
-// lockstep.turn and never blocks. After the last guardian child has stopped it completes the
-// shutdown.
-func (g *guardianSweep) RunTurn(int) bool {
-	for {
-		m, ok := g.pop()
-		if !ok {
-			return false
-		}
-		switch {
-		case m.start && g.phase == sweepIdle:
-			g.phase = sweepUser
-		case !m.start && (g.phase == sweepUser || g.phase == sweepSystem) && m.child == g.wait:
-			g.wait = Address{}
-		default:
-			continue // a notice of a child the sweep does not wait for: it has left the registry
-		}
-		if g.next() {
-			g.phase = sweepDone
-			g.sys.completeShutdown()
-		}
-	}
-}
-
-// next asks the most recently spawned child of the current phase's guardian to stop with reason
-// Shutdown and waits for its notice; with no child left it moves from the user guardian to the
-// system guardian, and after that reports true. A child whose stop has started already, for any
-// reason, keeps its reason and still notifies (ACT-710).
-func (g *guardianSweep) next() bool {
-	s := g.sys
-	for {
-		parent := s.user
-		if g.phase == sweepSystem {
-			parent = s.system
-		}
-		kids := s.reg.Children(parent.path)
-		if len(kids) == 0 {
-			if g.phase == sweepUser {
-				g.phase = sweepSystem
-				continue
-			}
-			return true
-		}
-		k := kids[len(kids)-1]
-		child, ok := s.lookupCell(k)
-		if !ok {
-			continue // it completed its stop after Children returned
-		}
-		g.wait = Address{node: k.Node, path: k.Path, uid: k.UID}
-		child.requestStop(Shutdown, g)
-		return false
-	}
-}
-
-// completeShutdown runs once, in the sweep's turn after every actor has stopped (ACT-050): it
+// completeShutdown runs once, in the guardians' turn after every actor has stopped (ACT-050): it
 // marks the system stopped, resolves the pending asks with ErrStopped in ask-counter order
 // (MSG-360), records phase=done, closes done and stops the engine (ENG-140).
 func (s *System) completeShutdown() {

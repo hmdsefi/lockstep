@@ -73,13 +73,21 @@ func (r *Reply[R]) resolution() any {
 // processSelf handles one Self entry of the user mailbox. It returns the message that the turn's
 // lockstep.turn record describes (ENG-340): the M that to returned for a piped reply, none when
 // the entry was discarded or to panicked.
+//
+// An entry of an incarnation that has ended is not delivered (MBX-170): a piped reply is recorded
+// only as lockstep.pipe.drop (MSG-620), any other Self entry as lockstep.drop reason
+// incarnation-ended.
 func (c *cell[M]) processSelf(e entry) (msg any, ok bool) {
 	p, isPipe := e.msg.(pipedReply[M])
-	if !isPipe {
+	if e.inc != c.inc {
+		if isPipe {
+			c.dropPiped(p.ask)
+		} else {
+			c.sys.recordDropEnded(c.addr, e.inc, e.msg)
+		}
 		return nil, false
 	}
-	if e.inc != c.inc { // MSG-620: another incarnation dequeues it
-		c.dropPiped(p.ask)
+	if !isPipe {
 		return nil, false
 	}
 	// to and Receive are both calls of this turn (MSG-620): one guarded handler call with source

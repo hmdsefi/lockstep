@@ -125,7 +125,7 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping bo
 	if cfg.err != nil {
 		return refuse(cfg.err)
 	}
-	c := newCell(sys, parent, factory, cfg.mailbox(sys.mbx))
+	c := newCell(sys, parent, factory, cfg.mailbox(sys.mbx), cfg.strategy)
 	if err := register(sys, c, parent, stopping, name); err != nil {
 		return refuse(err)
 	}

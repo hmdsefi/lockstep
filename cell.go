@@ -99,15 +99,22 @@ type cell[M any] struct {
 	// never decreases, so a Terminated queued for an earlier Watch never matches a later one.
 	watchSeq uint64
 
-	// turn-owned, from Stopping on (stop.go)
+	// turn-owned, from Stopping or Restarting on (stop.go, restart.go)
 	stopReason StopReason // the reason of the one stop request
-	waitChild  Address    // the child whose stopped notice the stop sequence waits for, or zero
+	endErr     error      // the error of the restart that ends the incarnation (SUP-190)
+	waitChild  Address    // the child whose stopped notice the stop or restart waits for, or zero
+
+	// sup is the cell's supervision of its children with the strategy of its WithStrategy option
+	// (SUP-170 to SUP-290). Turn-owned.
+	sup supervisor
 }
 
 // newCell returns a cell whose user mailbox has the capacity and policy mbx, which the caller has
-// validated, and whose system queue is unbounded (MBX-010).
-func newCell[M any](sys *System, parent Address, factory func() Actor[M], mbx mailboxConfig) *cell[M] {
+// validated, and whose system queue is unbounded (MBX-010). strategy, also validated, supervises
+// the cell's children.
+func newCell[M any](sys *System, parent Address, factory func() Actor[M], mbx mailboxConfig, strategy Strategy) *cell[M] {
 	return &cell[M]{
+		sup:       supervisor{strategy: strategy},
 		sys:       sys,
 		parent:    parent,
 		factory:   factory,
@@ -268,7 +275,7 @@ func (s *System) ready(a, from engine.ActorRef) {
 // (signalMsg).
 type sysMsg interface{ isSysMsg() }
 
-// fifo is an unbounded first-in, first-out queue for the guardian sweep's messages (system.go). It
+// fifo is an unbounded first-in, first-out queue for the guardians' messages (guardian.go). It
 // is not safe for concurrent use; its owner's mu guards it.
 type fifo[T any] struct {
 	buf  []T
