@@ -162,6 +162,35 @@ func TestSendContextActorSender(t *testing.T) {
 	}
 }
 
+// MBX §7: SendContext panics for a nil ctx, before it checks the Sender, from an outside sender
+// and from an actor alike, and sends nothing.
+func TestSendContextNilContext(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	p, _ := spawnProbe[any](t, sys, "p", nil)
+	tp := spawnTarget(t, sys, "t", 1, BlockSender)
+	const want = "lockstep: SendContext: nil context"
+	var nilCtx context.Context
+	before := len(rec.Records())
+
+	if v := mustPanic(t, func() { _ = SendContext(nilCtx, sys, tp, 1) }); v != want {
+		t.Errorf("SendContext(nil, sys, ...) panicked with %v, want %q", v, want)
+	}
+	if v := mustPanic(t, func() { _ = SendContext(nilCtx, nil, tp, 2) }); v != want {
+		t.Errorf("SendContext(nil, nil, ...) panicked with %v, want %q", v, want)
+	}
+	v := inProbe(t, sys, p, func(c *Context[any]) (v any) {
+		defer func() { v = recover() }()
+		_ = SendContext(nilCtx, c, tp, 3)
+		return nil
+	})
+	if v != want {
+		t.Errorf("SendContext(nil, ctx, ...) from an actor panicked with %v, want %q", v, want)
+	}
+	if got := rendered(rec.Records(), before, tp.Address(), "lockstep.send", "lockstep.deliver", "lockstep.mailbox.full"); len(got) != 0 {
+		t.Errorf("records after the panicking calls: %q, want none", got)
+	}
+}
+
 // MBX-070, MBX §7: a context cancelled while the sender waits makes SendContext return
 // context.Canceled unwrapped, with the message out of the line and not queued; the records are
 // blocked then rejected.

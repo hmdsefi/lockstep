@@ -34,6 +34,9 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 // and the message cannot be enqueued yet, it waits until the message is enqueued or ctx ends, and
 // then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
 func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) error {
+	if ctx == nil {
+		panic("lockstep: SendContext: nil context") // MBX §7, before the Sender checks
+	}
 	sys, fromAddr, fromRef := mustSender(from).sendOrigin() // panics for a Context outside its turn (ACT-120)
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
