@@ -56,6 +56,11 @@ type System struct {
 	// from it (EFF-020).
 	effectSeq atomic.Uint64
 
+	// skipEffectCancel makes a stop leave the actor's pending effects uncancelled. Only the
+	// tests set it, through SkipEffectCancelAtStop, to give the simulation's leak check an
+	// effect to find (AT-SIM-26).
+	skipEffectCancel atomic.Bool
+
 	asks    askTable       // pending asks of this system's askers and tracked asks of its actors (MSG §11)
 	waiting waitSet        // the user mailboxes that outside senders wait on (MBX-075)
 	adm     admissionState // whether the engine's admission sheds (OVL-150)

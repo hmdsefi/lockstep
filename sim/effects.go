@@ -102,13 +102,23 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 	if !e.canSchedule() { // the handler crashed the node or stopped its system
 		return notPending
 	}
-	return e.schedule(res.Latency, effectLabel, func() {
+	actor, held := req.Actor.String(), &heldEffect{id: req.ID, name: req.Name}
+	e.hold(actor, held)
+	cancel := e.schedule(res.Latency, effectLabel, func() {
+		e.release(actor, held)
 		// The kernel never runs an event of an earlier incarnation; a system stopped since Do
 		// cancelled its effects, so this guard only keeps a dead engine silent (SIM-120).
 		if e.canSchedule() {
 			done(res.Value, res.Err)
 		}
 	})
+	return func() bool {
+		cancelled := cancel()
+		if cancelled {
+			e.release(actor, held)
+		}
+		return cancelled
+	}
 }
 
 // effectCall returns the EffectCall of req on e's node and incarnation (EFF-400, EFF-420).
