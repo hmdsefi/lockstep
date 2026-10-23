@@ -3,7 +3,10 @@
 
 package lockstep
 
-import "strconv"
+import (
+	"reflect"
+	"strconv"
+)
 
 // StopKind classifies a StopReason.
 type StopKind uint8
@@ -81,12 +84,57 @@ func (r StopReason) String() string {
 	return r.Kind.String() + ": " + r.Err.Error()
 }
 
-// Terminated reports that a watched actor stopped for good, or that the watched address was not
-// alive (Reason NoActor). Reason is the actor's final stop reason, NoActor, or a Failed reason
-// set by REM or CLU for an actor lost with its node or connection.
-type Terminated struct {
-	Addr   Address
-	Reason StopReason
+// PanicError is the error of a failure caused by a panic. errors.Unwrap returns Value when it is
+// an error.
+type PanicError struct {
+	Value any    // the value passed to panic
+	Stack []byte // runtime/debug.Stack() at recovery; never recorded in traces
 }
 
-func (Terminated) signal() {}
+// Error returns "lockstep: panic: " followed by a description of Value (SUP-145).
+func (e *PanicError) Error() string {
+	return "lockstep: panic: " + describePanic(e.Value)
+}
+
+// Unwrap returns Value if it is an error, otherwise nil.
+func (e *PanicError) Unwrap() error {
+	err, _ := e.Value.(error)
+	return err
+}
+
+// describePanic renders v by the rules of SUP-145: v.Error() if it is an error, v.String() if it
+// is a fmt.Stringer, the string itself for a string kind, the decimal number for an integer kind,
+// "true" or "false" for a bool kind, and otherwise the type name ("nil" for a nil v). It never
+// uses a %v verb, so the text is the same on every run.
+//
+// A panic inside the Error or String method of v, for example a typed nil pointer whose method
+// dereferences its receiver, is recovered and v is described by its type name, SUP-145's
+// "otherwise" case: the runtime calls PanicError.Error while it handles a failure, so a second
+// panic there must not escape.
+func describePanic(v any) (s string) {
+	defer func() {
+		if recover() != nil {
+			s = reflect.TypeOf(v).String()
+		}
+	}()
+	switch x := v.(type) {
+	case nil:
+		return "nil"
+	case error:
+		return x.Error()
+	case interface{ String() string }:
+		return x.String()
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(rv.Uint(), 10)
+	case reflect.Bool:
+		return strconv.FormatBool(rv.Bool())
+	}
+	return rv.Type().String()
+}
