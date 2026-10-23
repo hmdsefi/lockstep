@@ -20,6 +20,12 @@ pkg github.com/hmdsefi/lockstep, const DropOldest = 2
 pkg github.com/hmdsefi/lockstep, const DropOldest MailboxPolicy
 pkg github.com/hmdsefi/lockstep, const FailSend = 0
 pkg github.com/hmdsefi/lockstep, const FailSend MailboxPolicy
+pkg github.com/hmdsefi/lockstep, const OverloadBudget = 2
+pkg github.com/hmdsefi/lockstep, const OverloadBudget OverloadReason
+pkg github.com/hmdsefi/lockstep, const OverloadMemory = 1
+pkg github.com/hmdsefi/lockstep, const OverloadMemory OverloadReason
+pkg github.com/hmdsefi/lockstep, const OverloadPressure = 3
+pkg github.com/hmdsefi/lockstep, const OverloadPressure OverloadReason
 pkg github.com/hmdsefi/lockstep, const StopFailed = 2
 pkg github.com/hmdsefi/lockstep, const StopFailed StopKind
 pkg github.com/hmdsefi/lockstep, const StopNoActor = 6
@@ -70,6 +76,8 @@ pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Rand() *rand.Rand
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Stop()
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) SubscribeOverload()
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) UnsubscribeOverload()
 pkg github.com/hmdsefi/lockstep, method (*PanicError) Error() string
 pkg github.com/hmdsefi/lockstep, method (*PanicError) Unwrap() error
 pkg github.com/hmdsefi/lockstep, method (*Reply[R]) Await(context.Context) (R, error)
@@ -84,6 +92,7 @@ pkg github.com/hmdsefi/lockstep, method (Address) String() string
 pkg github.com/hmdsefi/lockstep, method (Address) UID() uint64
 pkg github.com/hmdsefi/lockstep, method (Directive) String() string
 pkg github.com/hmdsefi/lockstep, method (MailboxPolicy) String() string
+pkg github.com/hmdsefi/lockstep, method (OverloadReason) String() string
 pkg github.com/hmdsefi/lockstep, method (PID[M]) Address() Address
 pkg github.com/hmdsefi/lockstep, method (PID[M]) IsZero() bool
 pkg github.com/hmdsefi/lockstep, method (PID[M]) String() string
@@ -110,6 +119,13 @@ pkg github.com/hmdsefi/lockstep, type MailboxPolicy uint8
 pkg github.com/hmdsefi/lockstep, type MemSizer interface { MemSize }
 pkg github.com/hmdsefi/lockstep, type MemSizer interface, MemSize() int
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
+pkg github.com/hmdsefi/lockstep, type OverloadReason uint8
+pkg github.com/hmdsefi/lockstep, type Overloaded struct
+pkg github.com/hmdsefi/lockstep, type Overloaded struct, Active bool
+pkg github.com/hmdsefi/lockstep, type Overloaded struct, High uint64
+pkg github.com/hmdsefi/lockstep, type Overloaded struct, Live uint64
+pkg github.com/hmdsefi/lockstep, type Overloaded struct, Low uint64
+pkg github.com/hmdsefi/lockstep, type Overloaded struct, Reason OverloadReason
 pkg github.com/hmdsefi/lockstep, type PID[M any] struct
 pkg github.com/hmdsefi/lockstep, type PanicError struct
 pkg github.com/hmdsefi/lockstep, type PanicError struct, Stack []byte
