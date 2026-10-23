@@ -32,7 +32,7 @@ func (c *cell[M]) endIncarnation(m end) {
 	c.sup.abandonGroup()
 	c.dropKept() // a Suspended cell's kept signals and notices (SUP-160)
 	c.endErr = m.err
-	c.endIncarnationWork()
+	c.endIncarnationWork(true)
 	c.stopNextChild() // finishEnd once every child has stopped
 }
 

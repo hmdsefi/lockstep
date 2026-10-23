@@ -193,10 +193,14 @@ pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Si
 pkg github.com/hmdsefi/lockstep/sim, func SimulateSeeds(*testing.T, Options, func(*Sim), ...uint64)
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Client(string, func(*lockstep.System), ...kernel.NodeOption) *kernel.Node
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Counts() Counts
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) DelayBetween(lockstep.Address, lockstep.Address, time.Duration, time.Duration)
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) DropBetween(lockstep.Address, lockstep.Address, uint32)
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) HandleEffect(string, func(EffectCall) EffectResult)
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) InjectFail(lockstep.Address, error) error
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Node(string, func(*lockstep.System), ...kernel.NodeOption) *kernel.Node
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Pressure(string, PressureRule)
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) PressureFor(string, time.Duration)
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) StopActor(lockstep.Address) error
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) System(string) *lockstep.System
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) World() *faultline.World
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Effect() any
