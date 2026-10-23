@@ -9,11 +9,13 @@ type Watcher struct {
 	Inc  uint32 // its incarnation number
 }
 
-// Watch is one entry of a target's watcher list: who watches, and under which key (the address
-// passed to Watch, which is a path address for PIDAt watches).
+// Watch is one entry of a target's watcher list: who watches, under which key (the address
+// passed to Watch, which is a path address for PIDAt watches), and the watcher's sequence number
+// for that Watch call (ACT-630).
 type Watch struct {
 	Watcher Watcher
 	Key     Addr
+	Seq     uint64
 }
 
 // target returns the entry a watch key refers to: the actor registered at key.Path, and, when the
@@ -28,23 +30,25 @@ func (r *Registry) target(key Addr) *entry {
 }
 
 // AddWatch is the atomic alive check and registration of ACT-600. If key refers to a registered
-// actor, alive is true and w is appended to the target's watcher list under key; added is false
-// when that exact entry (same watcher, same key) was already listed (ACT-620), in which case the
-// list is unchanged. If the target is not registered, a guardian, or has another uid, alive and
-// added are both false and nothing is stored.
-func (r *Registry) AddWatch(key Addr, w Watcher) (alive, added bool) {
+// actor, alive is true and w is appended to the target's watcher list under key with sequence
+// number seq; added is false when that exact entry (same watcher, same key) was already listed
+// (ACT-620), in which case the entry keeps its place in the list and takes seq. If the target is
+// not registered, a guardian, or has another uid, alive and added are both false and nothing is
+// stored.
+func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e := r.target(key)
 	if e == nil {
 		return false, false
 	}
-	for _, x := range e.watches {
+	for i, x := range e.watches {
 		if x.Watcher == w && x.Key == key {
+			e.watches[i].Seq = seq
 			return true, false
 		}
 	}
-	e.watches = append(e.watches, Watch{Watcher: w, Key: key})
+	e.watches = append(e.watches, Watch{Watcher: w, Key: key, Seq: seq})
 	for _, p := range r.watching[w] {
 		if p == key.Path {
 			return true, true

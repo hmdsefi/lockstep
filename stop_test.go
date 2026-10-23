@@ -4,13 +4,19 @@
 package lockstep
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/engine/local"
 	"github.com/hmdsefi/lockstep/internal/mailbox"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // hookActor is a test actor with a Receive and a Stopped hook; a nil function does nothing.
@@ -518,9 +524,10 @@ func TestSpawnFromStopped(t *testing.T) {
 	}
 }
 
-// SUP-060 step 5, MBX-160: the final stop closes the queues and drains the mailbox,
-// returning the Sent entries in queue order and discarding Self entries; a closed mailbox refuses
-// every later entry and a closed system queue drops every later message.
+// SUP-060 step 5, MBX-160: the final stop closes the queues and drains them, returning the Sent
+// and the Self entries each in queue order and the signals of the system queue, without its other
+// messages; a closed mailbox refuses every later entry and a closed system queue drops every later
+// message.
 func TestStopDrain(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var received []any
@@ -533,9 +540,18 @@ func TestStopDrain(t *testing.T) {
 	c.offerUser(entry{msg: "m1", kind: entrySent}, nil)
 	c.offerUser(entry{msg: "s1", kind: entrySelf, inc: c.inc}, nil)
 	c.offerUser(entry{msg: "m2", kind: entrySent}, nil)
-	sent := c.closeQueues()
+	sig := Terminated{Addr: gone(), Reason: NoActor}
+	c.pushSystem(stopped{child: gone()}, nil)
+	c.pushSystem(signalMsg{sig: sig}, nil)
+	sent, self, signals := c.closeQueues()
 	if len(sent) != 2 || sent[0].msg != "m1" || sent[1].msg != "m2" {
 		t.Errorf("drained Sent entries %+v, want m1, m2", sent)
+	}
+	if len(self) != 1 || self[0].msg != "s1" || self[0].inc != c.inc {
+		t.Errorf("drained Self entries %+v, want s1 of inc %d", self, c.inc)
+	}
+	if !slices.Equal(signals, []Signal{sig}) {
+		t.Errorf("drained signals %v, want %v", signals, sig)
 	}
 	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil); out != mailbox.Closed {
 		t.Errorf("a closed mailbox answered %v to an entry, want closed", out)
@@ -548,5 +564,654 @@ func TestStopDrain(t *testing.T) {
 	eng.RunUntilIdle()
 	if len(received) != 0 {
 		t.Errorf("Receive got %v", received)
+	}
+}
+
+// probeTree returns a factory of supProbes observing into obs whose Started spawns one child per
+// name, in order, each from the factory at the same index.
+func probeTree(obs *[]string, names []string, factories []func() Actor[any]) func() Actor[any] {
+	return actorOf[any](&supProbe{obs: obs, onStart: func(ctx *Context[any]) {
+		for i, n := range names {
+			if _, err := Spawn(ctx, n, factories[i]); err != nil {
+				panic(err)
+			}
+		}
+	}})
+}
+
+// leafProbe returns a factory of supProbes observing into obs.
+func leafProbe(obs *[]string) func() Actor[any] { return actorOf[any](&supProbe{obs: obs}) }
+
+// stopRecordsOf returns the "actor reason" pairs of recs' lockstep.stop records, in order.
+func stopRecordsOf(recs []engine.Record) []string {
+	var out []string
+	for _, r := range recordsOf(recs, "lockstep.stop") {
+		out = append(out, strings.TrimPrefix(r[0], "actor=")+" "+strings.TrimPrefix(r[2], "reason="))
+	}
+	return out
+}
+
+// indexOf returns the index in recs of the first record of kind whose attributes include every
+// key=value of attrs, or -1.
+func indexOf(recs []engine.Record, kind string, attrs ...string) int {
+	for i, r := range recs {
+		if r.Kind != kind {
+			continue
+		}
+		got := recordsOf([]engine.Record{r}, kind)[0]
+		ok := true
+		for _, a := range attrs {
+			if !slices.Contains(got, a) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return i
+		}
+	}
+	return -1
+}
+
+// AT-SUP-02: SUP-010, SUP-050, MBX-160. On the local engine with its default turn budget, a held
+// Probe with "stop", "a" to "d" queued handles only "stop": ctx.Stop takes effect when Receive
+// returns, and the four other messages become dead letters with reason stopped.
+func TestATSUP02TurnStopsAfterSelfStop(t *testing.T) {
+	if local.DefaultThroughput != 32 {
+		t.Fatalf("local.DefaultThroughput = %d, want 32", local.DefaultThroughput)
+	}
+	sys, rec := newRecordingSystem(t)
+	var obs []string
+	p, err := Spawn(sys, "p", leafProbe(&obs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "p starts", func() bool { return indexOf(rec.Records(), "lockstep.start", "actor="+p.String()) >= 0 })
+	release := Hold(sys, p.Address())
+	for _, m := range []string{"stop", "a", "b", "c", "d"} {
+		send(t, sys, p, any(m))
+	}
+	release()
+	waitUntil(t, "p stops", func() bool { return indexOf(rec.Records(), "lockstep.stop", "actor="+p.String()) >= 0 })
+
+	want := []string{"started /user/p 1", "stop", "stopped /user/p normal"}
+	if !slices.Equal(obs, want) {
+		t.Errorf("observations %q, want %q", obs, want)
+	}
+	var wantDead [][]string
+	for _, m := range []string{"a", "b", "c", "d"} {
+		wantDead = append(wantDead, []string{"from=" + sys.user.String(), "to=" + p.String(), "reason=stopped", "msg=" + rec.Describe(m)})
+	}
+	if got := recordsOf(rec.Records(), "lockstep.deadletter"); !slices.EqualFunc(got, wantDead, slices.Equal) {
+		t.Errorf("dead letters %q, want %q", got, wantDead)
+	}
+}
+
+// AT-SUP-06: SUP-050. Three stop requests to a held actor leave one in its system queue; it stops
+// once, with reason normal.
+func TestATSUP06StopRequestsCoalesce(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	p, err := Spawn(sys, "p", leafProbe(&obs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	c := cellOf(t, sys, p)
+	release := c.holdTurns()
+	for range 3 {
+		if err := Stop(sys, p.Address()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.mu.Lock()
+	n := c.sysq.Len()
+	c.mu.Unlock()
+	if n != 1 {
+		t.Errorf("the system queue holds %d messages, want 1 stop request", n)
+	}
+	release()
+	eng.RunUntilIdle()
+	if got, want := stopRecordsOf(eng.Records()), []string{p.String() + " normal"}; !slices.Equal(got, want) {
+		t.Errorf("lockstep.stop records %q, want %q", got, want)
+	}
+	if want := []string{"started /user/p 1", "stopped /user/p normal"}; !slices.Equal(obs, want) {
+		t.Errorf("observations %q, want %q", obs, want)
+	}
+}
+
+// AT-SUP-07: SUP-060, SUP-070, SUP-080. P's stop stops its children one at a time, most recent
+// first, each subtree depth first, with reason parent-stopping; P's own lockstep.stop follows the
+// dead letter of the message drained from its mailbox.
+func TestATSUP07StopOrder(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	c2 := probeTree(&obs, []string{"g1", "g2"}, []func() Actor[any]{leafProbe(&obs), leafProbe(&obs)})
+	p, err := Spawn(sys, "p", probeTree(&obs, []string{"c1", "c2", "c3"},
+		[]func() Actor[any]{leafProbe(&obs), c2, leafProbe(&obs)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	obs = obs[:0]
+	if err := Stop(sys, p.Address()); err != nil {
+		t.Fatal(err)
+	}
+	send(t, sys, p, any("late")) // queued behind the stop request: never received
+	eng.RunUntilIdle()
+
+	want := []string{
+		"stopped /user/p/c3 parent-stopping",
+		"stopped /user/p/c2/g2 parent-stopping",
+		"stopped /user/p/c2/g1 parent-stopping",
+		"stopped /user/p/c2 parent-stopping",
+		"stopped /user/p/c1 parent-stopping",
+		"stopped /user/p normal",
+	}
+	if !slices.Equal(obs, want) {
+		t.Errorf("observations %q, want %q", obs, want)
+	}
+	recs := eng.Records()
+	var wantRecs []string
+	for _, o := range want {
+		f := strings.Fields(o)
+		wantRecs = append(wantRecs, "lockstep://local"+f[1]+"#")
+	}
+	got := stopRecordsOf(recs)
+	if len(got) != len(want) {
+		t.Fatalf("lockstep.stop records %q, want %d", got, len(want))
+	}
+	for i, g := range got {
+		reason := strings.Fields(want[i])[2]
+		if !strings.HasPrefix(g, wantRecs[i]) || !strings.HasSuffix(g, " "+reason) {
+			t.Errorf("lockstep.stop record %d = %q, want %s... %s", i, g, wantRecs[i], reason)
+		}
+	}
+	dead := indexOf(recs, "lockstep.deadletter", "to="+p.String(), "msg="+eng.Engine().Tracer.Describe("late"))
+	stop := indexOf(recs, "lockstep.stop", "actor="+p.String())
+	if dead < 0 || stop < dead {
+		t.Errorf("P's dead letter at %d and lockstep.stop at %d, want the dead letter first", dead, stop)
+	}
+}
+
+// AT-SUP-08: SUP-070. A child that another child's Stopped stops while the parent waits keeps the
+// first reason, stops once, and the parent stops last.
+func TestATSUP08ChildStopsWhileParentWaits(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	var c1 PID[any]
+	p, err := Spawn(sys, "p", actorOf[any](&supProbe{obs: &obs, onStart: func(ctx *Context[any]) {
+		var err error
+		if c1, err = Spawn(ctx, "c1", leafProbe(&obs)); err != nil {
+			panic(err)
+		}
+		c2 := &supProbe{obs: &obs, onStop: func(ctx *Context[any], _ StopReason) {
+			if err := Stop(ctx, c1.Address()); err != nil {
+				panic(err)
+			}
+		}}
+		if _, err := Spawn(ctx, "c2", actorOf[any](c2)); err != nil {
+			panic(err)
+		}
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	obs = obs[:0]
+	if err := Stop(sys, p.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	want := []string{"stopped /user/p/c2 parent-stopping", "stopped /user/p/c1 normal", "stopped /user/p normal"}
+	if !slices.Equal(obs, want) {
+		t.Errorf("observations %q, want %q", obs, want)
+	}
+	n := 0
+	for _, r := range recordsOf(eng.Records(), "lockstep.stop") {
+		if r[0] == "actor="+c1.String() {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d lockstep.stop records for c1, want 1", n)
+	}
+}
+
+// AT-SUP-09: SUP-080, SUP-350. A child of an actor stopped with Stop gets parent-stopping; in a
+// system that shuts down, a top-level actor and its child both get shutdown.
+func TestATSUP09ReasonPropagation(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	p, err := Spawn(sys, "p", probeTree(&obs, []string{"c"}, []func() Actor[any]{leafProbe(&obs)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if err := Stop(sys, p.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+
+	qSys, qEng := newManualSystem(t)
+	var qObs []string
+	if _, err := Spawn(qSys, "q", probeTree(&qObs, []string{"d"}, []func() Actor[any]{leafProbe(&qObs)})); err != nil {
+		t.Fatal(err)
+	}
+	qEng.RunUntilIdle()
+	if err := qSys.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	qEng.RunUntilIdle()
+
+	if !slices.Contains(obs, "stopped /user/p/c parent-stopping") || !slices.Contains(obs, "stopped /user/p normal") {
+		t.Errorf("observations %q, want c parent-stopping and p normal", obs)
+	}
+	if !slices.Contains(qObs, "stopped /user/q/d shutdown") || !slices.Contains(qObs, "stopped /user/q shutdown") {
+		t.Errorf("observations %q, want d and q shutdown", qObs)
+	}
+}
+
+// AT-SUP-10: SUP-090. Spawn with the context of a stopping actor, inside Stopped, and Spawn with
+// the System after Shutdown has returned both return ErrStopped.
+func TestATSUP10SpawnRefusedWhileStopping(t *testing.T) {
+	sys := newLocalSystem(t)
+	errs := make(chan error, 1)
+	p, err := Spawn(sys, "p", actorOf[any](&lifeActor[any]{stopped: func(ctx *Context[any], _ StopReason) {
+		_, err := Spawn(ctx, "x", idle[any]())
+		errs <- err
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Stop(sys, p.Address()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errs:
+		if !errors.Is(err, ErrStopped) {
+			t.Errorf("Spawn inside Stopped = %v, want ErrStopped", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("p's Stopped did not run within 10 s")
+	}
+	shutdownWithin(t, sys)
+	if _, err := Spawn(sys, "x", idle[any]()); !errors.Is(err, ErrStopped) {
+		t.Errorf("Spawn after Shutdown = %v, want ErrStopped", err)
+	}
+}
+
+// SUP-090: Spawn with a Restarting actor's context as parent returns ErrStopped.
+func TestSUP090SpawnUnderRestartingParent(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var spawnErr error
+	p, err := Spawn(sys, "p", actorOf[any](&fnActor[any]{receive: func(ctx *Context[any], _ any) {
+		ctx.cell.setState(supervise.Restarting) // a restart's state, set by hand
+		_, spawnErr = Spawn(ctx, "x", idle[any]())
+		ctx.cell.state = supervise.Running // back, so the test system can stop it
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	send(t, sys, p, any("go"))
+	eng.RunUntilIdle()
+	if !errors.Is(spawnErr, ErrStopped) {
+		t.Errorf("Spawn under a restarting parent = %v, want ErrStopped", spawnErr)
+	}
+}
+
+// AT-SUP-31: SUP-310. After P's lockstep.stop, none of its 150 descendants is registered and the
+// registry is back to its size before P was spawned.
+func TestATSUP31NoOrphans(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	before := sys.reg.Len()
+	var paths []string
+	p, err := Spawn(sys, "p", actorOf[any](&fnActor[any]{started: func(ctx *Context[any]) {
+		for i := range 50 {
+			name := "c" + strconv.Itoa(i)
+			_, err := Spawn(ctx, name, actorOf[any](&fnActor[any]{started: func(ctx *Context[any]) {
+				for _, g := range []string{"g1", "g2"} {
+					if _, err := Spawn(ctx, g, idle[any]()); err != nil {
+						panic(err)
+					}
+				}
+			}}))
+			if err != nil {
+				panic(err)
+			}
+			paths = append(paths, "/user/p/"+name, "/user/p/"+name+"/g1", "/user/p/"+name+"/g2")
+		}
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if n := sys.reg.Len(); n != before+151 {
+		t.Fatalf("registry holds %d entries after the spawns, want %d", n, before+151)
+	}
+	if err := Stop(sys, p.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if indexOf(eng.Records(), "lockstep.stop", "actor="+p.String()) < 0 {
+		t.Fatal("no lockstep.stop for p")
+	}
+	for _, path := range paths {
+		if _, err := Lookup[any](sys, path); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Lookup(%s) = %v, want ErrNotFound", path, err)
+		}
+	}
+	if n := sys.reg.Len(); n != before {
+		t.Errorf("registry holds %d entries, want %d", n, before)
+	}
+}
+
+// AT-SUP-38: SUP-335. Watch of an actor that has stopped delivers Terminated with reason no-actor
+// after Started returns, and no stop of any actor has reason no-actor; Watch then Unwatch in one
+// turn delivers nothing.
+func TestATSUP38NoActor(t *testing.T) {
+	for _, unwatch := range []bool{false, true} {
+		t.Run("unwatch="+strconv.FormatBool(unwatch), func(t *testing.T) {
+			sys, eng := newManualSystem(t)
+			x, err := Spawn(sys, "x", idle[any]())
+			if err != nil {
+				t.Fatal(err)
+			}
+			eng.RunUntilIdle()
+			if err := Stop(sys, x.Address()); err != nil {
+				t.Fatal(err)
+			}
+			eng.RunUntilIdle()
+			var obs []string
+			if _, err := Spawn(sys, "w", actorOf[any](&supProbe{obs: &obs, onStart: func(ctx *Context[any]) {
+				if err := Watch(ctx, x.Address()); err != nil {
+					panic(err)
+				}
+				if unwatch {
+					Unwatch(ctx, x.Address())
+				}
+			}})); err != nil {
+				t.Fatal(err)
+			}
+			eng.RunUntilIdle()
+			want := []string{"started /user/w 1", "terminated /user/x no-actor"}
+			if unwatch {
+				want = want[:1]
+			}
+			if !slices.Equal(obs, want) {
+				t.Errorf("observations %q, want %q", obs, want)
+			}
+			for _, r := range recordsOf(eng.Records(), "lockstep.stop") {
+				if slices.Contains(r, "reason=no-actor") {
+					t.Errorf("lockstep.stop %q has reason no-actor", r)
+				}
+			}
+		})
+	}
+}
+
+// AT-MBX-21: MBX-160, SUP-060 step 5. After Stopped, the drain dead-letters the Sent entries in
+// queue order, with the sender as from and the stopped actor as to, then records every Self entry,
+// a piped reply included, as lockstep.drop incarnation-ended, and every signal left in the system
+// queue as lockstep.drop not-running; lockstep.stop follows. A piped reply's record describes the
+// reply's value, or its error (MBX §8).
+func TestATMBX21DrainAtStop(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	tr := eng.Engine().Tracer
+	stoppedAt := -1
+	var obs []string
+	a, err := Spawn(sys, "a", actorOf[any](&supProbe{obs: &obs, onStop: func(*Context[any], StopReason) {
+		stoppedAt = len(eng.Records())
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := spawnRunner(t, sys, eng, "s")
+	c := cellOf(t, sys, a)
+	release := c.holdTurns()
+
+	send(t, sys, a, any("m1"))
+	c.offerSelf(entry{msg: "t1", kind: entrySelf, inc: c.inc}) // a timer message of the live incarnation
+	piped := pipedReply[any]{ask: gone(), reply: 7, call: func() any { return "r" }}
+	c.offerSelf(entry{msg: piped, kind: entrySelf, inc: c.inc})
+	pipedErr := pipedReply[any]{ask: gone(), reply: ErrTimeout, call: func() any { return "e" }}
+	c.offerSelf(entry{msg: pipedErr, kind: entrySelf, inc: c.inc})
+	inTurn(t, sys, eng, s, func(ctx *Context[any]) {
+		if err := Send(ctx, a, any("m2")); err != nil {
+			t.Errorf("Send m2: %v", err)
+		}
+	})
+	if err := Stop(sys, a.Address()); err != nil {
+		t.Fatal(err)
+	}
+	sig := Terminated{Addr: gone(), Reason: NoActor}
+	c.pushSystem(signalMsg{sig: sig}, nil) // behind the stop request: never delivered
+	release()
+	eng.RunUntilIdle()
+
+	if stoppedAt < 0 {
+		t.Fatal("Stopped did not run")
+	}
+	var got [][]string
+	recs := eng.Records()
+	for _, r := range recs[stoppedAt:] {
+		if r.Kind == "lockstep.deadletter" || r.Kind == "lockstep.drop" || r.Kind == "lockstep.stop" {
+			got = append(got, append([]string{r.Kind}, recordsOf([]engine.Record{r}, r.Kind)[0]...))
+		}
+	}
+	to := "to=" + a.String()
+	want := [][]string{
+		{"lockstep.deadletter", "from=" + sys.user.String(), to, "reason=stopped", "msg=" + tr.Describe("m1")},
+		{"lockstep.deadletter", "from=" + s.String(), to, "reason=stopped", "msg=" + tr.Describe("m2")},
+		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe("t1")},
+		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe(7)},
+		{"lockstep.drop", to, "reason=incarnation-ended", "inc=1", "msg=" + tr.Describe(ErrTimeout)},
+		{"lockstep.drop", to, "reason=not-running", "msg=" + tr.Describe(sig)},
+		{"lockstep.stop", "actor=" + a.String(), "inc=1", "reason=normal", "err="},
+	}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("records after Stopped:\n got %q\nwant %q", got, want)
+	}
+	for _, r := range recs[:stoppedAt] {
+		if (r.Kind == "lockstep.deadletter" || r.Kind == "lockstep.drop") && slices.Contains(recordsOf([]engine.Record{r}, r.Kind)[0], to) {
+			t.Errorf("record %s %v before Stopped", r.Kind, r.Attrs)
+		}
+	}
+	if n := len(recordsOf(recs, "lockstep.pipe.drop")); n != 0 {
+		t.Errorf("%d lockstep.pipe.drop records, want 0: the drain records the piped reply as lockstep.drop", n)
+	}
+}
+
+// MBX §8, MSG-610: a piped reply that Pipe enqueued and the drain records is described by the
+// reply's value, or by its error when that is non-nil.
+func TestDrainDescribesPipedReply(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	tr := eng.Engine().Tracer
+	pid, _ := spawnRunner(t, sys, eng, "a")
+	before := len(eng.Records())
+	inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+		ok := newReply[int](sys)
+		ok.resolve(5, nil)
+		ok.fire()
+		to := func(v int, err error) any { return v }
+		Pipe(ctx, ok, to)
+		Pipe(ctx, resolvedReply[int](sys, ErrTimeout), to)
+		if err := Stop(ctx, pid.Address()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	var got []string
+	for _, attrs := range recordsOf(eng.Records()[before:], "lockstep.drop") {
+		if slices.Contains(attrs, "reason=incarnation-ended") {
+			got = append(got, attrs[len(attrs)-1])
+		}
+	}
+	want := []string{"msg=" + tr.Describe(5), "msg=" + tr.Describe(ErrTimeout)}
+	if !slices.Equal(got, want) {
+		t.Errorf("drained piped replies recorded %q, want %q", got, want)
+	}
+}
+
+// ACT-630: a Terminated{P, no-actor} queued by a Watch of P that Unwatch cancelled, in the same
+// turn as a respawn of P and a new Watch of P, is skipped; the new watch still delivers one
+// Terminated when P stops.
+func TestACT630StaleTerminatedAfterRewatch(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	w, r := spawnRunner(t, sys, eng, "w")
+	first, err := Spawn(sys, "p", idle[any]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if err := Stop(sys, first.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+
+	path := PIDAt[any]("local", "/user/p").Address()
+	var p PID[any]
+	inTurn(t, sys, eng, w, func(ctx *Context[any]) {
+		if err := Watch(ctx, path); err != nil { // P is dead: Terminated{P, no-actor} is queued
+			t.Errorf("first Watch: %v", err)
+		}
+		Unwatch(ctx, path)
+		var err error
+		if p, err = Spawn(sys, "p", idle[any]()); err != nil {
+			t.Errorf("respawn: %v", err)
+		}
+		if err := Watch(ctx, path); err != nil {
+			t.Errorf("second Watch: %v", err)
+		}
+	})
+	if len(r.sigs) != 0 {
+		t.Errorf("signals after the rewatch %v, want none", r.sigs)
+	}
+	if err := Stop(sys, p.Address()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if want := []Signal{Terminated{Addr: path, Reason: Normal}}; !slices.Equal(r.sigs, want) {
+		t.Errorf("signals %v, want %v", r.sigs, want)
+	}
+}
+
+// SUP-350: Shutdown stops the user guardian's children, most recent first and each subtree depth
+// first, then the system guardian's the same way, all with reason shutdown.
+func TestSUP350ShutdownOrder(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	if _, err := Spawn(sys, "u1", probeTree(&obs, []string{"k"}, []func() Actor[any]{leafProbe(&obs)})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Spawn(sys, "u2", leafProbe(&obs)); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"s1", "s2"} {
+		if _, err := spawnSystem(sys, n, leafProbe(&obs)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eng.RunUntilIdle()
+	obs = obs[:0]
+	if err := sys.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	want := []string{
+		"stopped /user/u2 shutdown",
+		"stopped /user/u1/k shutdown",
+		"stopped /user/u1 shutdown",
+		"stopped /system/s2 shutdown",
+		"stopped /system/s1 shutdown",
+	}
+	if !slices.Equal(obs, want) {
+		t.Errorf("observations %q, want %q", obs, want)
+	}
+	if got := len(stopRecordsOf(eng.Records())); got != len(want) {
+		t.Errorf("%d lockstep.stop records, want %d", got, len(want))
+	}
+}
+
+// A registry entry that is not an actor cell is a runtime bug: the stop sequence and the guardian
+// sweep panic on it instead of looking it up forever.
+func TestStopPanicsOnNonCellEntry(t *testing.T) {
+	mustPanic := func(t *testing.T, fn func()) {
+		t.Helper()
+		defer func() {
+			v := recover()
+			if s, _ := v.(string); !strings.Contains(s, "is not an actor cell") {
+				t.Errorf("panic %v, want one naming a non-cell entry", v)
+			}
+		}()
+		fn()
+	}
+	t.Run("stopping parent", func(t *testing.T) {
+		sys, eng := newManualSystem(t)
+		p, err := Spawn(sys, "p", idle[any]())
+		if err != nil {
+			t.Fatal(err)
+		}
+		eng.RunUntilIdle()
+		c := cellOf(t, sys, p)
+		sys.reg.Add(p.Address().Path(), "bogus", sys.allocUID, "not a cell")
+		c.stopReason = Normal
+		mustPanic(t, c.stopNextChild)
+	})
+	t.Run("guardian", func(t *testing.T) {
+		sys, _ := newManualSystem(t)
+		sys.reg.Add(sys.user.Path(), "bogus", sys.allocUID, "not a cell")
+		g := &sys.shut.sweep
+		g.phase = sweepUser
+		mustPanic(t, func() { g.next() })
+	})
+}
+
+// SUP-010, SUP-060: a stop request that reaches a cell before its begin takes it from Starting to
+// Stopping with no incarnation: the factory never runs, Stopped is not called, and the one
+// lockstep.stop reports inc 0.
+func TestSUP010StopBeforeBegin(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	sys.afterRegister = func(c actorCell) { c.requestStop(Normal, nil) }
+	calls := 0
+	var obs []string
+	p, err := Spawn(sys, "p", func() Actor[any] { calls++; return &supProbe{obs: &obs} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys.afterRegister = nil
+	eng.RunUntilIdle()
+	if calls != 0 || len(obs) != 0 {
+		t.Errorf("factory calls %d, observations %q, want none", calls, obs)
+	}
+	if n := len(recordsOf(eng.Records(), "lockstep.start")); n != 0 {
+		t.Errorf("%d lockstep.start records, want 0", n)
+	}
+	want := [][]string{{"actor=" + p.String(), "inc=0", "reason=normal", "err="}}
+	if got := recordsOf(eng.Records(), "lockstep.stop"); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("lockstep.stop records %q, want %q", got, want)
+	}
+}
+
+// SUP-050, SUP-100: ctx.Stop inside Stopped does nothing; ctx.Stop in Started stops the actor once
+// Started returns.
+func TestContextStop(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var obs []string
+	p, err := Spawn(sys, "p", actorOf[any](&supProbe{
+		obs:     &obs,
+		onStart: func(ctx *Context[any]) { ctx.Stop() },
+		onStop:  func(ctx *Context[any], _ StopReason) { ctx.Stop() },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	send(t, sys, p, any("x")) // never received
+	eng.RunUntilIdle()
+	if want := []string{"started /user/p 1", "stopped /user/p normal"}; !slices.Equal(obs, want) {
+		t.Errorf("observations %q, want %q", obs, want)
+	}
+	if got, want := stopRecordsOf(eng.Records()), []string{p.String() + " normal"}; !slices.Equal(got, want) {
+		t.Errorf("lockstep.stop records %q, want %q", got, want)
 	}
 }

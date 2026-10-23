@@ -145,12 +145,9 @@ func (s *System) notifyFailed(parent Address, n failed, from engine.ActorRef) {
 // pushToParent pushes the notice m onto the system queue of the cell registered as parent. A
 // parent that has completed its final stop is not notified: there is nobody to notify.
 func (s *System) pushToParent(parent Address, m sysMsg, from engine.ActorRef) {
-	uid, a, ok := s.reg.Lookup(parent.path)
-	c, _ := a.(actorCell)
-	if !ok || c == nil || uid != parent.uid {
-		return
+	if c, ok := s.lookupCell(registryAddr(parent)); ok {
+		c.pushSystem(m, from)
 	}
-	c.pushSystem(m, from)
 }
 
 // recordStart emits lockstep.start (SUP §8) for the incarnation that has just begun.

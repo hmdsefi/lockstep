@@ -95,7 +95,11 @@ type cell[M any] struct {
 	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
 
-	// turn-owned, from cellStopping on (stop.go)
+	// watchSeq is the sequence number of the last Watch call of any incarnation (ACT-630). It
+	// never decreases, so a Terminated queued for an earlier Watch never matches a later one.
+	watchSeq uint64
+
+	// turn-owned, from Stopping on (stop.go)
 	stopReason StopReason // the reason of the one stop request
 	waitChild  Address    // the child whose stopped notice the stop sequence waits for, or zero
 }
@@ -214,21 +218,27 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 	c.schedule(from)
 }
 
-// closeQueues closes both queues for the final stop and empties them (SUP-060 step 5): it
-// returns the Sent entries of the user mailbox in queue order, for dead letters, and discards the
-// Self entries and every system message (MBX-160). Later enqueues are refused.
-func (c *cell[M]) closeQueues() []entry {
+// closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160):
+// it returns the Sent entries and the Self entries of the user mailbox, each in queue order, and
+// the signals left in the system queue, in queue order; the other system messages are discarded.
+// Later enqueues are refused. The caller records what it returns, holding no lock.
+func (c *cell[M]) closeQueues() (sent, self []entry, signals []Signal) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
-	var sent []entry
 	for _, qe := range c.user.Close() {
 		if qe.Kind == mailbox.Sent {
 			sent = append(sent, qe.V)
+		} else {
+			self = append(self, qe.V)
 		}
 	}
-	c.sysq.Close()
-	return sent
+	for _, m := range c.sysq.Close() {
+		if s, ok := m.(signalMsg); ok {
+			signals = append(signals, s.sig)
+		}
+	}
+	return sent, self, signals
 }
 
 // schedule asks the engine to run c after an enqueue (ENG-350), unless c is held (hold.go). from is

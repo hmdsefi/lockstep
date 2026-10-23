@@ -43,7 +43,7 @@ func Pipe[R, M any](ctx *Context[M], r *Reply[R], to func(R, error) M) {
 	inc := ctx.inc
 	r.then(func() {
 		ok := c.offerSelf(entry{
-			msg:  pipedReply[M]{ask: r.ask, call: func() M { return to(r.val, r.err) }},
+			msg:  pipedReply[M]{ask: r.ask, reply: r.resolution(), call: func() M { return to(r.val, r.err) }},
 			kind: entrySelf,
 			inc:  inc,
 		})
@@ -54,10 +54,20 @@ func Pipe[R, M any](ctx *Context[M], r *Reply[R], to func(R, error) M) {
 }
 
 // pipedReply is the msg of a Self entry that Pipe enqueues: the ask it answers, for
-// lockstep.pipe.drop, and the call of to with the reply's value and error.
+// lockstep.pipe.drop, the reply's resolution, which the drain's lockstep.drop describes (MBX §8),
+// and the call of to with the reply's value and error.
 type pipedReply[M any] struct {
-	ask  Address
-	call func() M
+	ask   Address
+	reply any // the reply's error when it is non-nil, otherwise its value
+	call  func() M
+}
+
+// resolution returns r's error when it is non-nil, otherwise r's value. r has resolved.
+func (r *Reply[R]) resolution() any {
+	if r.err != nil {
+		return r.err
+	}
+	return r.val
 }
 
 // processSelf handles one Self entry of the user mailbox. It returns the message that the turn's
