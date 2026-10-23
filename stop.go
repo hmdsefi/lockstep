@@ -26,7 +26,7 @@ func Stop(from Sender, addr Address) error {
 		return fmt.Errorf("%w: %s", ErrNotLocal, addr)
 	}
 	// A path address acts on the actor registered at its path, whatever its type (ACT-440).
-	c, _ := sys.resolve(addr, nil)
+	c, _, _ := sys.resolve(addr, nil)
 	if c == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, addr)
 	}
@@ -126,7 +126,7 @@ func (c *cell[M]) finishStop() {
 
 	watchers := sys.reg.Remove(c.addr.path) // the name is free and the address not alive (ACT-550)
 	for _, e := range c.closeQueues() {
-		sys.deadLetter(c.addr, reasonStopped, e.msg) // Sent entries only, in queue order (MBX-160)
+		sys.deadLetter(e.from, c.addr, reasonStopped, e.msg) // Sent entries only, in queue order (MBX-160)
 	}
 	// An ask whose request was among the dead letters fails here, once (MSG-340).
 	failure := fmt.Errorf("%w: %s", ErrTerminated, c.addr)
