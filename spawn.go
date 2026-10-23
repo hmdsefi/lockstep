@@ -172,7 +172,7 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping, r
 func register[M any](sys *System, c *cell[M], parent Address, stopping, reserve bool, name string) error {
 	sys.spawnMu.RLock()
 	defer sys.spawnMu.RUnlock()
-	if sys.closing.Load() || stopping {
+	if sys.closing.Load() || sys.discarded.Load() || stopping {
 		return fmt.Errorf("%w: %s", ErrStopped, parent)
 	}
 	nameTaken := func() error { return fmt.Errorf("%w: %q under %s", ErrNameTaken, name, parent) }
