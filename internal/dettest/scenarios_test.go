@@ -188,9 +188,9 @@ func beaconCrashBody(s *sim.Sim, _ *toyObs) {
 }
 
 // pingpongFaultsBody is the ping-pong across three nodes of AT-SIM-28: two pingers play the one
-// ponger while random crash and partition faults hit the nodes. A restarted pinger gets no
-// StartPing and pings to a crashed ponger are dead letters, so neither probe passes 50; the seed
-// passing means no check of the runtime failed under the faults.
+// ponger while random crash and partition faults hit the nodes. Each pinger stops at 50 rounds, so
+// neither probe passes 50; crashes and partitions usually cut the game short. The seed passing
+// means no lockstep check failed under the faults.
 func pingpongFaultsBody(s *sim.Sim, _ *toyObs) {
 	p1, p3 := &toys.PingPongProbe{}, &toys.PingPongProbe{}
 	var pinger1, pinger3 lockstep.PID[toys.PingerMsg]
