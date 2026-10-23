@@ -70,7 +70,7 @@ func (s *Sim) PressureFor(node string, d time.Duration) {
 		panic(fmt.Sprintf("lockstep: sim: PressureFor: duration %s must be positive", d))
 	}
 	ln.beginEpisode()
-	s.w.Sim.AtFront(s.w.Sim.Now().Add(d), pressureLabel, ln.endEpisode)
+	s.worldAtFront(s.w.Sim.Now().Add(d), pressureLabel, ln.endEpisode)
 }
 
 // pressureRule is one Pressure rule while it runs: its episodes never overlap (SFT-110).
@@ -84,7 +84,7 @@ type pressureRule struct {
 // next draws a gap and schedules the rule's next start that gap after from (SFT-100, SFT-110).
 func (p *pressureRule) next(from kernel.Time) {
 	gap := kernel.Uniform(p.r, p.rule.Every/2, p.rule.Every+p.rule.Every/2)
-	p.s.w.Sim.AtFront(from.Add(gap), pressureLabel, p.start)
+	p.s.worldAtFront(from.Add(gap), pressureLabel, p.start)
 }
 
 // start is a start event of the rule (SFT-110): before the recovery start it draws the episode's
@@ -98,7 +98,7 @@ func (p *pressureRule) start() {
 	}
 	end := min(t.Add(kernel.Uniform(p.r, p.rule.MinFor, p.rule.MaxFor)), rec)
 	p.ln.beginEpisode()
-	w.Sim.AtFront(end, pressureLabel, func() {
+	p.s.worldAtFront(end, pressureLabel, func() {
 		p.ln.endEpisode()
 		p.next(end)
 	})

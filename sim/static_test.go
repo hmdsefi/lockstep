@@ -159,10 +159,11 @@ func failingCalls(t *testing.T, filename, src, allowFile, allowFunc string) (pro
 	return problems, allowed
 }
 
-// AT-SIM-31, SIM-305: sim raises failures only through the named checks. No non-test file calls
-// Fail on a *kernel.Sim, or Error, Errorf, Fatal or Fatalf on World.T(), and the only call of
-// Fatalf on the *testing.T that Simulate receives is in the SIM-020 validation function.
-func TestATSIM31NoDirectFailures(t *testing.T) {
+// checkNoDirectFailures runs AT-SIM-31's check over every non-test Go file of sim and returns the
+// names of the files it checked. It fails t for each direct failure it finds, and unless the
+// SIM-020 allowance is used exactly once.
+func checkNoDirectFailures(t *testing.T) (checked []string) {
+	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -182,11 +183,20 @@ func TestATSIM31NoDirectFailures(t *testing.T) {
 			t.Error(p)
 		}
 		allowed += n
+		checked = append(checked, name)
 	}
 	// The allowance must not be vacuous: SIM-020's failure is raised by setup in simulate.go.
 	if allowed != 1 {
 		t.Errorf("found %d calls of Fatalf on the Simulate *testing.T in setup of simulate.go, want 1", allowed)
 	}
+	return checked
+}
+
+// AT-SIM-31, SIM-305: sim raises failures only through the named checks. No non-test file calls
+// Fail on a *kernel.Sim, or Error, Errorf, Fatal or Fatalf on World.T(), and the only call of
+// Fatalf on the *testing.T that Simulate receives is in the SIM-020 validation function.
+func TestATSIM31NoDirectFailures(t *testing.T) {
+	checkNoDirectFailures(t)
 }
 
 // The checker itself: it finds each form of direct failure and passes the allowed ones.

@@ -599,9 +599,8 @@ func artifactOf(t *testing.T, dir string) (*artifact.Report, string) {
 	return r, filepath.Dir(reports[0])
 }
 
-// lockstepTrace returns the lockstep records and the crashes and boots of the trace.jsonl in dir,
-// as text without sequence numbers and causes, which a replay may number differently.
-func lockstepTrace(t *testing.T, dir string) []string {
+// traceRecords returns the records of the trace.jsonl in dir.
+func traceRecords(t *testing.T, dir string) []kernel.Record {
 	t.Helper()
 	f, err := os.Open(filepath.Join(dir, "trace.jsonl"))
 	if err != nil {
@@ -612,8 +611,15 @@ func lockstepTrace(t *testing.T, dir string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return tr.Records
+}
+
+// lockstepTrace returns the lockstep records and the crashes and boots of the trace.jsonl in dir,
+// as text without sequence numbers and causes, which a replay may number differently.
+func lockstepTrace(t *testing.T, dir string) []string {
+	t.Helper()
 	var out []string
-	for _, r := range tr.Records {
+	for _, r := range traceRecords(t, dir) {
 		if strings.HasPrefix(r.Kind, "lockstep.") || r.Kind == "kernel.crash" || r.Kind == "kernel.boot" {
 			out = append(out, fmt.Sprintf("%v node=%d inc=%d %s %q %v", r.At, r.Node, r.Inc, r.Kind, r.Text, r.Attrs))
 		}
