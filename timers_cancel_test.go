@@ -386,10 +386,11 @@ func TestATTMR10CancelTimerResults(t *testing.T) {
 // itoa formats a TimerID in decimal.
 func itoa(id TimerID) string { return strconv.FormatUint(uint64(id), 10) }
 
-// AT-TMR-11: TMR-090 on the local engine, where the runtime timer of each After(0) fires on
-// another goroutine and races CancelTimer's Cancel: every CancelTimer returns true, x never
-// reaches Receive, and an x that a callback enqueued would be dropped as timer-cancelled when
-// popped. Run with -race.
+// AT-TMR-11: TMR-090 on the local engine: every CancelTimer returns true and x never reaches
+// Receive. The local engine runs timer callbacks on its one loop goroutine, never inside a turn,
+// so only the runtime timer's queueing of the callback (on another goroutine) races Cancel; a
+// callback that enqueues x while the handler runs needs a production-engine variant of this test
+// (Phase 2). The drop-per-fire check holds either way. Run with -race.
 func TestATTMR11CancelVersusConcurrentFiring(t *testing.T) {
 	const n = 10_000
 	sys, rec := newRecordingSystem(t)
@@ -568,5 +569,39 @@ func TestATMBX22RestartKeepsSentDropsStaleSelf(t *testing.T) {
 	}
 	if n := countRecords(timerRecords(eng.Records()), "timer=1 op=fire msg="+tr.Describe("tick")); n != 1 {
 		t.Errorf("%d fire records, want 1", n)
+	}
+}
+
+// descProbe is a timer message whose Describe reports, through held, whether the cell's timer
+// lock was held when the tracer described it.
+type descProbe struct {
+	c    *cell[any]
+	held *bool
+}
+
+func (p descProbe) Describe() string {
+	if !p.c.tmu.TryLock() {
+		*p.held = true
+		return "probe"
+	}
+	p.c.tmu.Unlock()
+	return "probe"
+}
+
+// TMR-050, TMR §8: the fire record reuses the description set computed, so the tracer never
+// describes a timer message (user code) while the cell's timer lock is held.
+func TestTMR050DescribeOutsideTimerLock(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	pid := spawnTimerActor(t, sys, eng, &timerActor{})
+	held := false
+	inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
+		ctx.Every(10*time.Millisecond, descProbe{c: ctx.cell, held: &held})
+	})
+	eng.Advance(30 * time.Millisecond)
+	if held {
+		t.Error("Describe ran under the timer lock")
+	}
+	if n := countRecords(timerRecords(eng.Records()), "timer=1 op=fire msg=probe"); n != 3 {
+		t.Errorf("%d fire records with msg=probe, want 3", n)
 	}
 }

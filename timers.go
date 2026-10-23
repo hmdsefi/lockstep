@@ -23,13 +23,14 @@ const dropTimerCancelled = "timer-cancelled"
 type TimerID uint64
 
 // timer is one timer of a cell (TMR §11). The fire closure captures the *timer, so a timer that
-// is no longer active sees active == false without a map read. id, every, d, msg and inc never
-// change; active, queued and cancel are guarded by the cell's tmu.
+// is no longer active sees active == false without a map read. id, every, d, msg, desc and inc
+// never change; active, queued and cancel are guarded by the cell's tmu.
 type timer[M any] struct {
 	id     TimerID
 	every  bool          // Every: re-arms with fixed delay d
 	d      time.Duration // the requested delay for After (negative as requested), the interval for Every
 	msg    M
+	desc   string // Tracer.Describe(msg), computed once by setTimer outside every lock; "" when tracing is off
 	inc    uint32 // the incarnation that set the timer
 	active bool
 	queued bool          // the timer's last message is in the mailbox and was not popped
@@ -113,7 +114,7 @@ func (c *Context[M]) setTimer(d time.Duration, msg M, every bool) TimerID {
 	cl.tmu.Lock()
 	defer cl.tmu.Unlock()
 	cl.nextTimer++
-	t := &timer[M]{id: cl.nextTimer, every: every, d: d, msg: msg, inc: c.inc, active: true}
+	t := &timer[M]{id: cl.nextTimer, every: every, d: d, msg: msg, desc: desc, inc: c.inc, active: true}
 	if cl.timers == nil {
 		cl.timers = make(map[TimerID]*timer[M])
 	}
@@ -181,9 +182,8 @@ func (c *cell[M]) fireTimer(t *timer[M]) {
 	}
 	t.queued = true
 	if tr.Enabled() {
-		// Only a firing that enqueues describes the message. Describe runs user code, under the
-		// timer lock but never under mu or the queue's lock.
-		c.recordTimer(t.inc, t.id, "fire", engine.Attr{Key: "msg", Value: tr.Describe(t.msg)})
+		// The description setTimer computed outside every lock: no user code runs under tmu.
+		c.recordTimer(t.inc, t.id, "fire", engine.Attr{Key: "msg", Value: t.desc})
 	}
 }
 
