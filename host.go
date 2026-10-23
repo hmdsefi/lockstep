@@ -27,6 +27,7 @@ func (h host) Inbound(env engine.Envelope) {
 			msg:  p.msg,
 			ask:  p.ask,
 			seq:  env.Seq,
+			size: h.sys.sizeOf(p.msg), // engine context, no lock held (OVL-410)
 		})
 	case replyPayload:
 		h.sys.settle(addressOf(env.To), resolution{how: byReply, from: addressOf(env.From), v: p.v, err: p.err})

@@ -66,12 +66,14 @@ pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, func WithWatchdog(time.Duration) Option
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) After(time.Duration, M) TimerID
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Every(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Now() time.Time
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Own(io.Closer)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) Rand() *rand.Rand
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Stop()
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) SubscribeOverload()
@@ -79,6 +81,7 @@ pkg github.com/hmdsefi/lockstep, method (*Context[M]) UnsubscribeOverload()
 pkg github.com/hmdsefi/lockstep, method (*PanicError) Error() string
 pkg github.com/hmdsefi/lockstep, method (*PanicError) Unwrap() error
 pkg github.com/hmdsefi/lockstep, method (*Reply[R]) Await(context.Context) (R, error)
+pkg github.com/hmdsefi/lockstep, method (*System) Estimates(int) []ActorEstimate
 pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
 pkg github.com/hmdsefi/lockstep, method (*System) Node() string
 pkg github.com/hmdsefi/lockstep, method (*System) Shutdown(context.Context) error
@@ -97,6 +100,10 @@ pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) Fail(Sender, error)
 pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) Send(Sender, R)
 pkg github.com/hmdsefi/lockstep, method (StopKind) String() string
 pkg github.com/hmdsefi/lockstep, method (StopReason) String() string
+pkg github.com/hmdsefi/lockstep, type ActorEstimate struct
+pkg github.com/hmdsefi/lockstep, type ActorEstimate struct, Addr Address
+pkg github.com/hmdsefi/lockstep, type ActorEstimate struct, MailboxBytes int64
+pkg github.com/hmdsefi/lockstep, type ActorEstimate struct, StateBytes int64
 pkg github.com/hmdsefi/lockstep, type Actor[M any] interface { Receive }
 pkg github.com/hmdsefi/lockstep, type Actor[M any] interface, Receive(*Context[M], M)
 pkg github.com/hmdsefi/lockstep, type Address struct
@@ -109,6 +116,8 @@ pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Err error
 pkg github.com/hmdsefi/lockstep, type Context[M any] struct
 pkg github.com/hmdsefi/lockstep, type Directive uint8
 pkg github.com/hmdsefi/lockstep, type MailboxPolicy uint8
+pkg github.com/hmdsefi/lockstep, type MemSizer interface { MemSize }
+pkg github.com/hmdsefi/lockstep, type MemSizer interface, MemSize() int
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type OverloadReason uint8
 pkg github.com/hmdsefi/lockstep, type Overloaded struct
@@ -127,6 +136,8 @@ pkg github.com/hmdsefi/lockstep, type Sender interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type Signal interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type SignalReceiver[M any] interface { Signal }
 pkg github.com/hmdsefi/lockstep, type SignalReceiver[M any] interface, Signal(*Context[M], Signal)
+pkg github.com/hmdsefi/lockstep, type Sizer interface { Size }
+pkg github.com/hmdsefi/lockstep, type Sizer interface, Size() int
 pkg github.com/hmdsefi/lockstep, type SpawnOption func(*spawnConfig)
 pkg github.com/hmdsefi/lockstep, type Spawner interface { unexported methods }
 pkg github.com/hmdsefi/lockstep, type Starter[M any] interface { Started }

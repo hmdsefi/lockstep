@@ -43,6 +43,11 @@ type System struct {
 	// ACT-050).
 	guardians guardians
 
+	// estimates reports whether memory estimates are on (OVL-400); memBytes is their sum over the
+	// live actors (OVL-420), the Bytes of the usage reported to admission.
+	estimates bool
+	memBytes  atomic.Int64
+
 	asks    askTable       // pending asks of this system's askers and tracked asks of its actors (MSG §11)
 	waiting waitSet        // the user mailboxes that outside senders wait on (MBX-075)
 	adm     admissionState // whether the engine's admission sheds (OVL-150)
@@ -118,6 +123,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 		eng:         eng,
 		node:        cfg.node,
 		mbx:         cfg.mbx,
+		estimates:   cfg.estimates,
 		incarnation: eng.Epoch,
 		reg:         registry.New(),
 		actors:      overload.NewCap(cfg.maxActors),

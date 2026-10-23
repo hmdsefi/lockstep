@@ -220,7 +220,11 @@ func TestSendContextTargetStopsWhileWaiting(t *testing.T) {
 	from := sys.user.String()
 	full := rendered(rec.Records(), before, to, "lockstep.mailbox.full")
 	sameLines(t, "mailbox.full records", full, []string{blockedFull(sys.user, to, "blocked", "2")})
-	// The drain (msg 1) and the woken sender (msg 2) record on different goroutines.
+	// The drain (msg 1) and the woken sender (msg 2) record on different goroutines: the sender can
+	// return before the stop's drain has recorded msg 1.
+	waitUntil(t, "both dead letters recorded", func() bool {
+		return len(rendered(rec.Records(), before, to, "lockstep.deadletter")) >= 2
+	})
 	dead := rendered(rec.Records(), before, to, "lockstep.deadletter")
 	slices.Sort(dead)
 	sameLines(t, "dead letters", dead, []string{

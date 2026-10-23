@@ -86,9 +86,11 @@ func (s *System) shedding() bool { return s.adm.shedding.Load() }
 // every waiter on every mailbox, called with a mailbox's lock held, and takes no lock.
 func (s *System) admits() bool { return !s.shedding() }
 
-// usage is the usage function the system binds to admission (§4.3): its live-actor count.
-// Estimates add their bytes (OVL-400).
-func (s *System) usage() engine.Usage { return engine.Usage{Actors: s.liveActors()} }
+// usage is the usage function the system binds to admission (§4.3): its live-actor count and the
+// sum of its actors' estimates, which is 0 while estimates are off (OVL-400).
+func (s *System) usage() engine.Usage {
+	return engine.Usage{Actors: s.liveActors(), Bytes: s.memBytes.Load()}
+}
 
 // admitSend asks admission whether to admit a user message of Send or the request of an Ask to the
 // actor at target, once per message (OVL-110), and returns nil or admission's error. A message to
