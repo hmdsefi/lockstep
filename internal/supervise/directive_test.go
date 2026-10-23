@@ -6,7 +6,7 @@ package supervise
 import "testing"
 
 func TestNormalize(t *testing.T) {
-	sources := []Source{InFactory, InStarted, InReceive, InSignal, InStopped, InDecider, InEscalate}
+	sources := []Source{InFactory, InStarted, InReceive, InSignal, InStopped, InDecider, InEscalate, InInjected}
 	for _, src := range sources {
 		for _, d := range []Directive{Restart, Stop, Escalate} {
 			if eff, ok := Normalize(d, src); !ok || eff != d {
