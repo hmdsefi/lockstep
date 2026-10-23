@@ -31,8 +31,8 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 }
 
 // SendContext is Send, except that when from is a *System, the target's policy is BlockSender
-// and the message cannot be enqueued yet (the mailbox is full or the System sheds, OVL-120), it
-// waits until the message is enqueued or ctx ends, and then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
+// and the message cannot be enqueued yet, it waits until the message is enqueued or ctx ends, and
+// then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
 func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) error {
 	if ctx == nil {
 		panic("lockstep: SendContext: nil context") // MBX §7, before the Sender checks
