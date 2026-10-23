@@ -148,7 +148,7 @@ func (s *Sim) crashed(n *kernel.Node) {
 		return
 	}
 	if ln.eng != nil {
-		ln.eng.dead = true
+		ln.eng.kill()
 	}
 	if ln.sys != nil {
 		hooks.Discard(ln.sys)

@@ -114,6 +114,9 @@ func TestATSIM06Crash(t *testing.T) {
 		if sys := s.System("n1"); sys != nil {
 			tt.Errorf("System(n1) = %p after the crash, want nil", sys)
 		}
+		if err := lockstep.Send(c.old, c.oldPID, Tick{}); !errors.Is(err, lockstep.ErrStopped) {
+			tt.Errorf("Send with the old system: %v, want an error wrapping ErrStopped", err)
+		}
 		w.RunFor(9 * time.Second) // past the ask's 5s timeout and many ticks
 
 		if c.stopped {
@@ -126,9 +129,6 @@ func TestATSIM06Crash(t *testing.T) {
 			}
 		}
 		noWorkAfter(tt, after, c.n1)
-		if err := lockstep.Send(c.old, c.oldPID, Tick{}); !errors.Is(err, lockstep.ErrStopped) {
-			tt.Errorf("Send with the old system: %v, want an error wrapping ErrStopped", err)
-		}
 		if !hooks.AskResolved(c.reply) {
 			tt.Fatal("the probe's ask is still pending after the crash")
 		}
@@ -154,9 +154,12 @@ func TestATSIM07Restart(t *testing.T) {
 			tt.Errorf("setup ran %d times, want 2", c.setups)
 		}
 		sys := s.System("n1")
-		if sys == nil || sys == c.old || sys.Incarnation() != 2 || c.old.Incarnation() != 1 {
-			tt.Fatalf("System(n1) = %p (old %p), incarnations %v and %d; want a new system with incarnation 2",
-				sys, c.old, sys != nil && sys.Incarnation() == 2, c.old.Incarnation())
+		if sys == nil {
+			tt.Fatal("System(n1) is nil after the restart")
+		}
+		if sys == c.old || sys.Incarnation() != 2 || c.old.Incarnation() != 1 {
+			tt.Fatalf("System(n1) = %p with incarnation %d (old %p with %d); want a new system with incarnation 2",
+				sys, sys.Incarnation(), c.old, c.old.Incarnation())
 		}
 		o, n := c.oldPID.Address(), c.pid.Address()
 		if n.Node() != o.Node() || n.Path() != o.Path() || n.UID() == o.UID() || n.UID()>>32 != 2 || o.UID()>>32 != 1 {
@@ -210,7 +213,9 @@ func TestATSIM13StreamsAcrossRestart(t *testing.T) {
 	})
 }
 
-// AT-SIM-18, SIM-200: a crash of the asking node ends sim.Ask at the crash time with ErrStopped.
+// AT-SIM-18, SIM-110, SIM-200: a crash of the asking node ends sim.Ask at the crash time with
+// ErrStopped. The error is the one the discarded system resolved the ask with, not Ask's node-down
+// error: Discard resolves the ask in the crash, before Ask looks at the node again.
 func TestATSIM18CrashDuringAsk(t *testing.T) {
 	sim.Simulate(t, fullTrace(5), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -226,11 +231,17 @@ func TestATSIM18CrashDuringAsk(t *testing.T) {
 			}})
 		})
 		w.RunFor(time.Second)
+		sys := s.System("n1")
+		slow := lockstep.PIDAt[Ping]("n2", "/user/slow")
 		crashAt := w.Sim.Now().Add(time.Second)
 		w.Plan(fault.Script(fault.Event{At: crashAt, Kind: fault.KindCrash, Node: "n1"}))
-		v, err := sim.Ask(s, "n1", lockstep.PIDAt[Ping]("n2", "/user/slow"), buildPing(3))
+		v, err := sim.Ask(s, "n1", slow, buildPing(3))
 		if v != 0 || !errors.Is(err, lockstep.ErrStopped) {
 			tt.Errorf("Ask = %d, %v; want 0 and an error wrapping ErrStopped", v, err)
+		}
+		// The discarded system's own stopped error, which Send with it returns too.
+		if want := lockstep.Send(sys, slow, Ping{}); err == nil || want == nil || err.Error() != want.Error() {
+			tt.Errorf("Ask's error %v, want the discarded system's %v", err, want)
 		}
 		if now := w.Sim.Now(); now != crashAt {
 			tt.Errorf("Now() = %v after Ask, want the crash time %v", now, crashAt)
@@ -297,58 +308,110 @@ func (a *fakeActor) Address() engine.Address { return engine.Address{Node: "n1",
 func (a *fakeActor) Slot() *engine.Slot      { return &a.slot }
 func (a *fakeActor) RunTurn(int) bool        { a.ran = true; return false }
 
-// SIM-120: the engine of a crashed node ignores every seam call. Ready queues nothing, Deliver
-// sends and records nothing, AfterFunc and Start schedule nothing and return a Cancel that reports
-// false, Fail, Wait and the Tracer record and store nothing, and Now is still the node's clock.
+// SIM-120: the engine of a crashed node ignores every seam call, and so does the engine of an
+// earlier incarnation after the node restarted.
 func TestSIM120DeadEngine(t *testing.T) {
+	t.Run("crashed", func(t *testing.T) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			n1 := deadEngineNodes(s)
+			n1.Crash()
+			ignoresSeams(s, s.Engine("n1"), n1)
+		})
+	})
+	t.Run("earlier incarnation", func(t *testing.T) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			n1 := deadEngineNodes(s)
+			old := s.Engine("n1")
+			n1.Crash()
+			n1.Restart()
+			w.RunFor(time.Millisecond)
+			if n1.Incarnation() != 2 || s.System("n1") == nil {
+				tt.Fatalf("n1 at incarnation %d with system %p, want 2 and a system", n1.Incarnation(), s.System("n1"))
+			}
+			ignoresSeams(s, old, n1)
+		})
+	})
+}
+
+// deadEngineNodes adds n1 with no actor and n2 with an actor at /user/r, and runs to t=1s.
+func deadEngineNodes(s *sim.Sim) *kernel.Node {
+	n1 := s.Node("n1", noSetup)
+	s.Node("n2", func(sys *lockstep.System) { spawn(sys, "r", &actor[Deposit]{}) })
+	s.World().RunFor(time.Second)
+	return n1
+}
+
+// ignoresSeams calls every seam of e, a dead engine of node n1, and checks that each call is
+// ignored: Ready queues nothing, Deliver sends and records nothing, AfterFunc and Start schedule
+// nothing and return a Cancel that reports false, Fail, Wait and the Tracer record and store
+// nothing, and Now is still n1's clock. Nothing runs or is recorded for a second afterwards.
+func ignoresSeams(s *sim.Sim, e sim.EngineBundle, n1 *kernel.Node) {
+	w, tt := s.World(), s.World().T()
+	tt.Helper()
+	before := len(w.Sim.Records())
+	a := &fakeActor{}
+	e.Scheduler.Ready(a)
+	if st := a.slot.State(); st != engine.SlotIdle {
+		tt.Errorf("Ready on a dead engine left the slot %v, want idle", st)
+	}
+	for _, node := range []string{"n1", "n2", "nowhere"} {
+		env := engine.Envelope{From: engine.Address{Node: "n1", Path: "/user"}, To: engine.Address{Node: node, Path: "/user/r"}, Payload: Deposit{1}}
+		if err := e.Transport.Deliver(env); err != nil {
+			tt.Errorf("Deliver to %s: %v, want nil", node, err)
+		}
+	}
+	fired := false
+	if e.Clock.AfterFunc(0, "test/timer", func() { fired = true })() {
+		tt.Error("AfterFunc's Cancel reported true")
+	}
+	req := engine.EffectRequest{ID: 1, Name: "prices.fetch", Actor: engine.Address{Node: "n1", Path: "/user/a"}}
+	if e.Effects.Start(req, func(any, error) { tt.Error("done called") })() {
+		tt.Error("Start's Cancel reported true")
+	}
+	e.Tracer.Record("lockstep.send", engine.Attr{Key: "from", Value: "x"})
+	e.Failer.Fail(errors.New("misuse on a dead engine"))
+	if err := e.Waiter.Wait(context.Background(), make(chan struct{})); !errors.Is(err, lockstep.ErrAwaitInActor) {
+		tt.Errorf("Wait on an open channel: %v, want an error wrapping ErrAwaitInActor", err)
+	}
+	if got, want := e.Clock.Now(), n1.Now(); !got.Equal(want) {
+		tt.Errorf("Now() = %v, want n1.Now() %v", got, want)
+	}
+
+	w.RunFor(time.Second)
+	if fired || a.ran {
+		tt.Errorf("timer fired %v, turn ran %v; want neither", fired, a.ran)
+	}
+	if recs := w.Sim.Records()[before:]; len(recs) != 0 {
+		tt.Errorf("%d records after the seam calls, the first %s %q on node %d inc %d; want none",
+			len(recs), recs[0].Kind, recs[0].Text, recs[0].Node, recs[0].Inc)
+	}
+	for _, check := range []string{sim.CheckMisuse, sim.CheckNoEffectHandler} {
+		if err := s.Stored(check); err != nil {
+			tt.Errorf("%s stored %v, want nothing", check, err)
+		}
+	}
+}
+
+// SIM-110: the crash hook leaves nodes that are not lockstep nodes alone: crashing one discards
+// nothing, and the lockstep nodes keep working.
+func TestSIM110NonLockstepNodeCrash(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
-		n1 := s.Node("n1", noSetup)
-		s.Node("n2", func(sys *lockstep.System) { spawn(sys, "r", &actor[Deposit]{}) })
+		var pid lockstep.PID[Ping]
+		s.Node("n1", func(sys *lockstep.System) { pid = spawn(sys, "echo", echo()) })
+		raw := w.AddServer("raw", func(*kernel.Node) {})
 		w.RunFor(time.Second)
-		n1.Crash()
-		before := len(w.Sim.Records())
-
-		e := s.Engine("n1")
-		a := &fakeActor{}
-		e.Scheduler.Ready(a)
-		if st := a.slot.State(); st != engine.SlotIdle {
-			tt.Errorf("Ready on a dead engine left the slot %v, want idle", st)
+		sys := s.System("n1")
+		raw.Crash()
+		if raw.State() != kernel.NodeDown {
+			tt.Fatalf("raw is %v after Crash, want down", raw.State())
 		}
-		for _, node := range []string{"n2", "nowhere"} {
-			env := engine.Envelope{From: engine.Address{Node: "n1", Path: "/user"}, To: engine.Address{Node: node, Path: "/user/r"}, Payload: Deposit{1}}
-			if err := e.Transport.Deliver(env); err != nil {
-				tt.Errorf("Deliver to %s: %v, want nil", node, err)
-			}
+		if got := s.System("n1"); got != sys || got == nil {
+			tt.Errorf("System(n1) = %p after raw crashed, want %p", got, sys)
 		}
-		fired := false
-		if e.Clock.AfterFunc(0, "test/timer", func() { fired = true })() {
-			tt.Error("AfterFunc's Cancel reported true")
-		}
-		req := engine.EffectRequest{ID: 1, Name: "prices.fetch", Actor: engine.Address{Node: "n1", Path: "/user/a"}}
-		if e.Effects.Start(req, func(any, error) { tt.Error("done called") })() {
-			tt.Error("Start's Cancel reported true")
-		}
-		e.Tracer.Record("lockstep.send", engine.Attr{Key: "from", Value: "x"})
-		e.Failer.Fail(errors.New("misuse after the crash"))
-		if err := e.Waiter.Wait(context.Background(), make(chan struct{})); !errors.Is(err, lockstep.ErrAwaitInActor) {
-			tt.Errorf("Wait on an open channel: %v, want an error wrapping ErrAwaitInActor", err)
-		}
-		if got, want := e.Clock.Now(), n1.Now(); !got.Equal(want) {
-			tt.Errorf("Now() = %v, want n1.Now() %v", got, want)
-		}
-
-		w.RunFor(time.Second)
-		if fired || a.ran {
-			tt.Errorf("timer fired %v, turn ran %v; want neither", fired, a.ran)
-		}
-		if recs := w.Sim.Records()[before:]; len(recs) != 0 {
-			tt.Errorf("%d records after the crash, the first %s %q; want none", len(recs), recs[0].Kind, recs[0].Text)
-		}
-		for _, check := range []string{sim.CheckMisuse, sim.CheckNoEffectHandler} {
-			if err := s.Stored(check); err != nil {
-				tt.Errorf("%s stored %v, want nothing", check, err)
-			}
+		if v, err := sim.Ask(s, "n1", pid, buildPing(4)); v != 4 || err != nil {
+			tt.Errorf("Ask after raw crashed = %d, %v; want 4, nil", v, err)
 		}
 	})
 }
