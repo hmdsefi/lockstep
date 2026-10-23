@@ -186,3 +186,10 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Sim))
+pkg github.com/hmdsefi/lockstep/sim, func SimulateSeeds(*testing.T, Options, func(*Sim), ...uint64)
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) World() *faultline.World
+pkg github.com/hmdsefi/lockstep/sim, type Options struct
+pkg github.com/hmdsefi/lockstep/sim, type Options struct, System []lockstep.Option
+pkg github.com/hmdsefi/lockstep/sim, type Options struct, embedded faultline.Options
+pkg github.com/hmdsefi/lockstep/sim, type Sim struct
