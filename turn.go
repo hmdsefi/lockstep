@@ -118,32 +118,39 @@ func (c *cell[M]) processSystem(m sysMsg) {
 	case begin:
 		c.begin()
 	case signalMsg:
-		c.deliverSignal(m)
+		c.receiveSignal(m)
 	case stop:
 		c.startStop(m.reason)
 	case stopped:
 		c.sup.childStopped(m.child)
 		c.childStopped(m.child)
 	case failed:
-		// Decided in Running (SUP-170). Starting has no child, and Restarting, Stopping and
-		// Stopped discard it. SUP-160 keeps it in Suspended until a resume; that keeping comes with
-		// the resume command (SUP-210), and until then Suspended discards it too.
-		if c.state == supervise.Running {
-			c.sup.childFailed(c.sys, c.addr, m, c)
+		// Decided in Running (SUP-170) and kept in Suspended until a resume (SUP-160). Starting
+		// has no failed child, and Restarting, Stopping and Stopped discard it: the children are
+		// being stopped.
+		switch c.state {
+		case supervise.Running:
+			c.decideChild(m)
+		case supervise.Suspended:
+			c.keep(m)
 		}
 	case ended:
-		// The restart of a child goes on in Running (SUP-190). In Restarting and Stopping the
-		// child is being stopped. Suspended discards it until it keeps notices (SUP-160, SUP-210).
-		if c.state == supervise.Running {
+		// The restart of a child goes on in Running (SUP-190) and after a resume (SUP-160). In
+		// Restarting and Stopping the child is being stopped.
+		switch c.state {
+		case supervise.Running:
 			c.sup.childEnded(c.sys, m, c)
+		case supervise.Suspended:
+			c.keep(m)
 		}
 	case cleanupFailed:
 		// A child's Stopped failed (SUP-110): it is never decided and never counted. Its
-		// ChildFailed{Cleanup: true} goes to Signal with the supervision signals (SUP-230, SUP-320).
+		// ChildFailed{Cleanup: true} is a signal like any other (SUP-320).
+		c.receiveSignal(m.asSignal())
 	case end:
 		c.endIncarnation(m)
 	case resume:
-		// The resume command (SUP-210): no supervisor sends one yet.
+		c.resumeIncarnation(m)
 	}
 }
 

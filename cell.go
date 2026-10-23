@@ -117,6 +117,9 @@ type cell[M any] struct {
 	// sup is the cell's supervision of its children with the strategy of its WithStrategy option
 	// (SUP-170 to SUP-290). Turn-owned.
 	sup supervisor
+	// kept holds, in arrival order, the signals and the children's failed and ended notices that
+	// reached the cell while Suspended (SUP-160). Turn-owned.
+	kept []sysMsg
 }
 
 // newCell returns a cell whose user mailbox has the capacity and policy mbx, which the caller has
@@ -237,7 +240,8 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 
 // closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160):
 // it returns the Sent entries and the Self entries of the user mailbox, each in queue order, and
-// the signals left in the system queue, in queue order; the other system messages are discarded.
+// the signals left in the system queue, in queue order, a cleanup failure's ChildFailed among them
+// (SUP-110); the other system messages are discarded.
 // Later enqueues are refused. The caller records what it returns, holding no lock.
 func (c *cell[M]) closeQueues() (sent, self []entry, signals []Signal) {
 	c.mu.Lock()
@@ -251,8 +255,11 @@ func (c *cell[M]) closeQueues() (sent, self []entry, signals []Signal) {
 		}
 	}
 	for _, m := range c.sysq.Close() {
-		if s, ok := m.(signalMsg); ok {
-			signals = append(signals, s.sig)
+		switch m := m.(type) {
+		case signalMsg:
+			signals = append(signals, m.sig)
+		case cleanupFailed:
+			signals = append(signals, m.asSignal().sig)
 		}
 	}
 	return sent, self, signals

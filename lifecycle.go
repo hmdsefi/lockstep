@@ -25,8 +25,6 @@ type end struct {
 }
 
 // resume returns the Suspended incarnation inc to Running (SUP-210).
-//
-//nolint:unused // inc is read once supervisors decide failures (SUP-210)
 type resume struct{ inc uint32 }
 
 // stop is a stop request (SUP-050). A cell keeps at most one (requestStop).
@@ -62,6 +60,12 @@ type cleanupFailed struct {
 	child Address
 	inc   uint32
 	err   error
+}
+
+// asSignal returns the signal message a supervisor handles for the notice: ChildFailed with
+// Cleanup true and no directive, delivered, kept or dropped under SUP-320 (SUP-110).
+func (n cleanupFailed) asSignal() signalMsg {
+	return signalMsg{sig: ChildFailed{Child: n.child, Err: n.err, Cleanup: true}}
 }
 
 func (begin) isSysMsg()         {}
@@ -157,16 +161,76 @@ func (c *cell[M]) recordStart() {
 	)
 }
 
-// recordFail emits lockstep.fail (SUP §8) for a failure with source src and error err.
+// recordFail emits lockstep.fail (SUP §8) for a failure of the cell with source src and error
+// err.
 func (c *cell[M]) recordFail(src supervise.Source, err error) {
-	tr := c.sys.eng.Tracer
+	c.sys.recordFail(c.addr, c.inc, src, err)
+}
+
+// recordFail emits lockstep.fail (SUP §8) for a failure of the actor at addr, in incarnation inc
+// (0 for a guardian), with source src and error err.
+func (s *System) recordFail(addr Address, inc uint32, src supervise.Source, err error) {
+	tr := s.eng.Tracer
 	if !tr.Enabled() {
 		return
 	}
 	tr.Record("lockstep.fail",
-		engine.Attr{Key: "actor", Value: c.addr.String()},
-		engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(c.inc), 10)},
+		engine.Attr{Key: "actor", Value: addr.String()},
+		engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(inc), 10)},
 		engine.Attr{Key: "source", Value: src.String()},
 		engine.Attr{Key: "err", Value: tr.Describe(err)},
 	)
+}
+
+// keep keeps m, a signal or a child's failed or ended notice that reached the Suspended cell, in
+// arrival order (SUP-160). They are handled after a resume (resumeIncarnation), or, when the
+// incarnation ends, the signals are recorded as dropped and the notices discarded (dropKept).
+func (c *cell[M]) keep(m sysMsg) { c.kept = append(c.kept, m) }
+
+// dropKept empties the kept list when the Suspended cell's incarnation ends, by restart or stop
+// (SUP-160): each kept signal is recorded as lockstep.drop reason not-running, in arrival order,
+// except a Terminated that a delivery would skip (ACT-630: its address is not watched, or is
+// watched under another Watch call's sequence number), which is discarded without a record; the
+// kept notices are discarded, since the children they name are being stopped. The children whose
+// failure the cell escalated are stopped the same way, so the escalated list is cleared too
+// (SUP-220).
+func (c *cell[M]) dropKept() {
+	kept := c.kept
+	c.kept = nil
+	c.sup.escalated = nil
+	for _, m := range kept {
+		sm, ok := m.(signalMsg)
+		if !ok {
+			continue
+		}
+		if t, isTerm := sm.sig.(Terminated); isTerm && c.ctx != nil {
+			if seq, in := c.ctx.watched.seq(t.Addr); !in || seq != sm.seq {
+				continue
+			}
+		}
+		c.sys.recordDropNotRunning(c.addr, sm.sig)
+	}
+}
+
+// resumeIncarnation processes resume{inc} (SUP-210). Only a Suspended cell in incarnation inc
+// resumes, and only with a live incarnation; any other resume is discarded. The cell changes to
+// Running, resumes the children whose failure it escalated (SUP-220), then handles what it kept
+// while Suspended in arrival order: it delivers the signals and decides or goes on with its
+// children's notices (SUP-160). If one of them fails the cell again, the rest stay kept, ahead of
+// what arrives later.
+func (c *cell[M]) resumeIncarnation(m resume) {
+	if c.state != supervise.Suspended || m.inc != c.inc || c.ctx == nil {
+		return
+	}
+	c.setState(supervise.Running)
+	c.resumeEscalated()
+	for c.state == supervise.Running && len(c.kept) > 0 {
+		k := c.kept[0]
+		c.kept[0] = nil
+		c.kept = c.kept[1:]
+		c.processSystem(k)
+	}
+	if len(c.kept) == 0 {
+		c.kept = nil
+	}
 }

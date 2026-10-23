@@ -59,3 +59,16 @@ func (in *Intensity) Admit(now time.Time, l Limits) (count int, ok bool) {
 	in.times = append(in.times, now)
 	return len(in.times), true
 }
+
+// Count returns the number of restarts in the window at now, the count Admit would start from:
+// the timestamps s with now.Sub(s) < l.Window. Unlike Admit it changes nothing, so a supervisor
+// can record the count for a directive that is not a restart (SUP §8).
+func (in *Intensity) Count(now time.Time, l Limits) int {
+	n := 0
+	for _, s := range in.times {
+		if now.Sub(s) < l.Window {
+			n++
+		}
+	}
+	return n
+}

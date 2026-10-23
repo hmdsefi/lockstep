@@ -30,19 +30,31 @@ type signalMsg struct {
 
 func (signalMsg) isSysMsg() {}
 
-// deliverSignal handles the signal message m at the head of the system queue (MSG-810). An
-// incarnation that implements SignalReceiver gets the signal in Signal, during a turn; any other
-// ignores it without a record. Only a running incarnation delivers: the other lifecycle states keep
-// or drop signals by SUP-320's rules, which supervision applies.
+// receiveSignal handles the signal message m at the head of the system queue by the cell's
+// lifecycle state (SUP-320): a Running cell delivers it (deliverSignal); a Suspended cell keeps it,
+// in arrival order, until a resume delivers it or the end of the incarnation drops it (SUP-160);
+// in Starting, Restarting and Stopping it is recorded as lockstep.drop reason not-running. A
+// Stopped cell has closed its system queue, whose drain records the signals left in it (SUP-060).
+func (c *cell[M]) receiveSignal(m signalMsg) {
+	switch c.state {
+	case supervise.Running:
+		c.deliverSignal(m)
+	case supervise.Suspended:
+		c.keep(m)
+	default:
+		c.sys.recordDropNotRunning(c.addr, m.sig)
+	}
+}
+
+// deliverSignal delivers the signal message m to the Running incarnation (MSG-810): an
+// incarnation that implements SignalReceiver gets the signal in Signal, during the turn; any other
+// ignores it without a record.
 //
 // A Terminated whose Addr is not in the incarnation's watched set, or is there under another Watch
 // call's sequence number, is skipped; the address leaves the set when the Terminated is delivered
 // (ACT-630). An actor without SignalReceiver consumes the watch the same way, so a later Watch of
 // the address registers again.
 func (c *cell[M]) deliverSignal(m signalMsg) {
-	if c.state != supervise.Running {
-		return
-	}
 	sig := m.sig
 	if t, ok := sig.(Terminated); ok {
 		if seq, in := c.ctx.watched.seq(t.Addr); !in || seq != m.seq {
@@ -50,6 +62,12 @@ func (c *cell[M]) deliverSignal(m signalMsg) {
 		}
 		c.ctx.watched.remove(t.Addr)
 	}
+	c.signal(sig)
+}
+
+// signal calls the Running incarnation's Signal with sig as a guarded handler with source signal,
+// if the incarnation implements SignalReceiver (MSG-810, SUP-230); otherwise sig is ignored.
+func (c *cell[M]) signal(sig Signal) {
 	if c.signals == nil {
 		return
 	}

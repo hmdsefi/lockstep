@@ -75,6 +75,7 @@ func (c *cell[M]) startStop(reason StopReason) {
 	}
 	restarting := c.state == supervise.Restarting
 	c.setState(supervise.Stopping)
+	c.dropKept() // a Suspended cell's kept signals and notices (SUP-160)
 	c.stopReason = reason
 	if restarting {
 		c.endErr = nil

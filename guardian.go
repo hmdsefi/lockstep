@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 
@@ -17,7 +18,8 @@ import (
 //     does (SUP-300), through the same supervisor code as a cell: the user guardian with the
 //     WithGuardianStrategy strategy, the system guardian with OneForOne(nil);
 //   - cleanupFailed: never decided nor counted (SUP-110), and guardians implement no Signal, so it
-//     changes nothing;
+//     changes nothing. A guardian cannot fail either: it applies an escalation, from its decider,
+//     a decider failure or restart intensity, as a stop (SUP-300);
 //   - the shutdown's start: the sweep stops the user guardian's children, then, after every one of
 //     them has completed its stop, the system guardian's, each guardian's one subtree at a time in
 //     reverse spawn order, with reason Shutdown (ACT-050, SUP-350). Once the sweep has started,
@@ -58,8 +60,8 @@ const (
 // init sets up g for sys, the user guardian supervising with userStrategy (SUP-300).
 func (g *guardians) init(sys *System, userStrategy Strategy) {
 	g.sys = sys
-	g.user = supervisor{strategy: userStrategy}
-	g.system = supervisor{strategy: OneForOne(nil)}
+	g.user = supervisor{strategy: userStrategy, guardian: true}
+	g.system = supervisor{strategy: OneForOne(nil), guardian: true}
 }
 
 // Address returns the user guardian's address (engine.ActorRef).
@@ -124,8 +126,12 @@ func (g *guardians) RunTurn(int) bool {
 				sv.childEnded(g.sys, m, g)
 			}
 			continue
-		default: // cleanupFailed
+		case cleanupFailed:
 			continue
+		default:
+			// Only children's notices and the sweep's start reach the guardians; anything else is
+			// a bug in the runtime.
+			panic(fmt.Sprintf("lockstep: guardians got an unexpected system message %T", m))
 		}
 		if g.next() {
 			g.phase = sweepDone
