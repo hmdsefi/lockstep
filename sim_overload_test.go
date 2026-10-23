@@ -627,10 +627,12 @@ func liveHeap(tb testing.TB) uint64 {
 }
 
 // settledGoroutines returns runtime.NumGoroutine() once it has not changed for 20 ms, so that the
-// goroutine of a finished subtest that is still returning does not count.
+// goroutine of a finished subtest that is still returning does not count. If the count keeps
+// changing it returns the last count after 10 s.
 func settledGoroutines() int {
 	n := runtime.NumGoroutine()
-	for stable := 0; stable < 20; {
+	deadline := time.Now().Add(10 * time.Second)
+	for stable := 0; stable < 20 && time.Now().Before(deadline); {
 		time.Sleep(time.Millisecond)
 		if m := runtime.NumGoroutine(); m != n {
 			n, stable = m, 0
