@@ -48,6 +48,7 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 		}
 		break
 	}
+	c.measureIfRan() // OVL-420: after every turn that called actor code
 	if system+u > 0 {
 		c.recordTurn(system, firstShown, u, first)
 	}
@@ -78,6 +79,7 @@ func (c *cell[M]) popUser() (entry, bool) {
 	}
 	e, k, ok := c.user.Pop()
 	e.kind = entryKindOf(k)
+	c.mem.addMailbox(-e.size) // zero for no entry and for a Self entry (OVL-410)
 	return e, ok
 }
 
@@ -186,6 +188,9 @@ func (c *cell[M]) begin() {
 	c.starter, _ = a.(Starter[M])
 	c.stopper, _ = a.(Stopper[M])
 	c.signals, _ = a.(SignalReceiver[M])
+	if c.sys.estimates {
+		c.memSizer, _ = a.(MemSizer)
+	}
 	c.recordStart()
 	if c.starter != nil {
 		// OVL §3: a rebuild context is the Started of an incarnation a restart created (2 or
@@ -197,6 +202,7 @@ func (c *cell[M]) begin() {
 	}
 	if c.state == supervise.Starting { // Started did not fail
 		c.setState(supervise.Running)
+		c.measure() // OVL-420: after Started returns
 	}
 }
 

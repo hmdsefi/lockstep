@@ -188,6 +188,7 @@ func (c *cell[M]) finishStop() {
 	c.mu.Lock()
 	c.liveInc = 0 // the incarnation has ended: Pipe's continuations drop (MSG-610)
 	c.mu.Unlock()
+	c.mem.setState(0) // a removed actor leaves the estimate (OVL-420)
 
 	// Step 4: the name is free and the address not alive (ACT-550), and the actor's slot returns
 	// to the actor cap (OVL-020).

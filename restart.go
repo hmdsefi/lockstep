@@ -56,7 +56,8 @@ func (c *cell[M]) finishEnd() {
 	// SUP-340), and its own optional interfaces (ACT-100). Until then nothing is live: a stop now
 	// calls no Stopped (SUP-290).
 	c.actor, c.ctx = nil, nil
-	c.starter, c.stopper, c.signals = nil, nil, nil
+	c.starter, c.stopper, c.signals, c.memSizer = nil, nil, nil, nil
+	c.mem.setState(0) // the next incarnation starts at 0 state bytes (OVL-420)
 	c.recordRestart(err)
 	c.sys.notifySupervisor(c.parent, ended{child: c.addr, inc: c.inc}, c)
 }
