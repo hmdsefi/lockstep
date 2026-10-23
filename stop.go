@@ -86,7 +86,7 @@ func (c *cell[M]) startStop(reason StopReason) {
 			return // childStopped goes on with the stop
 		}
 	} else {
-		c.endIncarnationWork()
+		c.endIncarnationWork(!c.sys.skipEffectCancel.Load())
 	}
 	c.stopNextChild()
 }
@@ -96,12 +96,17 @@ func (c *cell[M]) startStop(reason StopReason) {
 // ACT-640), and its Overloaded subscription ends (OVL-170). Its pending effects are cancelled in
 // ID order after the timers and before the watches, the order of SUP-060 and SUP-190 step 1
 // (EFF-100); the effects' records come before anything the Stopped hook or the stop records.
-func (c *cell[M]) endIncarnationWork() {
+//
+// With cancelEffects false the effects stay pending; only a test asks for that, for a stop (see
+// System.skipEffectCancel).
+func (c *cell[M]) endIncarnationWork(cancelEffects bool) {
 	if c.ctx == nil {
 		return
 	}
 	c.cancelTimers()
-	c.cancelEffects()
+	if cancelEffects {
+		c.cancelEffects()
+	}
 	c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
 	c.ctx.watched = watchedSet{}
 	if c.ctx.overloadSub {

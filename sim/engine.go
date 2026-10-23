@@ -39,6 +39,10 @@ type simEngine struct {
 	deferred []deferredFrame
 	host     engine.Host
 
+	// held is the effects the engine started and still holds, by the address text of the actor
+	// that started them (SIM-290 b); it is read by key only.
+	held map[string][]*heldEffect
+
 	// dead is set when the node crashes (SIM-110) or the system stops (SIM-195): the engine then
 	// ignores every seam call (SIM-120). The kernel itself discards the events a crashed
 	// incarnation scheduled, so its turns, timers and deferred sends never run, even after a
@@ -136,6 +140,7 @@ func (e *simEngine) Record(kind string, attrs ...engine.Attr) {
 		return
 	}
 	e.emit(kind, recordText(kind, attrs), attrs)
+	e.checkLeak(kind, attrs) // after the record it is about (SIM-290)
 }
 
 // Describe returns kernel.Describe(v) (SIM-185).
