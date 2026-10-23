@@ -384,6 +384,57 @@ func TestATSFT06StopActor(t *testing.T) {
 	})
 }
 
+// SFT-040, SUP-060: an inject queued behind a stop is discarded by the final stop's drain with a
+// record. StopActor then InjectFail in one body step: InjectFail returns nil, the counter does not
+// fail, and the trace holds exactly one lockstep.drop to=<counter> reason=not-running msg=inject,
+// after both lockstep.fault records and, as SUP-060 step 5 drains before step 6 records the stop,
+// before the counter's lockstep.stop.
+func TestSFT040InjectQueuedBehindStop(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var pid lockstep.PID[CMsg]
+		counterNode(s, "n1", &counter{}, &pid)
+		w.RunFor(time.Second)
+		addr := pid.Address()
+		if err := s.StopActor(addr); err != nil {
+			tt.Errorf("StopActor = %v, want nil", err)
+		}
+		if err := s.InjectFail(addr, errBoom); err != nil {
+			tt.Errorf("InjectFail after StopActor = %v, want nil", err)
+		}
+		w.RunFor(time.Second)
+
+		recs := w.Sim.Records()
+		if n := len(ofKind(recs, "lockstep.fail")); n != 0 {
+			tt.Errorf("%d lockstep.fail records, want 0", n)
+		}
+		drops := ofKind(recs, "lockstep.drop")
+		if len(drops) != 1 {
+			tt.Fatalf("%d lockstep.drop records, want 1", len(drops))
+		}
+		d := drops[0]
+		if attr(d, "to") != addr.String() || attr(d, "reason") != "not-running" || attr(d, "msg") != "inject" {
+			tt.Errorf("lockstep.drop %v, want to %s, reason not-running, msg inject", d.Attrs, addr)
+		}
+		for _, op := range []string{"stop", "inject-fail"} {
+			if f := faultRecords(recs, op); len(f) != 1 || attr(f[0], "result") != "ok" || d.Seq < f[0].Seq {
+				tt.Errorf("lockstep.fault op=%s records %v, want one with result ok before the drop (seq %d)", op, f, d.Seq)
+			}
+		}
+		stops := ofKind(recs, "lockstep.stop")
+		i := indexOf(stops, func(r kernel.Record) bool { return attr(r, "actor") == addr.String() })
+		if i < 0 {
+			tt.Fatal("no lockstep.stop record of the counter")
+		}
+		if d.Seq > stops[i].Seq {
+			tt.Errorf("the drop (seq %d) follows the counter's lockstep.stop (seq %d)", d.Seq, stops[i].Seq)
+		}
+		if got := s.Counts().Drops; got != 1 {
+			tt.Errorf("Counts().Drops = %d, want 1", got)
+		}
+	})
+}
+
 // AT-EFF-09, EFF-100: StopActor at +1s cancels the Quoter's pending effect (latency 5s): the
 // cancellation is recorded before the Stopped hook and lockstep.stop, the Quoter never gets a
 // Fetched, and the effect's lockstep/effect event never runs.
