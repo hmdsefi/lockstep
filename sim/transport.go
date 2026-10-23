@@ -61,7 +61,7 @@ func (e *simEngine) Deliver(env engine.Envelope) error {
 	f := frame{inc: e.inc, env: env}
 	if e.n.State() == kernel.NodePaused || len(e.deferred) > 0 {
 		e.deferred = append(e.deferred, deferredFrame{to: to, f: f})
-		e.n.Post(sendLabel, e.sendDeferred)
+		e.schedule(0, sendLabel, e.sendDeferred)
 		return nil
 	}
 	e.s.w.Net.Send(e.n, to, f)

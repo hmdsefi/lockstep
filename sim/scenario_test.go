@@ -123,6 +123,15 @@ func failingSeed(t *testing.T, name string) failure {
 // failingSeedOutput is failingSeed that also returns the child's combined output.
 func failingSeedOutput(t *testing.T, name string) (failure, string) {
 	t.Helper()
+	a, out := failingSeedArtifact(t, name)
+	f := a.Report.Failure
+	return failure{Kind: f.Kind, Check: f.Check, Signature: f.Signature, Message: f.Message}, out
+}
+
+// failingSeedArtifact is failingSeedOutput that returns the whole artifact of the failing seed:
+// its report and, when the child wrote one, its trace.
+func failingSeedArtifact(t *testing.T, name string) (*artifact.Artifact, string) {
+	t.Helper()
 	dir := t.TempDir()
 	out, code := runScenario(t, name, "FAULTLINE_ARTIFACTS="+dir)
 	if code == 0 {
@@ -141,17 +150,12 @@ func failingSeedOutput(t *testing.T, name string) (failure, string) {
 	if len(reports) != 1 {
 		t.Fatalf("scenario %s left %d report.json files under %s, want 1\n%s", name, len(reports), dir, out)
 	}
-	f, err := os.Open(reports[0])
+	a, err := artifact.Read(filepath.Dir(reports[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close() //nolint:errcheck // read-only
-	r, err := artifact.ReadReport(f)
-	if err != nil {
-		t.Fatal(err)
+	if a.Report.Failure == nil {
+		t.Fatalf("scenario %s: report.json has status %q and no failure\n%s", name, a.Report.Status, out)
 	}
-	if r.Failure == nil {
-		t.Fatalf("scenario %s: report.json has status %q and no failure\n%s", name, r.Status, out)
-	}
-	return failure{Kind: r.Failure.Kind, Check: r.Failure.Check, Signature: r.Failure.Signature, Message: r.Failure.Message}, out
+	return a, out
 }
