@@ -86,6 +86,7 @@ pkg github.com/hmdsefi/lockstep, type Terminated struct, Reason StopReason
 pkg github.com/hmdsefi/lockstep, var ErrAwaitInActor error
 pkg github.com/hmdsefi/lockstep, var ErrInvalidName error
 pkg github.com/hmdsefi/lockstep, var ErrInvalidOption error
+pkg github.com/hmdsefi/lockstep, var ErrMailboxFull error
 pkg github.com/hmdsefi/lockstep, var ErrNameTaken error
 pkg github.com/hmdsefi/lockstep, var ErrNotFound error
 pkg github.com/hmdsefi/lockstep, var ErrNotLocal error

@@ -277,14 +277,18 @@ func (s *System) replyAttempt(ask, from Address, v any, err error) {
 
 // replyRemote passes a reply attempt for the ask of another node to Transport.Deliver, from the
 // replier to the ask address; the asker's system applies it on arrival (MSG-410, host.Inbound).
-// Without a transport it is a dead letter (ENG-080, MBX-150 reason unreachable). A Deliver error
-// is dropped: ReplyTo.Send and Fail have no result, and REM-266 decides what happens to such a
-// reply.
+// Without a transport it is a dead letter (ENG-080, MBX-150 reason unreachable) from the replier
+// to the ask address, whose msg is the answer, or the error of a Fail. A Deliver error is
+// dropped: ReplyTo.Send and Fail have no result, and REM-266 decides what happens to such a reply.
 func (s *System) replyRemote(ask, from Address, v any, err error) {
 	p := replyPayload{v: v, err: err}
 	tr := s.eng.Transport
 	if tr == nil {
-		s.deadLetter(ask, reasonUnreachable, p)
+		if err != nil {
+			s.deadLetter(from, ask, reasonUnreachable, err)
+		} else {
+			s.deadLetter(from, ask, reasonUnreachable, v)
+		}
 		return
 	}
 	_ = tr.Deliver(engine.Envelope{From: from.engine(), To: ask.engine(), Payload: p}) // MSG-410: not returned
