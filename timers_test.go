@@ -161,7 +161,7 @@ func TestATTMR04Every(t *testing.T) {
 		a := &timerActor{started: func(ctx *Context[any]) { id = ctx.Every(50*time.Millisecond, "tick") }}
 		a.onMsg = func(ctx *Context[any], _ any) {
 			if len(a.seen) == 3 {
-				cancelled = ctx.cancelTimer(id)
+				cancelled = ctx.CancelTimer(id)
 			}
 		}
 		spawnTimerActor(t, sys, eng, a)
@@ -339,7 +339,7 @@ func TestTMR070CancelledTimerMessageDropped(t *testing.T) {
 	inTurn(t, sys, eng, pid, func(ctx *Context[any]) { id = ctx.After(time.Millisecond, "t1") })
 	release := c.holdTurns()
 	var cancelled bool
-	send(t, sys, pid, any(func(ctx *Context[any]) { cancelled = ctx.cancelTimer(id) }))
+	send(t, sys, pid, any(func(ctx *Context[any]) { cancelled = ctx.CancelTimer(id) }))
 	eng.Advance(2 * time.Millisecond) // the message of t1 queues behind the function
 	if n := c.user.Len(); n != 2 {
 		t.Fatalf("the mailbox holds %d entries, want 2", n)
@@ -349,7 +349,7 @@ func TestTMR070CancelledTimerMessageDropped(t *testing.T) {
 	eng.RunUntilIdle()
 
 	if !cancelled {
-		t.Error("cancelTimer returned false for an armed timer")
+		t.Error("CancelTimer returned false for an armed timer")
 	}
 	if got := a.msgs(); len(got) != 0 {
 		t.Errorf("received %v, want nothing", got)
@@ -379,8 +379,8 @@ func TestTimersOnLocalEngine(t *testing.T) {
 	}
 	a.receive = func(ctx *Context[any], msg any) {
 		if msg == "tick" {
-			if ticks++; ticks == 3 && !ctx.cancelTimer(id) {
-				t.Error("cancelTimer of the running Every returned false")
+			if ticks++; ticks == 3 && !ctx.CancelTimer(id) {
+				t.Error("CancelTimer of the running Every returned false")
 			}
 			if ticks > 3 {
 				t.Error("tick after the cancel")

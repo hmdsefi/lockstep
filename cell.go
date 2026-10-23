@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"context"
+	"math/rand/v2"
 	"reflect"
 	"sync"
 
@@ -98,6 +99,7 @@ type cell[M any] struct {
 	inc     uint32          // incarnation number: 0 at spawn, +1 per started incarnation (SUP-020)
 	actor   Actor[M]
 	ctx     *Context[M]
+	rng     *rand.Rand        // the incarnation's stream, nil until ctx.Rand asks for it (TMR-120)
 	starter Starter[M]        // the incarnation's optional interfaces, asserted once (ACT-100)
 	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal

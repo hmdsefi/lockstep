@@ -29,6 +29,7 @@ func (c *cell[M]) endIncarnation(m end) {
 		return
 	}
 	c.setState(supervise.Restarting)
+	c.sup.abandonGroup()
 	c.dropKept() // a Suspended cell's kept signals and notices (SUP-160)
 	c.endErr = m.err
 	c.endIncarnationWork()
