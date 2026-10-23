@@ -82,7 +82,7 @@ func TestStrings(t *testing.T) {
 	}{
 		{InFactory, "factory"}, {InStarted, "started"}, {InReceive, "receive"}, {InSignal, "signal"},
 		{InStopped, "stopped"}, {InDecider, "decider"}, {InEscalate, "escalate"},
-		{0, "Source(0)"}, {8, "Source(8)"}, {255, "Source(255)"},
+		{InInjected, "injected"}, {0, "Source(0)"}, {9, "Source(9)"}, {255, "Source(255)"},
 	} {
 		if got := c.s.String(); got != c.want {
 			t.Errorf("Source(%d).String() = %q, want %q", uint8(c.s), got, c.want)
