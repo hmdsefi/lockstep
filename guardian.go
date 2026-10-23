@@ -107,9 +107,12 @@ func (g *guardians) RunTurn(int) bool {
 				continue
 			}
 			g.phase = sweepUser
+			g.user.abandonGroup()
+			g.system.abandonGroup()
 		case stopped:
-			sv, _ := g.supervisorOf(m.child)
-			sv.childStopped(m.child)
+			sv, self := g.supervisorOf(m.child)
+			sv.childStopped(g.sys, m.child, g)
+			g.replay(sv, self)
 			if g.phase != sweepUser && g.phase != sweepSystem || m.child != g.wait {
 				continue // a child the sweep does not wait for: it has left the registry
 			}
@@ -122,8 +125,9 @@ func (g *guardians) RunTurn(int) bool {
 			continue
 		case ended:
 			if g.phase == sweepIdle {
-				sv, _ := g.supervisorOf(m.child)
+				sv, self := g.supervisorOf(m.child)
 				sv.childEnded(g.sys, m, g)
+				g.replay(sv, self)
 			}
 			continue
 		case cleanupFailed:
@@ -137,6 +141,18 @@ func (g *guardians) RunTurn(int) bool {
 			g.phase = sweepDone
 			g.sys.completeShutdown()
 		}
+	}
+}
+
+// replay decides the failed notices that sv held during a group operation, now that it has pushed
+// its last command (SUP-260), unless the shutdown has started.
+func (g *guardians) replay(sv *supervisor, self Address) {
+	for g.phase == sweepIdle {
+		n, ok := sv.nextHeld()
+		if !ok {
+			return
+		}
+		sv.childFailed(g.sys, self, n, g)
 	}
 }
 

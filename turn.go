@@ -122,8 +122,9 @@ func (c *cell[M]) processSystem(m sysMsg) {
 	case stop:
 		c.startStop(m.reason)
 	case stopped:
-		c.sup.childStopped(m.child)
+		c.sup.childStopped(c.sys, m.child, c)
 		c.childStopped(m.child)
+		c.replayHeld()
 	case failed:
 		// Decided in Running (SUP-170) and kept in Suspended until a resume (SUP-160). Starting
 		// has no failed child, and Restarting, Stopping and Stopped discard it: the children are
@@ -140,6 +141,7 @@ func (c *cell[M]) processSystem(m sysMsg) {
 		switch c.state {
 		case supervise.Running:
 			c.sup.childEnded(c.sys, m, c)
+			c.replayHeld()
 		case supervise.Suspended:
 			c.keep(m)
 		}
