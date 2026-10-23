@@ -70,6 +70,7 @@ pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, func WithWatchdog(time.Duration) Option
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) After(time.Duration, M) TimerID
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelEffect(EffectID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Every(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)

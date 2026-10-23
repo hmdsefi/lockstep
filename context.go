@@ -106,3 +106,18 @@ func (c *Context[M]) parentStopping() bool { return c.cell.ending() }
 // rebuilding reports whether the incarnation's Started hook is running in a rebuild context
 // (OVL §3).
 func (c *Context[M]) rebuilding() bool { return c.rebuild }
+
+// CancelEffect cancels the pending effect id of this incarnation and reports whether it was
+// pending; done is then never called for it. It returns false for 0, for an ID of another
+// incarnation, and for an effect that already has an outcome.
+func (c *Context[M]) CancelEffect(id EffectID) bool {
+	c.mustInTurn()
+	cl := c.cell
+	cl.emu.Lock()
+	pe := cl.effects[id]
+	cl.emu.Unlock()
+	if pe == nil || pe.inc != c.inc {
+		return false
+	}
+	return cl.cancelEffect(pe)
+}
