@@ -29,6 +29,7 @@ func Send[M any](s *Sim, node string, to lockstep.PID[M], msg M) error {
 // error wrapping lockstep.ErrStopped if the node is down, or crashes before the reply resolves,
 // and ErrRunEnded if the run ends first.
 func Ask[M, R any](s *Sim, node string, to lockstep.PID[M], build func(lockstep.ReplyTo[R]) M, opts ...lockstep.AskOption) (R, error) {
+	s.check() // SIM-040 first: a stale Sim used in a later run's callback reports that
 	if kernel.Active() != nil {
 		panic("lockstep: sim: Ask called inside the simulation; use lockstep.Ask with lockstep.Pipe in actors")
 	}

@@ -204,6 +204,32 @@ func TestATSIM17AskInsideSimulation(t *testing.T) {
 	})
 }
 
+// SIM-040, SIM-200: a Sim kept from an earlier run and passed to Ask inside a kernel callback of a
+// later run panics with SIM-040's message, not with the message of an Ask inside the simulation.
+func TestSIM040StaleAskInsideCallback(t *testing.T) {
+	var saved *sim.Sim
+	var stale int
+	sim.SimulateSeeds(t, sim.Options{}, func(s *sim.Sim) {
+		w := s.World()
+		if saved == nil {
+			saved = s
+		}
+		w.Sim.After(time.Millisecond, "test/stale-ask", func() {
+			if saved == s {
+				return // the first run: saved is this run's Sim
+			}
+			stale++
+			expectEnded(w.T(), "Ask with the Sim of an earlier run inside a callback", func() {
+				_, _ = sim.Ask(saved, "n1", lockstep.PIDAt[Ping]("n1", "/user/a"), buildPing(1))
+			})
+		})
+		w.RunFor(time.Second)
+	}, 0x1, 0x2)
+	if stale == 0 {
+		t.Error("no later run's callback used the earlier Sim")
+	}
+}
+
 // AT-SIM-20, SIM-195, SIM-120: Shutdown from body returns at once; the actors stop in later
 // events, after which the engine is dead: the node keeps its stopped system, no turn runs, the
 // Tracer records nothing, and AfterFunc and Start schedule nothing.
