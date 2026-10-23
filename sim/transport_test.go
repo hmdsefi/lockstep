@@ -60,6 +60,92 @@ func TestATSIM08PausedSender(t *testing.T) {
 	})
 }
 
+// receiver returns the setup of a node with an actor r at /user/r that appends the number of
+// every Num it receives to *got.
+func receiver(got *[]int) func(sys *lockstep.System) {
+	return func(sys *lockstep.System) {
+		spawn(sys, "r", &actor[Num]{receive: func(_ *lockstep.Context[Num], m Num) { *got = append(*got, m.N) }})
+	}
+}
+
+// SIM-140, SIM-160, ENG-080: envelopes from a paused node leave in Deliver order, and one
+// delivered after the node resumes, while earlier ones still wait for their lockstep/send events,
+// queues behind them: on FIFO links every envelope arrives, in order, with no stale drop.
+func TestSIM140DeferredSendsKeepOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		paused, after int // envelopes delivered while paused, and right after Resume
+	}{
+		{"one-then-one", 1, 1},
+		{"several-paused", 5, 0},
+		{"several-then-several", 5, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+				w, tt := s.World(), s.World().T()
+				var got []int
+				n1 := s.Node("n1", noSetup)
+				n2 := s.Node("n2", receiver(&got))
+				w.RunFor(time.Second)
+				r := lockstep.PIDAt[Num]("n2", "/user/r")
+				n1.Pause()
+				for n := 1; n <= tc.paused+tc.after; n++ {
+					if n == tc.paused+1 {
+						n1.Resume()
+					}
+					if err := sim.Send(s, "n1", r, Num{n}); err != nil {
+						tt.Fatalf("Send %d: %v", n, err)
+					}
+				}
+				n1.Resume() // no-op unless every send ran while paused
+				w.RunFor(time.Second)
+				if want := numbers(1, tc.paused+tc.after); !slices.Equal(got, want) {
+					tt.Errorf("r got %v, want %v", got, want)
+				}
+				if n := len(staleDrops(w.Sim.Records(), n2)); n != 0 {
+					tt.Errorf("%d stale-seq drops, want 0", n)
+				}
+			})
+		})
+	}
+}
+
+// SIM-120, SIM-170: the simnet handler of a dead engine, whose node stays up, ignores every
+// arrival: an envelope reaches no actor and a payload that is not lockstep's fails nothing.
+func TestSIM170DeadEngineIgnoresArrivals(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var got []int
+		n1 := s.Node("n1", noSetup)
+		n2 := s.Node("n2", receiver(&got))
+		w.RunFor(time.Millisecond)
+		s.MarkDead("n2")
+		if err := sim.Send(s, "n1", lockstep.PIDAt[Num]("n2", "/user/r"), Num{1}); err != nil {
+			tt.Fatalf("Send: %v", err)
+		}
+		w.Net.Send(n1, n2.ID(), "hello")
+		w.RunFor(time.Second)
+
+		if len(got) != 0 {
+			tt.Errorf("r on the dead engine's node got %v, want nothing", got)
+		}
+		if err := s.Stored(sim.CheckMisuse); err != nil {
+			tt.Errorf("lockstep/misuse holds %v, want nothing", err)
+		}
+		recs := w.Sim.Records()
+		if n := len(ofKind(recs, "net.deliver")); n != 2 {
+			tt.Errorf("%d net.deliver records, want 2: both payloads reached n2's handler", n)
+		}
+		for _, kind := range []string{"lockstep.deliver", "lockstep.drop", "lockstep.misuse"} {
+			for _, r := range ofKind(recs, kind) {
+				if r.Node == n2.ID() {
+					tt.Errorf("%s record on n2: %+v, want none", kind, r)
+				}
+			}
+		}
+	})
+}
+
 // lastOfKind returns the last record of kind in recs, or nil.
 func lastOfKind(recs []kernel.Record, kind string) *kernel.Record {
 	for i := len(recs) - 1; i >= 0; i-- {

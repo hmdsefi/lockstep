@@ -30,12 +30,14 @@ type simEngine struct {
 	gate   *overload.Gate // the bundle's Admission (SFT-150)
 	bundle engine.Engine
 
-	// The transport's state (SIM-160, SIM-170), read by key only. seq holds the last number given
-	// to an envelope for each destination node; next holds the next expected number of each
-	// stream key that arrived at this boot. host is the system's inbound side.
-	seq  map[kernel.NodeID]uint64
-	next map[stream]uint64
-	host engine.Host
+	// The transport's state (SIM-160, SIM-170); the maps are read by key only. seq holds the last
+	// number given to an envelope for each destination node; next holds the next expected number
+	// of each stream key that arrived at this boot. deferred holds the frames that wait for their
+	// lockstep/send event, oldest first. host is the system's inbound side.
+	seq      map[kernel.NodeID]uint64
+	next     map[stream]uint64
+	deferred []deferredFrame
+	host     engine.Host
 
 	dead bool // the engine ignores every seam call (SIM-120)
 }
