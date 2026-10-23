@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/lockstep/internal/mailbox"
 )
 
 // hookActor is a test actor with a Receive and a Stopped hook; a nil function does nothing.
@@ -535,8 +537,8 @@ func TestStopDrain(t *testing.T) {
 	if len(sent) != 2 || sent[0].msg != "m1" || sent[1].msg != "m2" {
 		t.Errorf("drained Sent entries %+v, want m1, m2", sent)
 	}
-	if c.offerUser(entry{msg: "late", kind: entrySent}, nil) {
-		t.Error("a closed mailbox accepted an entry")
+	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil); out != mailbox.Closed {
+		t.Errorf("a closed mailbox answered %v to an entry, want closed", out)
 	}
 	c.pushSystem(begin{}, nil)
 	n, m := c.user.Len(), c.sysq.Len()

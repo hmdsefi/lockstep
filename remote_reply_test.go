@@ -145,13 +145,22 @@ func TestRemoteReplyAttempt(t *testing.T) {
 	})
 
 	t.Run("no transport", func(t *testing.T) {
-		b := engineBundle(t, "n1")
+		neng := enginetest.New("n1", 1)
+		b := neng.Engine()
 		b.Transport = nil
 		nsys, err := newSystem(b, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ReplyTo[int]{addr: n2Ask}.Send(nsys, 1) // a dead letter, unreachable: nothing to observe until plan 1.3
+		// The reply attempt cannot leave the node: a dead letter from the replier to the ask
+		// address (MBX-150), whose msg is the answer, or the error of a Fail.
+		ReplyTo[int]{addr: n2Ask}.Send(nsys, 1)
+		ReplyTo[int]{addr: n2Ask}.Fail(nsys, errX)
+		from := " from=" + nsys.user.String() + " to=" + n2Ask.String() + " reason=unreachable"
+		sameLines(t, "dead letters", renderKind(neng.Records(), "lockstep.deadletter"), []string{
+			"lockstep.deadletter" + from + " msg=1",
+			"lockstep.deadletter" + from + " msg=errX",
+		})
 	})
 
 	t.Run("inbound", func(t *testing.T) {
