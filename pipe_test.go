@@ -54,9 +54,7 @@ func pipeActor(t *testing.T, sys *System, name string, log *[]string, start func
 
 // queued returns the number of entries in c's user mailbox.
 func queued[M any](c *cell[M]) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.user.size()
+	return c.user.Len()
 }
 
 // pipeRun is the outcome of runATMSG24.

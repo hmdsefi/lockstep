@@ -97,9 +97,7 @@ func TestATACT26WatchInvalidAndNotAlive(t *testing.T) {
 		err := errors.New("unset")
 		inTurn(t, sys, eng, pid, func(ctx *Context[any]) {
 			err = Watch(ctx, target)
-			ctx.cell.mu.Lock()
-			queuedBeforeReturn = ctx.cell.sysq.size()
-			ctx.cell.mu.Unlock()
+			queuedBeforeReturn = ctx.cell.sysq.Len()
 		})
 		if err != nil {
 			t.Fatalf("Watch(not alive) = %v, want nil", err)

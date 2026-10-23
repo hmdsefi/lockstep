@@ -18,6 +18,12 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if budget < 1 {
 		panic("lockstep: RunTurn budget " + strconv.Itoa(budget) + " < 1")
 	}
+	c.mu.Lock()
+	held := c.holding()
+	c.mu.Unlock()
+	if held {
+		return false // held by a test (hold.go): nothing runs until the release schedules the cell
+	}
 	var system, u int
 	var first any
 	var firstShown bool // the first user message has a description for lockstep.turn
@@ -49,23 +55,37 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 // failed and no stop has started (ENG-310 step 2).
 func (c *cell[M]) accepting() bool { return c.state == cellRunning }
 
+// popSystem and popUser pop under c.mu, so a hold that starts during a turn stops it at the next
+// pop (hold.go); a held cell pops nothing.
 func (c *cell[M]) popSystem() (sysMsg, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.sysq.pop()
+	if c.holding() {
+		return nil, false
+	}
+	return c.sysq.Pop()
 }
 
+// popUser returns the oldest user entry. The queue's kind is the authority for e.kind.
 func (c *cell[M]) popUser() (entry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.user.pop()
+	if c.holding() {
+		return entry{}, false
+	}
+	e, k, ok := c.user.Pop()
+	e.kind = entryKindOf(k)
+	return e, ok
 }
 
-// hasWork is RunTurn's result (ENG-320).
+// hasWork is RunTurn's result (ENG-320). A held cell has none: its release schedules it.
 func (c *cell[M]) hasWork() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.sysq.size() > 0 || c.accepting() && c.user.size() > 0
+	if c.holding() {
+		return false
+	}
+	return c.sysq.Len() > 0 || c.accepting() && c.user.Len() > 0
 }
 
 // recordTurn emits lockstep.turn for a turn that processed system system messages and u user

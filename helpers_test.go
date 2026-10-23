@@ -13,29 +13,29 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine/local"
 )
 
-// newManualSystem returns a system built through the ACT-015 constructor on a manual engine for
-// node "local" with entropy seed 1 (ACT §10, "manual system").
-func newManualSystem(t *testing.T) (*System, *enginetest.Engine) {
+// newManualSystem returns a system built through the ACT-015 constructor with opts on a manual
+// engine for node "local" with entropy seed 1 (ACT §10, "manual system").
+func newManualSystem(t *testing.T, opts ...Option) (*System, *enginetest.Engine) {
 	t.Helper()
 	eng := enginetest.New("local", 1)
-	sys, err := newSystem(eng.Engine(), nil)
+	sys, err := newSystem(eng.Engine(), opts)
 	if err != nil {
 		t.Fatalf("newSystem on a manual engine: %v", err)
 	}
 	return sys, eng
 }
 
-// newRecordingSystem returns a system built through the ACT-015 constructor on a local engine
-// whose tracer is a new recorder (ACT §10, "recording tracer"). The system shuts down when the
-// test ends.
-func newRecordingSystem(t *testing.T) (*System, *enginetest.Recorder) {
+// newRecordingSystem returns a system built through the ACT-015 constructor with opts on a local
+// engine whose tracer is a new recorder (ACT §10, "recording tracer"). The system shuts down when
+// the test ends.
+func newRecordingSystem(t *testing.T, opts ...Option) (*System, *enginetest.Recorder) {
 	t.Helper()
 	rec := enginetest.NewRecorder()
 	le, err := local.New(local.Config{Node: "local", Tracer: rec})
 	if err != nil {
 		t.Fatalf("local.New: %v", err)
 	}
-	sys, err := newSystem(le.Engine(), nil)
+	sys, err := newSystem(le.Engine(), opts)
 	if err != nil {
 		le.Stop()
 		t.Fatalf("newSystem on a local engine: %v", err)

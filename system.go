@@ -19,7 +19,8 @@ import (
 type System struct {
 	eng         engine.Engine
 	node        string
-	incarnation uint32 // Engine.Epoch; constant for the system's life (ACT-045)
+	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
+	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
 
 	reg          *registry.Registry
 	user, system Address     // the guardians; neither is registered (ACT-030)
@@ -101,6 +102,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 	s := &System{
 		eng:         eng,
 		node:        cfg.node,
+		mbx:         cfg.mbx,
 		incarnation: eng.Epoch,
 		reg:         registry.New(),
 		epoch:       eng.Epoch,

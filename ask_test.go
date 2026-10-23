@@ -185,7 +185,7 @@ func TestATMSG08ConcurrentSends(t *testing.T) {
 				m.Reply.Send(ctx, n)
 			}
 		},
-	}))
+	}), WithMailbox(8000, FailSend)) // room for every Inc even if the counter never runs meanwhile
 	if err != nil {
 		t.Fatal(err)
 	}

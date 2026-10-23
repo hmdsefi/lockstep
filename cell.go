@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/mailbox"
 )
 
 // actorCell is the untyped view of a cell: the registry stores cells as this interface (in an
@@ -47,11 +48,12 @@ const (
 // cell is one actor: the engine.ActorRef that engines schedule (ENG-300). The same cell, with the
 // same Slot, serves every incarnation for the PID's lifetime.
 //
-// Concurrency: mu guards the two queues, which any goroutine may push to while one engine
-// goroutine runs the cell's turn, and the fields under "guarded by mu"; the Slot keeps turns from
-// overlapping. The fields under "turn-owned" are read and written only by RunTurn. No code that
-// holds mu takes the ask table's lock, resolves an ask or calls the engine; only Spawn holds a new
-// cell's mu across Registry.Add (lock order mu, then the registry's). addr is written once, by
+// Concurrency: the two queues are safe for concurrent use: any goroutine may offer to them while
+// one engine goroutine runs the cell's turn, which alone pops. mu makes an enqueue atomic with
+// the fields under "guarded by mu"; the Slot keeps turns from overlapping. The fields under
+// "turn-owned" are read and written only by RunTurn. No code that holds mu takes the ask table's
+// lock, resolves an ask or calls the engine; only Spawn holds a new cell's mu across
+// Registry.Add (lock order mu, then the registry's, then a queue's). addr is written once, by
 // Spawn while it holds mu and before the cell's first Ready; code that reaches the cell through
 // the registry reads it only after taking mu (as every enqueue does), and turns read it freely.
 type cell[M any] struct {
@@ -61,14 +63,20 @@ type cell[M any] struct {
 	factory func() Actor[M]
 	slot    engine.Slot // a named field: ActorRef needs a Slot method (ENG-300)
 
-	mu   sync.Mutex
-	sysq fifo[sysMsg] // system queue (MBX-010's SystemQueue in plan 1.3)
-	user fifo[entry]  // user mailbox (MBX's mailbox.Queue[entry] in plan 1.3)
+	// The queues are set when the cell is built and never replaced: the mailbox keeps its capacity
+	// and policy for the life of the cell, across restarts (MBX-010).
+	sysq *mailbox.SystemQueue[sysMsg]
+	user *mailbox.Queue[entry]
+
+	mu sync.Mutex
 
 	// guarded by mu
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)
 	stopReq bool   // a stop request was queued; later ones are discarded (SUP-050, ACT-710)
 	liveInc uint32 // the live incarnation's number, 0 while none is live: Pipe checks it (MSG-610)
+	// held and heldReady are the test-only hold hook (hold.go): the cell runs no turn while held,
+	// and heldReady remembers a Ready or a turn that the hold swallowed.
+	held, heldReady bool
 
 	// turn-owned
 	state   cellState
@@ -83,6 +91,18 @@ type cell[M any] struct {
 	// turn-owned, from cellStopping on (stop.go)
 	stopReason StopReason // the reason of the one stop request
 	waitChild  Address    // the child whose stopped notice the stop sequence waits for, or zero
+}
+
+// newCell returns a cell whose user mailbox has the capacity and policy mbx, which the caller has
+// validated, and whose system queue is unbounded (MBX-010).
+func newCell[M any](sys *System, parent Address, factory func() Actor[M], mbx mailboxConfig) *cell[M] {
+	return &cell[M]{
+		sys:     sys,
+		parent:  parent,
+		factory: factory,
+		sysq:    mailbox.NewSystemQueue[sysMsg](),
+		user:    mailbox.New[entry](mbx.capacity, mbx.policy.queuePolicy()),
+	}
 }
 
 // Address returns the actor's address (engine.ActorRef).
@@ -103,23 +123,28 @@ func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
 		c.mu.Unlock()
 		return
 	}
-	c.sysq.push(m)
+	c.sysq.Push(m)
 	c.mu.Unlock()
-	c.sys.ready(c, from)
+	c.schedule(from)
 }
 
 // offerUser appends e to the user mailbox and then schedules the cell (ENG-350). from is the cell
 // whose turn enqueues, or nil (actorCell). It reports false, and enqueues nothing, when the
-// mailbox is closed (MBX-150 (b)). Plan 1.3's mailbox policies decide here whether the entry fits.
+// mailbox is closed (MBX-150 (b)). The queue's policy decides what a full mailbox does with the
+// entry (MBX-040 to MBX-060); until the send results of MBX-090 exist, a full mailbox reports true
+// whether or not the entry was kept.
 func (c *cell[M]) offerUser(e entry, from engine.ActorRef) bool {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return false
 	}
-	c.user.push(e)
+	out, _ := c.user.Offer(e, e.kind.queueKind(), false)
 	c.mu.Unlock()
-	c.sys.ready(c, from)
+	if out == mailbox.Closed {
+		return false
+	}
+	c.schedule(from)
 	return true
 }
 
@@ -132,9 +157,12 @@ func (c *cell[M]) offerSelf(e entry) bool {
 		c.mu.Unlock()
 		return false
 	}
-	c.user.push(e)
+	out, _ := c.user.Offer(e, mailbox.Self, false)
 	c.mu.Unlock()
-	c.sys.ready(c, nil)
+	if out == mailbox.Closed {
+		return false
+	}
+	c.schedule(nil)
 	return true
 }
 
@@ -148,9 +176,9 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 		return
 	}
 	c.stopReq = true
-	c.sysq.push(stop{reason: reason})
+	c.sysq.Push(stop{reason: reason})
 	c.mu.Unlock()
-	c.sys.ready(c, from)
+	c.schedule(from)
 }
 
 // closeQueues closes both queues for the final stop and empties them (SUP-060 step 5): it
@@ -161,16 +189,12 @@ func (c *cell[M]) closeQueues() []entry {
 	defer c.mu.Unlock()
 	c.closed = true
 	var sent []entry
-	for {
-		e, ok := c.user.pop()
-		if !ok {
-			break
-		}
-		if e.kind == entrySent {
-			sent = append(sent, e)
+	for _, qe := range c.user.Close() {
+		if qe.Kind == mailbox.Sent {
+			sent = append(sent, qe.V)
 		}
 	}
-	c.sysq = fifo[sysMsg]{}
+	c.sysq.Close()
 	return sent
 }
 
@@ -180,6 +204,17 @@ func (c *cell[M]) closeQueues() []entry {
 func (c *cell[M]) handlerFailed(err error) {
 	c.failure = err
 	c.state = cellFailed
+}
+
+// schedule asks the engine to run c after an enqueue (ENG-350), unless c is held (hold.go). from is
+// the cell whose turn enqueues, or nil. The caller holds no lock.
+func (c *cell[M]) schedule(from engine.ActorRef) {
+	c.mu.Lock()
+	held := c.holding()
+	c.mu.Unlock()
+	if !held {
+		c.sys.ready(c, from)
+	}
 }
 
 // ready schedules a after an enqueue (ENG-350): through ReadyFrom when the enqueue happens during
@@ -211,25 +246,8 @@ type begin struct{}
 
 func (begin) isSysMsg() {}
 
-// entryKind tells how an entry reached the user mailbox (MBX).
-type entryKind uint8
-
-const (
-	entrySent entryKind = iota + 1 // Send or Ask: counts against capacity in plan 1.3
-	entrySelf                      // a piped reply, timer message or effect result of incarnation inc
-)
-
-// entry is one user-mailbox element, MBX §11's shape without plan 1.3's seq and timer fields.
-type entry struct {
-	msg  any     // the M
-	from Address // the sender
-	ask  Address // MBX-092's ask address of a request, zero otherwise; Ask sets it
-	inc  uint32  // entrySelf's incarnation (MBX-170); Pipe sets it
-	kind entryKind
-}
-
-// fifo is an unbounded first-in, first-out queue, the placeholder for plan 1.3's mailbox queues.
-// It is not safe for concurrent use; the cell's mu guards it.
+// fifo is an unbounded first-in, first-out queue for the guardian sweep's messages (system.go). It
+// is not safe for concurrent use; its owner's mu guards it.
 type fifo[T any] struct {
 	buf  []T
 	head int // index of the oldest element
@@ -256,6 +274,3 @@ func (q *fifo[T]) pop() (v T, ok bool) {
 	}
 	return v, true
 }
-
-// size returns the number of elements.
-func (q *fifo[T]) size() int { return len(q.buf) - q.head }
