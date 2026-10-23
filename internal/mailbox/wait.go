@@ -32,12 +32,12 @@ func (q *Queue[T]) OfferWait(ctx context.Context, v T, admit func() bool) (Outco
 	return q.OfferWaitNotify(ctx, v, admit, nil)
 }
 
-// OfferWaitNotify is OfferWait, except that it calls waiting, if not nil, once when the entry
+// OfferWaitNotify is OfferWait, except that it calls notify, if not nil, once when the entry
 // joins the line, before it waits for the first time; it is not called when OfferWait returns
-// without waiting. waiting runs without the queue's lock held, so it may call the queue; the
-// entry may be handed a slot, or the queue closed, while it runs. If waiting panics, the entry
+// without waiting. notify runs without the queue's lock held, so it may call the queue; the
+// entry may be handed a slot, or the queue closed, while it runs. If notify panics, the entry
 // leaves the line, unless it was handed a slot meanwhile, and the panic propagates.
-func (q *Queue[T]) OfferWaitNotify(ctx context.Context, v T, admit func() bool, waiting func()) (Outcome, T, error) {
+func (q *Queue[T]) OfferWaitNotify(ctx context.Context, v T, admit func() bool, notify func()) (Outcome, T, error) {
 	var zero T
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -59,8 +59,8 @@ func (q *Queue[T]) OfferWaitNotify(ctx context.Context, v T, admit func() bool, 
 
 	w := &waiter[T]{v: v, admit: admit}
 	q.waiters = append(q.waiters, w)
-	if waiting != nil {
-		q.notify(w, waiting)
+	if notify != nil {
+		q.notify(w, notify)
 	}
 	// The callback takes the lock so that its Broadcast cannot fall between this goroutine's check
 	// of ctx and its cond.Wait. stop never waits for a running callback, so calling it with the

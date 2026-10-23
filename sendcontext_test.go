@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -160,6 +161,72 @@ func TestSendContextActorSender(t *testing.T) {
 	if n := cellOf(t, sys, tp).user.Len(); n != 1 {
 		t.Errorf("the mailbox holds %d messages, want 1", n)
 	}
+}
+
+// MBX §7: SendContext panics for a nil ctx, before it checks the Sender, from an outside sender
+// and from an actor alike, and sends nothing.
+func TestSendContextNilContext(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	p, _ := spawnProbe[any](t, sys, "p", nil)
+	tp := spawnTarget(t, sys, "t", 1, BlockSender)
+	const want = "lockstep: SendContext: nil context"
+	var nilCtx context.Context
+	before := len(rec.Records())
+
+	if v := mustPanic(t, func() { _ = SendContext(nilCtx, sys, tp, 1) }); v != want {
+		t.Errorf("SendContext(nil, sys, ...) panicked with %v, want %q", v, want)
+	}
+	if v := mustPanic(t, func() { _ = SendContext(nilCtx, nil, tp, 2) }); v != want {
+		t.Errorf("SendContext(nil, nil, ...) panicked with %v, want %q", v, want)
+	}
+	v := inProbe(t, sys, p, func(c *Context[any]) (v any) {
+		defer func() { v = recover() }()
+		_ = SendContext(nilCtx, c, tp, 3)
+		return nil
+	})
+	if v != want {
+		t.Errorf("SendContext(nil, ctx, ...) from an actor panicked with %v, want %q", v, want)
+	}
+	if got := rendered(rec.Records(), before, tp.Address(), "lockstep.send", "lockstep.deliver", "lockstep.mailbox.full"); len(got) != 0 {
+		t.Errorf("records after the panicking calls: %q, want none", got)
+	}
+}
+
+// MBX-090, MBX-150, MBX-160: an outside sender waiting on a BlockSender mailbox whose actor stops
+// is woken by the stop's close. Its message becomes a dead letter with reason stopped, like the
+// queued one the stop drains, and SendContext returns nil.
+func TestSendContextTargetStopsWhileWaiting(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	tp := spawnTarget(t, sys, "t", 1, BlockSender)
+	to := tp.Address()
+	release := hold(t, sys, to)
+	defer release()
+	send(t, sys, tp, 1)
+	c := cellOf(t, sys, tp)
+	before := len(rec.Records())
+
+	ch := sendContextAsync(context.Background(), sys, tp, 2)
+	waitingSenders(t, c, 1)
+	if err := Stop(sys, to); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	release() // the stop runs before any user message, so the waiter never gets a slot
+	if err := sendReturned(t, ch); err != nil {
+		t.Errorf("SendContext to an actor that stopped while the sender waited = %v, want nil", err)
+	}
+	if n := c.user.Waiting(); n != 0 {
+		t.Errorf("%d senders still wait, want 0", n)
+	}
+	from := sys.user.String()
+	full := rendered(rec.Records(), before, to, "lockstep.mailbox.full")
+	sameLines(t, "mailbox.full records", full, []string{blockedFull(sys.user, to, "blocked", "2")})
+	// The drain (msg 1) and the woken sender (msg 2) record on different goroutines.
+	dead := rendered(rec.Records(), before, to, "lockstep.deadletter")
+	slices.Sort(dead)
+	sameLines(t, "dead letters", dead, []string{
+		"lockstep.deadletter from=" + from + " to=" + to.String() + " reason=stopped msg=1",
+		"lockstep.deadletter from=" + from + " to=" + to.String() + " reason=stopped msg=2",
+	})
 }
 
 // MBX-070, MBX §7: a context cancelled while the sender waits makes SendContext return
