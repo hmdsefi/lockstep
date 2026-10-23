@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"context"
 	"reflect"
 	"sync"
 
@@ -26,6 +27,16 @@ type actorCell interface {
 	// the entry the mailbox evicted. The outcome is Closed, and nothing is enqueued, when the cell
 	// has completed its final stop (MBX-150 (b)).
 	offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, entry)
+	// blocksSenders reports whether the user mailbox's policy is BlockSender.
+	blocksSenders() bool
+	// userQueue returns the user mailbox, to list it while senders wait on it (MBX-075).
+	userQueue() *mailbox.Queue[entry]
+	// offerWait offers the Sent entry e of an outside sender to the BlockSender user mailbox and
+	// waits while the mailbox is full, admit reports false or other senders wait, until the entry
+	// is enqueued, the mailbox closes or ctx ends (MBX-070); then the outcome is Rejected and the
+	// error ctx.Err(). waiting is called once, holding no lock, when the sender starts waiting. It
+	// schedules the cell when the mailbox took the entry (ENG-350). The caller holds no lock.
+	offerWait(ctx context.Context, e entry, admit func() bool, waiting func()) (mailbox.Outcome, error)
 	// mailboxState returns the number of entries in the user mailbox, its capacity and its policy,
 	// for the records of MBX §8.
 	mailboxState() (length, capacity int, policy MailboxPolicy)
@@ -161,6 +172,26 @@ func (c *cell[M]) offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, ent
 		c.schedule(from)
 	}
 	return out, evicted
+}
+
+// blocksSenders reports whether the user mailbox's policy is BlockSender (actorCell).
+func (c *cell[M]) blocksSenders() bool { return c.user.Policy() == mailbox.BlockSender }
+
+// userQueue returns the user mailbox (actorCell).
+func (c *cell[M]) userQueue() *mailbox.Queue[entry] { return c.user }
+
+// offerWait offers e to the BlockSender user mailbox and waits for a slot (actorCell). It takes no
+// cell lock: a waiter holding mu would keep the turn from popping and so from freeing a slot. The
+// queue's own closed state refuses the entry after the final stop, which closes the queue under
+// mu (MBX-150 (b)). A slot handed over by the turn's Pop or by Recheck comes with no Ready of its
+// own, so the cell is scheduled here; the Slot ignores a Ready for a cell that is scheduled or
+// running already.
+func (c *cell[M]) offerWait(ctx context.Context, e entry, admit func() bool, waiting func()) (mailbox.Outcome, error) {
+	out, _, err := c.user.OfferWaitNotify(ctx, e, admit, waiting)
+	if out == mailbox.Enqueued {
+		c.schedule(nil)
+	}
+	return out, err
 }
 
 // mailboxState returns the user mailbox's length, capacity and policy (actorCell).
