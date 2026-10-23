@@ -12,15 +12,16 @@ import (
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
+// sim registers no fault planner and no role, and never calls World.Faults: kernel faults reach
+// lockstep nodes only through faultline (SFT-010). lockstep's own faults are the Sim methods below
+// and in pairs.go and pressure.go, recorded as lockstep.fault (SFT-030).
+
 // InjectFail makes the actor at addr fail with err, as if its handler had called ctx.Fail(err):
 // the failure reaches its supervisor with source "injected". It takes effect at the actor's next
 // turn, and no user message is consumed. It returns an error wrapping lockstep.ErrNotFound if
 // addr names no live actor, and one wrapping lockstep.ErrStopped if addr's node is down. It
 // panics if err is nil, or if addr names a node that is not a lockstep node of this Sim. Every
-// call records lockstep.fault with op=inject-fail (SFT-030).
-//
-// sim registers no fault planner and no role, and never calls World.Faults: kernel faults reach
-// lockstep nodes only through faultline (SFT-010).
+// call records lockstep.fault with op=inject-fail.
 func (s *Sim) InjectFail(addr lockstep.Address, err error) error {
 	s.check()
 	if err == nil {
@@ -41,7 +42,7 @@ func (s *Sim) InjectFail(addr lockstep.Address, err error) error {
 // StopActor stops the actor at addr for good, as lockstep.Stop does with the node's System as
 // sender, and returns that call's error, or one wrapping lockstep.ErrStopped if addr's node is
 // down. It panics if addr names a node that is not a lockstep node of this Sim. Every call
-// records lockstep.fault with op=stop (SFT-050).
+// records lockstep.fault with op=stop.
 func (s *Sim) StopActor(addr lockstep.Address) error {
 	s.check()
 	id, sys, rerr := s.faultTarget(addr)
@@ -71,9 +72,8 @@ func (s *Sim) faultTarget(addr lockstep.Address) (kernel.NodeID, *lockstep.Syste
 	return ln.n.ID(), sys, nil
 }
 
-// recordFault emits lockstep.fault for the fault op on kernel node node, with op as its first
-// attribute followed by attrs (SFT §8). The delay and drop faults of pair rules record through it
-// too.
+// recordFault emits lockstep.fault on kernel node node (0 for none) with op=<op> first, then
+// attrs (SFT §8). The delay and drop faults of pair rules record through it too.
 func (s *Sim) recordFault(node kernel.NodeID, op string, attrs ...kernel.Attr) {
 	all := make([]kernel.Attr, 0, len(attrs)+1)
 	all = append(all, kernel.Attr{Key: "op", Value: op})
