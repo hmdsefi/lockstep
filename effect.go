@@ -60,8 +60,8 @@ type EffectID uint64
 // EffectOption configures one Do call.
 type EffectOption func(*effectConfig)
 
-// effectConfig is what the options of one Do call set. bad holds the first non-positive timeout
-// an option was given: Do panics for it after it has applied every option.
+// effectConfig is what the options of one Do call set. hasBad and badTimeout hold the first
+// non-positive timeout an option was given: Do panics for it after it has applied every option.
 type effectConfig struct {
 	timeout    time.Duration
 	hasBad     bool
@@ -69,7 +69,7 @@ type effectConfig struct {
 }
 
 // WithEffectTimeout sets the effect's timeout, measured on the engine's clock from the Do call.
-// Do panics if d is not positive. Of several WithEffectTimeout options the last one counts.
+// Do panics if d is not positive.
 func WithEffectTimeout(d time.Duration) EffectOption {
 	return func(c *effectConfig) {
 		if d <= 0 {
@@ -88,8 +88,7 @@ func WithEffectTimeout(d time.Duration) EffectOption {
 // actor's turn, never concurrently with Receive. If the incarnation ends first, done is never
 // called.
 //
-// Called from Stopped, Do starts nothing and returns 0. Do panics if e is nil, e.Name() is
-// invalid, done is nil, or an option is nil or invalid.
+// Do panics if e is nil, e.Name() is invalid, done is nil, or an option is invalid.
 func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...EffectOption) EffectID {
 	ctx.mustInTurn()
 	// EFF-010's checks, in its order.
@@ -152,14 +151,16 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 		)
 	}
 	// The effect is in the table before the timer or the engine can call back, which on the local
-	// engine may be another goroutine before this one returns from Start.
+	// engine may be another goroutine before this one returns from Start. The timer's callback
+	// never reads cancelTimer, and the engine's done function cannot run before Start, so the
+	// timer is armed outside the lock and cancelTimer needs none.
 	c.emu.Lock()
 	if c.effects == nil {
 		c.effects = make(map[EffectID]*pendingEffect[M])
 	}
 	c.effects[id] = pe
-	pe.cancelTimer = eng.Clock.AfterFunc(cfg.timeout, effectTimeoutLabel, func() { c.effectTimedOut(pe) })
 	c.emu.Unlock()
+	pe.cancelTimer = eng.Clock.AfterFunc(cfg.timeout, effectTimeoutLabel, func() { c.effectTimedOut(pe) })
 
 	cancel := eng.Effects.Start(engine.EffectRequest{
 		ID:    uint64(id),
@@ -179,8 +180,10 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 		return id
 	}
 	c.emu.Unlock()
-	// The effect's outcome came in before Start returned. After a result, Cancel does nothing; after
-	// a timeout, whose callback had no Cancel to call yet, it ends the engine's work (EFF-090).
+	// The effect's outcome came in before Start returned. After a result, Cancel does nothing. A
+	// timeout that fired this early had no Cancel to call: it delivered ErrTimeout, and the Cancel
+	// that ends the engine's work follows here. That is the one case in which done's message can
+	// precede the engine's Cancel; otherwise EFF-090's order holds.
 	cancel()
 	return id
 }
@@ -203,8 +206,10 @@ func validEffectName(name string) bool {
 }
 
 // pendingEffect is one effect of a cell that has no outcome yet (EFF §3, §11). It belongs to the
-// incarnation inc that called Do. id, name, inc and bind never change; cancelTimer and cancelRun
-// are guarded by the cell's emu, and the effect is pending exactly while the cell's table holds it.
+// incarnation inc that called Do. id, name, inc and bind never change; cancelRun is guarded by the
+// cell's emu, and the effect is pending exactly while the cell's table holds it. Do sets
+// cancelTimer before it calls Effects.Start, and only effectDone, which the engine calls after
+// Start, reads it.
 type pendingEffect[M any] struct {
 	id   EffectID
 	name string
@@ -224,17 +229,17 @@ type effectResult[M any] struct {
 	call func() M
 }
 
-// takeEffect removes pe from the table and returns its Cancel functions, or ok false when pe is
-// no longer pending: the first of the engine's result and the timeout to take it is the
-// effect's one outcome. It never runs user code.
-func (c *cell[M]) takeEffect(pe *pendingEffect[M]) (cancelTimer, cancelRun engine.Cancel, ok bool) {
+// takeEffect removes pe from the table and returns the engine's Cancel, nil before Start has
+// returned, or ok false when pe is no longer pending: the first of the engine's result and the
+// timeout to take it is the effect's one outcome. It never runs user code.
+func (c *cell[M]) takeEffect(pe *pendingEffect[M]) (cancelRun engine.Cancel, ok bool) {
 	c.emu.Lock()
 	defer c.emu.Unlock()
 	if c.effects[pe.id] != pe {
-		return nil, nil, false
+		return nil, false
 	}
 	delete(c.effects, pe.id)
-	return pe.cancelTimer, pe.cancelRun, true
+	return pe.cancelRun, true
 }
 
 // cancelEffect cancels pe if it is still pending (EFF-100, EFF-110) and reports whether it did: it
@@ -275,11 +280,10 @@ func (c *cell[M]) cancelEffects() {
 // ignored without a record. Otherwise the timeout timer is cancelled and the outcome follows err:
 // ErrOverloaded when the engine refused the effect, an error when err is not nil, ok otherwise.
 func (c *cell[M]) effectDone(pe *pendingEffect[M], v any, err error) {
-	cancelTimer, _, ok := c.takeEffect(pe)
-	if !ok {
+	if _, ok := c.takeEffect(pe); !ok {
 		return
 	}
-	cancelTimer()
+	pe.cancelTimer()
 	outcome := outcomeOK
 	switch {
 	case errors.Is(err, engine.ErrOverloaded):
@@ -292,10 +296,10 @@ func (c *cell[M]) effectDone(pe *pendingEffect[M], v any, err error) {
 
 // effectTimedOut is the callback of the effect's timeout timer (EFF-090), which runs in engine
 // context. If the effect is still pending it calls the engine's Cancel, then delivers ErrTimeout.
-// A timer that fires before Start has returned has no Cancel to call: Do calls it when Start
-// returns.
+// A timer that fires before Start has returned has no Cancel to call: ErrTimeout is delivered
+// first, and Do calls the Cancel when Start returns.
 func (c *cell[M]) effectTimedOut(pe *pendingEffect[M]) {
-	_, cancelRun, ok := c.takeEffect(pe)
+	cancelRun, ok := c.takeEffect(pe)
 	if !ok {
 		return
 	}

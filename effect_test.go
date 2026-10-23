@@ -185,8 +185,8 @@ func TestEFF010DoPanics(t *testing.T) {
 		if want := []EffectID{1, 2, 3, 4, 5}; !slices.Equal(ids, want) {
 			t.Errorf("IDs = %v, want %v", ids, want)
 		}
-		if n := len(eng.Records()); len(failErrs(eng.Records())) != 0 {
-			t.Errorf("a valid name failed the actor (%d records)", n)
+		if errs := failErrs(eng.Records()); len(errs) != 0 {
+			t.Errorf("a valid name failed the actor: %q", errs)
 		}
 	})
 
