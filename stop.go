@@ -60,10 +60,11 @@ func (c *cell[M]) ending() bool {
 }
 
 // startStop processes the stop request (SUP-060 step 1): the cell changes to Stopping and pops no
-// more user messages; if an incarnation is live, its timers are cancelled (TMR-080) and its
-// watches leave every watcher list and its watched set (SUP-340, ACT-640). Then the children start
-// to stop (step 2). A request that reaches the cell before its begin finds it Starting with no
-// incarnation: it stops with inc 0 (SUP-010).
+// more user messages; if an incarnation is live, its timers are cancelled (TMR-080), its pending
+// effects are cancelled in ID order (EFF-100), and its watches leave every watcher list and its
+// watched set (SUP-340, ACT-640). Then the children start to stop (step 2). A request that
+// reaches the cell before its begin finds it Starting with no incarnation: it stops with inc 0
+// (SUP-010).
 //
 // A cell in Restarting has done step 1 already, when its restart began (SUP-190 step 1). If it is
 // still stopping its children for the restart, the stop replaces the restart: it waits for the
