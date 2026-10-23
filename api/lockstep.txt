@@ -36,6 +36,7 @@ pkg github.com/hmdsefi/lockstep, func OneForOne(func(error) Directive) Strategy
 pkg github.com/hmdsefi/lockstep, func PIDAt[M any](string, string) PID[M]
 pkg github.com/hmdsefi/lockstep, func Pipe[R any, M any](*Context[M], *Reply[R], func(R, error) M)
 pkg github.com/hmdsefi/lockstep, func Restarting(error) StopReason
+pkg github.com/hmdsefi/lockstep, func SendContext[M any](context.Context, Sender, PID[M], M) error
 pkg github.com/hmdsefi/lockstep, func Send[M any](Sender, PID[M], M) error
 pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor[M], ...SpawnOption) (PID[M], error)
 pkg github.com/hmdsefi/lockstep, func Stop(Sender, Address) error

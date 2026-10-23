@@ -35,7 +35,8 @@ type System struct {
 	spawnMu sync.RWMutex
 	shut    shutdownState
 
-	asks askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
+	asks    askTable // pending asks of this system's askers and tracked asks of its actors (MSG §11)
+	waiting waitSet  // the user mailboxes that outside senders wait on (MBX-075)
 
 	// afterRegister, when set, is called by Spawn with the new cell between its registration and
 	// the push of its begin. It is a test hook; production code never sets it.
