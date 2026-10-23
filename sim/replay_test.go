@@ -147,7 +147,7 @@ func TestATSFT20ReplayWithLockstepFaults(t *testing.T) {
 }
 
 // sftFiles are the non-test files of sim that implement SFT.
-var sftFiles = []string{"faults.go", "interpose.go", "pairs.go", "pressure.go"}
+var sftFiles = []string{"budget.go", "faults.go", "interpose.go", "pairs.go", "pressure.go"}
 
 // AT-SFT-21, SFT-190: AT-SIM-31's static check covers the SFT files; every SFT misuse panics, and
 // the calls that return errors store no failure; the failing scenario of AT-SFT-20 reports a check
