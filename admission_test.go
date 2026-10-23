@@ -113,6 +113,28 @@ func offerRecords(recs []engine.Record, from int, to Address) []string {
 	return withoutLen(out)
 }
 
+// waitRecorded waits up to 10 s until rec holds, from index from on, a record that renders as want
+// once len is removed. A waiting sender writes its waiting record after it joins the line and
+// without the mailbox's lock, so Waiting() can count it before the record exists; a test that
+// writes a record of its own next waits for the sender's first.
+func waitRecorded(t *testing.T, rec *enginetest.Recorder, from int, want string) {
+	t.Helper()
+	want = lenAttr.ReplaceAllString(want, "")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		recs := rec.Records()
+		for _, r := range recs[from:] {
+			if lenAttr.ReplaceAllString(render(r), "") == want {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no record %q after 10 s", want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // signalLog is an any actor that logs the strings and Balances it receives and the Terminated
 // signals it gets, and passes every message to receive, if set.
 type signalLog struct {
@@ -468,6 +490,7 @@ func TestOVL150RecheckReleasesWaiter(t *testing.T) {
 		before := len(rec.Records())
 		ch := sendContextAsync(context.Background(), sys, tp, 1)
 		waitingSenders(t, cellOf(t, sys, tp), 1)
+		waitRecorded(t, rec, before, shedRecord(sys.user, to, BlockSender, "none"))
 		adm.refuseSends(nil)
 		adm.change(pressure(false, false))
 		if err := sendReturned(t, ch); err != nil {
@@ -518,11 +541,16 @@ func TestATMBX11WaitingRowAdmission(t *testing.T) {
 		adm.change(pressure(true, true))
 		adm.refuseSends(shedPressure)
 		before := len(rec.Records())
+		from := sys.user.String()
+		blocked := "lockstep.mailbox.full from=" + from + " to=" + to.String() + " policy=block-sender action=blocked" +
+			" cause=capacity cap=1 len=0 msg=2"
 		ch1 := sendContextAsync(context.Background(), sys, tp, 1)
 		waitingSenders(t, cellOf(t, sys, tp), 1)
+		waitRecorded(t, rec, before, shedRecord(sys.user, to, BlockSender, "none"))
 		adm.refuseSends(nil)
 		ch2 := sendContextAsync(context.Background(), sys, tp, 2) // admitted, but behind a waiter
 		waitingSenders(t, cellOf(t, sys, tp), 2)
+		waitRecorded(t, rec, before, blocked)
 		adm.change(pressure(false, false))
 		if err := sendReturned(t, ch1); err != nil {
 			t.Errorf("first SendContext = %v, want nil", err)
@@ -534,11 +562,9 @@ func TestATMBX11WaitingRowAdmission(t *testing.T) {
 		if a, b := recv(t, got), recv(t, got); a != 1 || b != 2 {
 			t.Errorf("the target received %d, %d, want 1, 2", a, b)
 		}
-		from := sys.user.String()
 		sameLines(t, "records", offerRecords(rec.Records(), before, to), withoutLen([]string{
 			shedRecord(sys.user, to, BlockSender, "none"),
-			"lockstep.mailbox.full from=" + from + " to=" + to.String() + " policy=block-sender action=blocked" +
-				" cause=capacity cap=1 len=0 msg=2",
+			blocked,
 			"lockstep.overload event=off reason=pressure live=0 high=0 low=0 shedding=false",
 			"lockstep.deliver from=" + from + " to=" + to.String() + " seq=0 len=1 msg=1",
 			"lockstep.deliver from=" + from + " to=" + to.String() + " seq=0 len=1 msg=2",
@@ -557,6 +583,7 @@ func TestATMBX11WaitingRowAdmission(t *testing.T) {
 		before := len(rec.Records())
 		ch := sendContextAsync(context.Background(), sys, tp, 2)
 		waitingSenders(t, cellOf(t, sys, tp), 1)
+		waitRecorded(t, rec, before, shedRecord(sys.user, to, BlockSender, "none"))
 		adm.refuseSends(nil)
 		adm.change(pressure(false, false)) // admitting, but no room yet
 		waitingSenders(t, cellOf(t, sys, tp), 1)
