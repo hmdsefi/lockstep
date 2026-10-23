@@ -33,6 +33,11 @@ type Context[M any] struct {
 	// call, and Spawn reads it during that call.
 	rebuild bool
 
+	// overloadSub is set while the incarnation is subscribed to Overloaded (OVL-170). Turn-owned:
+	// SubscribeOverload and UnsubscribeOverload set it, signal delivery reads it, and the stop
+	// sequence clears it in the turn that starts the end of the incarnation.
+	overloadSub bool
+
 	// owned is the incarnation's resource list in registration order (SUP-120). Turn-owned:
 	// Own appends in a turn of this incarnation, and the stop sequence closes the list after
 	// Stopped, in the turn that completes the stop. The next incarnation has a Context and so a

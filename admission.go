@@ -39,18 +39,41 @@ func (s *System) bindAdmission() { s.eng.Admission.Bind(s.admissionChanged, s.us
 // admission; a released waiter schedules its target itself (ENG-350).
 func (s *System) admissionChanged(c engine.AdmissionChange) {
 	s.recordAdmissionChange(c)
-	s.adm.mu.Lock()
-	switch {
-	case !c.Shedding:
-		s.adm.period = engine.AdmissionChange{}
-	case !s.adm.shedding.Load():
-		s.adm.period = c
+	// The change of the state and the signals it causes go out together, so that a subscription
+	// made meanwhile either is in the change's list or sees its state (OVL-180, OVL-190).
+	s.ovl.deliver.Lock()
+	if s.adm.apply(c) {
+		s.signalOverload(c)
 	}
-	s.adm.shedding.Store(c.Shedding)
-	s.adm.mu.Unlock()
+	s.ovl.deliver.Unlock()
 	if !c.Shedding {
 		s.waiting.recheck()
 	}
+}
+
+// apply records the change c in the state and reports whether it changed the combined state, that
+// is whether the system started or stopped shedding. A source that turns on while another is on,
+// or off while another stays on, changes nothing else (OVL-150).
+func (a *admissionState) apply(c engine.AdmissionChange) (changed bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	changed = a.shedding.Load() != c.Shedding
+	switch {
+	case !c.Shedding:
+		a.period = engine.AdmissionChange{}
+	case changed:
+		a.period = c
+	}
+	a.shedding.Store(c.Shedding)
+	return changed
+}
+
+// shedPeriod returns the change that started the current shedding period, and whether the system
+// sheds.
+func (a *admissionState) shedPeriod() (start engine.AdmissionChange, shedding bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.period, a.shedding.Load()
 }
 
 // shedding reports whether the system sheds: a source is on (OVL-150).

@@ -89,14 +89,18 @@ func (c *cell[M]) startStop(reason StopReason) {
 }
 
 // endIncarnationWork is step 1 of SUP-060 and SUP-190 for a live incarnation: its watches leave
-// every watcher list and its watched set (SUP-340, ACT-640). Cancelling the incarnation's timers
-// (TMR-080) and effects (EFF) belongs here too.
+// every watcher list and its watched set (SUP-340, ACT-640), and its Overloaded subscription ends
+// (OVL-170). Cancelling the incarnation's timers (TMR-080) and effects (EFF) belongs here too.
 func (c *cell[M]) endIncarnationWork() {
 	if c.ctx == nil {
 		return
 	}
 	c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
 	c.ctx.watched = watchedSet{}
+	if c.ctx.overloadSub {
+		c.ctx.overloadSub = false
+		c.sys.unsubscribeOverload(c, c.ctx.inc)
+	}
 }
 
 // stopNextChild asks the most recently spawned child that has not stopped to stop, and waits for
