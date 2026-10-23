@@ -142,12 +142,17 @@ func (t *askTable) arm(p *pendingAsk, cancel engine.Cancel) {
 }
 
 // pendingAsks returns a copy of each pending ask of s, with its ask address, asker, target and
-// timer, in ask-counter order (MSG-370). The order comes from the table's slice, never from its
-// map. Plan 1.4 wires hooks.PendingAsks, SIM's deadlock-detection accessor, to it.
+// timer, in ask-counter order (MSG-370), and nil once s is stopped or discarded. The order comes
+// from the table's slice, never from its map. hooks.PendingAsks, SIM's accessor, returns it. The
+// stopped mark is read under the table's lock, as askTable.stop sets it, so a system whose stop
+// is resolving its asks already reports none.
 func (s *System) pendingAsks() []pendingAsk {
 	t := &s.asks
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if s.stopped.Load() || len(t.pending) == 0 {
+		return nil
+	}
 	out := make([]pendingAsk, 0, len(t.pending))
 	for _, p := range t.order {
 		if !p.removed {
