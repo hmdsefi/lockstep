@@ -186,9 +186,27 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/sim, func Send[M any](*Sim, string, lockstep.PID[M], M) error
 pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Sim))
 pkg github.com/hmdsefi/lockstep/sim, func SimulateSeeds(*testing.T, Options, func(*Sim), ...uint64)
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Client(string, func(*lockstep.System), ...kernel.NodeOption) *kernel.Node
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Counts() Counts
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Node(string, func(*lockstep.System), ...kernel.NodeOption) *kernel.Node
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) System(string) *lockstep.System
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) World() *faultline.World
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Asks uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, DeadLetters uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Deliveries uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Drops uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Effects uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Failures uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, MailboxFull uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Restarts uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Sends uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Spawns uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Timeouts uint64
+pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Turns uint64
 pkg github.com/hmdsefi/lockstep/sim, type Options struct
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, System []lockstep.Option
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, embedded faultline.Options

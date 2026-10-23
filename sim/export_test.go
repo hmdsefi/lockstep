@@ -3,6 +3,8 @@
 
 package sim
 
+import "github.com/hmdsefi/lockstep/internal/engine"
+
 // ApplyEnv exposes applyEnv to the external tests.
 var ApplyEnv = applyEnv
 
@@ -16,3 +18,18 @@ const (
 
 // Store exposes store to the external tests.
 func (s *Sim) Store(check string, err error) { s.store(check, err) }
+
+// EngineBundle is the engine bundle type, for the external tests.
+type EngineBundle = engine.Engine
+
+// Stored returns the failure stored in the slot of check, or nil.
+func (s *Sim) Stored(check string) error { return s.slots[slot(check)] }
+
+// Engine returns the engine bundle of node name's latest boot, or the zero bundle before the first
+// boot or after a boot that built no system.
+func (s *Sim) Engine(name string) engine.Engine {
+	if e := s.lookup(name).eng; e != nil {
+		return e.bundle
+	}
+	return engine.Engine{}
+}
