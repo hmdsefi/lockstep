@@ -10,7 +10,6 @@ import (
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/lockstep"
-	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
@@ -39,9 +38,8 @@ type node struct {
 
 	// Set at each boot. sys is nil before the first boot and after a boot whose system could
 	// not be built.
-	eng  *simEngine
-	sys  *lockstep.System
-	host engine.Host // the system's inbound side, for the transport (SIM-170)
+	eng *simEngine
+	sys *lockstep.System
 }
 
 // World returns the faultline World of this run.
@@ -113,7 +111,7 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 	ln.eng = e
 	b, err := hooks.NewSystem(e.bundle, slices.Clip(s.system))
 	if err != nil {
-		ln.sys, ln.host = nil, nil
+		ln.sys = nil
 		e.misuse(err)
 		return
 	}
@@ -123,11 +121,13 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 	}
 
 	// Install the node's simnet handler (SIM-170).
+	e.host = b.Host
+	s.w.Net.Handle(n, e.arrive)
 
 	// Apply the node's pressure state to e's admission gate (SFT-125). This step comes with SFT's
 	// pressure support in plan 1.5; until then a node has no pressure state.
 
-	ln.sys, ln.host = sys, b.Host
+	ln.sys = sys
 	ln.setup(sys)
 }
 

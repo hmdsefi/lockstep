@@ -244,8 +244,11 @@ func TestSIM070BootBundle(t *testing.T) {
 			if _, ok := e.Admission.(*overload.Gate); !ok {
 				tt.Errorf("boot %d: Admission is %T, want *overload.Gate", i+1, e.Admission)
 			}
-			if e.Transport != nil || e.Interposer != nil {
-				tt.Errorf("boot %d: Transport %v, Interposer %v; want none", i+1, e.Transport, e.Interposer)
+			if e.Transport == nil {
+				tt.Errorf("boot %d: Transport nil, want the simnet transport", i+1)
+			}
+			if e.Interposer != nil {
+				tt.Errorf("boot %d: Interposer %v; want none", i+1, e.Interposer)
 			}
 			if e.Stop == nil {
 				tt.Errorf("boot %d: Stop is nil, want the engine's stop (SIM-195)", i+1)
