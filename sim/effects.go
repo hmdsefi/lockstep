@@ -104,7 +104,7 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 	}
 	actor, held := req.Actor.String(), &heldEffect{id: req.ID, name: req.Name}
 	e.hold(actor, held)
-	id := e.n.After(res.Latency, effectLabel, func() {
+	cancel := e.schedule(res.Latency, effectLabel, func() {
 		e.release(actor, held)
 		// The kernel never runs an event of an earlier incarnation; a system stopped since Do
 		// cancelled its effects, so this guard only keeps a dead engine silent (SIM-120).
@@ -113,7 +113,7 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 		}
 	})
 	return func() bool {
-		cancelled := e.n.Cancel(id)
+		cancelled := cancel()
 		if cancelled {
 			e.release(actor, held)
 		}

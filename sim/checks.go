@@ -38,12 +38,17 @@ func (s *Sim) store(check string, err error) {
 }
 
 // registerChecks registers the named checks on s's World before body runs (SIM-300): the four
-// invariants in order, then the four final checks in the same order. A final check returns its
-// slot's failure when no invariant returned it, which is a failure stored by body code after the
-// last event. lockstep/deadlock returns only its stored failure until deadlock detection exists.
+// invariants in order, then the four final checks in the same order. Each invariant returns its
+// slot's failure, and lockstep/deadlock also detects ask deadlocks (SIM-250). A final check returns
+// its slot's failure when no invariant returned it, which is a failure stored by body code after
+// the last event.
 func (s *Sim) registerChecks() {
 	for i, name := range checkNames {
-		s.w.Invariant(name, func() error { return s.slots[i] })
+		check := func() error { return s.slots[i] }
+		if name == checkDeadlock {
+			check = s.checkDeadlock
+		}
+		s.w.Invariant(name, check)
 	}
 	for i, name := range checkNames {
 		s.w.Final(name, func() error { return s.slots[i] })

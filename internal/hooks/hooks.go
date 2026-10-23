@@ -43,6 +43,14 @@ var Discard func(sys any)
 // initialized. Called by sim (SIM-200); declared by SIM (§5.9) and implemented by MSG (MSG-450).
 var AskResolved func(reply any) bool
 
+// InjectFail pushes an inject{err} command to the system queue of the actor at addr on sys, a
+// *lockstep.System passed as any (SFT-030). It returns an error wrapping lockstep.ErrNotFound if
+// addr names no live actor of sys, and nil otherwise. It panics if sys has another type or err is
+// nil. Implemented by package lockstep: SUP processes the command as SFT-040 says, recording
+// lockstep.fail with source "injected". It is nil until package lockstep is initialized. Called by
+// sim (SFT-030); declared by SFT and implemented by SUP.
+var InjectFail func(sys any, addr engine.Address, err error) error
+
 // PendingAsks returns the pending asks of sys, a *lockstep.System, in ask-counter order (MSG-370,
 // SIM-260). It returns nil for a stopped or discarded system, and panics if sys has another type.
 // It is nil until package lockstep is initialized. Called by sim (SIM-260); declared by SIM (§5.9)
