@@ -191,6 +191,14 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 // a blocking engine waits for room (offerWaiting); for every other sender BlockSender acts as
 // FailSend.
 //
+// Every message offer handles is a user message of Send, the request of an Ask or an arrival
+// (MBX-120); replies, piped replies, timer messages and signals never come here (MBX-035). Admission
+// judges it once, when it is offered, so a message the interposer held is judged when the engine
+// offers it (OVL-110, ENG-150). A shed message takes the full branch of its target's policy
+// (forceFull): OVL-120's error replaces ErrMailboxFull's and lockstep.overload event=shed replaces
+// lockstep.mailbox.full. A shed outside sender to a BlockSender mailbox on a blocking engine waits
+// for room and for admission instead.
+//
 // An ask request becomes tracked by its target before it is offered (MSG-310, MSG-340), so the
 // reply attempt that removes the entry (MSG-410) cannot come first. A request that the mailbox
 // refuses or drops, and the request DropOldest evicts, is reported to askRefused once, after the
@@ -207,45 +215,45 @@ func (s *System) offer(r routeRequest) outcome {
 	if c == nil {
 		return s.deadRequest(r, reason)
 	}
+	shed := s.admitSend(owner)
 	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
 	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, kind: entrySent}
 	var out mailbox.Outcome
 	var evicted entry
 	if r.wait != nil && s.eng.Blocking && c.blocksSenders() {
 		var err error
-		if out, err = s.offerWaiting(c, r, e); err != nil {
+		if out, err = s.offerWaiting(c, r, e, shed); err != nil {
 			// The context ended before the entry got a slot: a rejection, never reported to
 			// askRefused (MBX-092). A tracked request was not enqueued, so its target does not
 			// track it.
 			if tracked {
 				s.asks.untrack(r.ask)
 			}
-			s.recordMailboxFull(c, r, "rejected", nil)
 			return outcome{kind: routeRefused, err: err}
 		}
 	} else {
-		out, evicted = c.offerUser(e, r.fromRef)
+		out, evicted = c.offerUser(e, r.fromRef, shed != nil)
 	}
 	switch out {
 	case mailbox.Enqueued:
 		s.recordDeliver(c, r)
 		return outcome{kind: routeEnqueued, cell: c}
 	case mailbox.Rejected:
-		err := mailboxFullError(r.to)
-		s.recordMailboxFull(c, r, "rejected", nil)
+		err := refusalError(r.to, shed)
+		s.recordRefusal(c, r, shed, "rejected", nil)
 		if tracked {
 			s.askRefused(r.ask, owner, err)
 		}
 		return outcome{kind: routeRefused, err: err}
 	case mailbox.DroppedNewest:
-		s.recordMailboxFull(c, r, "dropped-newest", nil)
+		s.recordRefusal(c, r, shed, "dropped-newest", nil)
 		if tracked {
-			s.askRefused(r.ask, owner, mailboxFullError(r.to))
+			s.askRefused(r.ask, owner, refusalError(r.to, shed))
 		}
 		return outcome{kind: routeRefused}
 	case mailbox.DroppedOldest:
-		s.recordMailboxFull(c, r, "dropped-oldest", &evicted)
-		s.askRefused(evicted.ask, owner, mailboxFullError(owner))
+		s.recordRefusal(c, r, shed, "dropped-oldest", &evicted)
+		s.askRefused(evicted.ask, owner, refusalError(owner, shed))
 		s.recordDeliver(c, r)
 		return outcome{kind: routeEnqueued, cell: c}
 	}
@@ -260,24 +268,40 @@ func (s *System) offer(r routeRequest) outcome {
 }
 
 // offerWaiting offers e, the message of the outside sender of r, to c's BlockSender mailbox and
-// waits while the mailbox is full or other senders wait, until the entry is enqueued, the mailbox
-// closes, or r.wait ends (MBX-070, MBX-090). It records lockstep.mailbox.full action blocked when
-// the sender starts waiting; the caller records the outcome. It returns r.wait's error when the
-// context ended first. While it waits the mailbox is listed in s.waiting (MBX-075): it is listed
-// before the offer, so a recheck that follows a change of admission cannot miss a sender that
-// starts waiting meanwhile. The caller holds no lock.
-func (s *System) offerWaiting(c actorCell, r routeRequest, e entry) (mailbox.Outcome, error) {
+// waits while the mailbox is full, the system sheds or other senders wait, until the entry is
+// enqueued, the mailbox closes, or r.wait ends (MBX-070, MBX-075, MBX-090). shed is admission's
+// error for the message, or nil. When the sender starts waiting it records lockstep.mailbox.full
+// action blocked, or for a shed message lockstep.overload event=shed dropped=none (OVL-120). When
+// the context ends first it returns the context's error and records the rejection: action
+// rejected, nothing more for a shed message that waited, and event=shed dropped=new for a shed
+// message that never waited (its context had ended already). The caller records the other
+// outcomes. While it waits the mailbox is listed in s.waiting (MBX-075): it is listed before the
+// offer, so a recheck that follows a change of admission cannot miss a sender that starts waiting
+// meanwhile. Every waiter's admit is s.admits, so one queue's waiters are admitted alike. The
+// caller holds no lock.
+func (s *System) offerWaiting(c actorCell, r routeRequest, e entry, shed error) (mailbox.Outcome, error) {
 	q := c.userQueue()
 	s.waiting.add(q)
 	defer s.waiting.remove(q)
-	return c.offerWait(r.wait, e, s.admits, func() { s.recordMailboxFull(c, r, "blocked", nil) })
+	waited := false
+	out, err := c.offerWait(r.wait, e, s.admits, func() {
+		waited = true
+		if shed != nil {
+			s.recordShed(c, r, shed, "none")
+			return
+		}
+		s.recordMailboxFull(c, r, "blocked", nil)
+	})
+	if err != nil {
+		switch {
+		case shed == nil:
+			s.recordMailboxFull(c, r, "rejected", nil)
+		case !waited:
+			s.recordShed(c, r, shed, "new")
+		}
+	}
+	return out, err
 }
-
-// admits reports whether the system admits a waiting outside sender's message now (MBX-075): no
-// overload source is on (OVL-150) and the target is not stuck (OVL-520). Phase 1 sheds nothing and
-// marks no actor stuck, so it admits every message. It is called with a mailbox's lock held and
-// takes no lock.
-func (*System) admits() bool { return true }
 
 // resolve returns the cell the local address to names and the cell's full address, or nil and
 // the dead-letter reason. A full address needs an actor registered with exactly that path and uid
@@ -338,6 +362,31 @@ func (s *System) deadRequest(r routeRequest, reason string) outcome {
 // mailboxFullError returns the error of a refusal by the full mailbox of the actor at owner
 // (MBX §4.1); a message dropped by a policy is reported with the same error.
 func mailboxFullError(owner Address) error { return fmt.Errorf("%w: %s", ErrMailboxFull, owner) }
+
+// refusalError returns the error of a message to the actor at owner that its mailbox's policy
+// refused or dropped: OVL-120's error when admission shed it with shed, else ErrMailboxFull's.
+func refusalError(owner Address, shed error) error {
+	if shed != nil {
+		return sendOverloaded(owner, shed)
+	}
+	return mailboxFullError(owner)
+}
+
+// recordRefusal records the message of r that c's mailbox refused or dropped with action
+// (rejected, dropped-newest or dropped-oldest; dropped is the entry dropped-oldest evicted):
+// lockstep.mailbox.full, or lockstep.overload event=shed when admission shed it with shed (MBX-090,
+// OVL-120).
+func (s *System) recordRefusal(c actorCell, r routeRequest, shed error, action string, dropped *entry) {
+	if shed == nil {
+		s.recordMailboxFull(c, r, action, dropped)
+		return
+	}
+	what := "new"
+	if action == "dropped-oldest" {
+		what = "oldest"
+	}
+	s.recordShed(c, r, shed, what)
+}
 
 // askRefused is called for each sent entry that carries the ask address ask, which a mailbox
 // policy refused or dropped, and for the entry DropOldest evicted (MBX-092): target is the address

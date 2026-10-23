@@ -26,8 +26,9 @@ type actorCell interface {
 	// queue's outcome (MBX-040, MBX-050). It schedules the cell when the mailbox took an entry
 	// (ENG-350). from is the cell whose turn enqueues, or nil. For DroppedOldest it also returns
 	// the entry the mailbox evicted. The outcome is Closed, and nothing is enqueued, when the cell
-	// has completed its final stop (MBX-150 (b)).
-	offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, entry)
+	// has completed its final stop (MBX-150 (b)). forceFull makes the entry take the full branch of
+	// the policy: it is true exactly when admission sheds the message (OVL-110, MBX-090).
+	offerUser(e entry, from engine.ActorRef, forceFull bool) (mailbox.Outcome, entry)
 	// blocksSenders reports whether the user mailbox's policy is BlockSender.
 	blocksSenders() bool
 	// userQueue returns the user mailbox, to list it while senders wait on it (MBX-075).
@@ -167,16 +168,16 @@ func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
 
 // offerUser offers e to the user mailbox and then, if the mailbox took an entry, schedules the
 // cell (ENG-350). from is the cell whose turn enqueues, or nil (actorCell). The queue's policy
-// decides what a full mailbox does with the entry (MBX-040 to MBX-060); nothing is shed here
-// (OVL's forceFull is false). A closed cell refuses with Closed (MBX-150 (b)). It holds no lock
-// when it returns, so the caller may call askRefused for the entries the outcome names.
-func (c *cell[M]) offerUser(e entry, from engine.ActorRef) (mailbox.Outcome, entry) {
+// decides what a full mailbox, or a shed message (forceFull), does with the entry (MBX-040 to
+// MBX-060). A closed cell refuses with Closed (MBX-150 (b)). It holds no lock when it returns, so
+// the caller may call askRefused for the entries the outcome names.
+func (c *cell[M]) offerUser(e entry, from engine.ActorRef, forceFull bool) (mailbox.Outcome, entry) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return mailbox.Closed, entry{}
 	}
-	out, evicted := c.user.Offer(e, e.kind.queueKind(), false)
+	out, evicted := c.user.Offer(e, e.kind.queueKind(), forceFull)
 	c.mu.Unlock()
 	if out == mailbox.Enqueued || out == mailbox.DroppedOldest {
 		c.schedule(from)

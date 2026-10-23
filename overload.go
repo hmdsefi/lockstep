@@ -107,10 +107,6 @@ func (*capError) Unwrap() error { return ErrActorCap }
 // and that have not been removed from the registry. The guardians are not counted.
 func (s *System) liveActors() int { return s.actors.Live() }
 
-// usage is the usage function the system binds to admission (§4.3): its live-actor count.
-// Estimates add their bytes (OVL-400).
-func (s *System) usage() engine.Usage { return engine.Usage{Actors: s.liveActors()} }
-
 // spawnsSystemActor reports whether a child of the parent at parentPath is a system actor, an actor
 // under the system guardian (ACT-030). Spawns of system actors are reserve spawns (OVL §3).
 func spawnsSystemActor(parentPath string) bool {

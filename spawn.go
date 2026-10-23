@@ -140,8 +140,12 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping, r
 	reserve := rebuild || spawnsSystemActor(parent.path)
 	if err := register(sys, c, parent, stopping, reserve, name); err != nil {
 		var capErr *capError
-		if errors.As(err, &capErr) {
+		var overloaded *overloadError
+		switch {
+		case errors.As(err, &capErr):
 			sys.recordCap(capErr, reserve)
+		case errors.As(err, &overloaded):
+			sys.recordRefuse(overloaded)
 		}
 		return refuse(err)
 	}
@@ -160,9 +164,11 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping, r
 // sequence's registry removal then never finds a child.
 //
 // Step 6 is the actor cap, then admission (OVL-040), both with reserve, which reports a reserve
-// spawn (OVL-030). The cap slot is taken before Registry.Add allocates a generated name, so a
-// refused spawn advances no name counter (ACT-320), and given back if admission refuses or Add
-// loses the name to a concurrent spawn: a refused spawn changes no count.
+// spawn (OVL-030). Admission refuses a normal spawn while the system sheds (OVL-100) and never a
+// reserve spawn: the runtime ignores a refusal of one, so rebuilds and system actors start whatever
+// the engine answers (OVL-160). The cap slot is taken before Registry.Add allocates a generated
+// name, so a refused spawn advances no name counter (ACT-320), and given back if admission refuses
+// or Add loses the name to a concurrent spawn: a refused spawn changes no count.
 func register[M any](sys *System, c *cell[M], parent Address, stopping, reserve bool, name string) error {
 	sys.spawnMu.RLock()
 	defer sys.spawnMu.RUnlock()
@@ -176,9 +182,9 @@ func register[M any](sys *System, c *cell[M], parent Address, stopping, reserve 
 	if ok, live, limit, rsv := sys.actors.Acquire(reserve); !ok {
 		return &capError{parent: parent.path, live: live, limit: limit, reserve: rsv}
 	}
-	if err := sys.eng.Admission.AdmitSpawn(reserve); err != nil {
+	if err := sys.eng.Admission.AdmitSpawn(reserve); err != nil && !reserve {
 		sys.actors.Release()
-		return err
+		return spawnOverloaded(parent.path, err)
 	}
 	// Hold c.mu until addr is set: whoever finds c through the registry takes c.mu before reading
 	// addr (see cell). Add allocates the uid only when it registers c (ACT-040).
