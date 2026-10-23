@@ -28,6 +28,11 @@ type Context[M any] struct {
 	// which clears it in the turn that starts the stop (SUP-060 step 1).
 	watched watchedSet
 
+	// rebuild is set while the incarnation's Started hook runs in a rebuild context (OVL §3):
+	// spawns from it are reserve spawns (OVL-030). Turn-owned: begin sets it around the Started
+	// call, and Spawn reads it during that call.
+	rebuild bool
+
 	// owned is the incarnation's resource list in registration order (SUP-120). Turn-owned:
 	// Own appends in a turn of this incarnation, and the stop sequence closes the list after
 	// Stopped, in the turn that completes the stop. The next incarnation has a Context and so a
@@ -81,3 +86,7 @@ func (c *Context[M]) spawnParent() (*System, Address, engine.ActorRef) {
 // parentStopping reports whether the actor is Stopping, Restarting or Stopped (SUP-090). Only
 // Stopped runs in a turn then.
 func (c *Context[M]) parentStopping() bool { return c.cell.ending() }
+
+// rebuilding reports whether the incarnation's Started hook is running in a rebuild context
+// (OVL §3).
+func (c *Context[M]) rebuilding() bool { return c.rebuild }

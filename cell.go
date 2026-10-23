@@ -84,6 +84,10 @@ type cell[M any] struct {
 	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
 
+	// rebuildSpawn reports that the cell was spawned from a rebuild context, so its first Started
+	// runs in one too (OVL §3). Set before the cell is registered, never changed.
+	rebuildSpawn bool
+
 	// watchSeq is the sequence number of the last Watch call of any incarnation (ACT-630). It
 	// never decreases, so a Terminated queued for an earlier Watch never matches a later one.
 	watchSeq uint64

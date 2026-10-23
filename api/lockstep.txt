@@ -1,5 +1,11 @@
 pkg github.com/hmdsefi/lockstep, const BlockSender = 3
 pkg github.com/hmdsefi/lockstep, const BlockSender MailboxPolicy
+pkg github.com/hmdsefi/lockstep, const DefaultGoroutineWarning = 10000
+pkg github.com/hmdsefi/lockstep, const DefaultGoroutineWarning ideal-int
+pkg github.com/hmdsefi/lockstep, const DefaultMaxActors = 1000000
+pkg github.com/hmdsefi/lockstep, const DefaultMaxActors ideal-int
+pkg github.com/hmdsefi/lockstep, const DefaultWatchdogTimeout = 5000000000
+pkg github.com/hmdsefi/lockstep, const DefaultWatchdogTimeout time.Duration
 pkg github.com/hmdsefi/lockstep, const DirectiveEscalate = 3
 pkg github.com/hmdsefi/lockstep, const DirectiveEscalate Directive
 pkg github.com/hmdsefi/lockstep, const DirectiveRestart = 1
@@ -41,12 +47,17 @@ pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor
 pkg github.com/hmdsefi/lockstep, func Stop(Sender, Address) error
 pkg github.com/hmdsefi/lockstep, func Unwatch[M any](*Context[M], Address)
 pkg github.com/hmdsefi/lockstep, func Watch[M any](*Context[M], Address) error
+pkg github.com/hmdsefi/lockstep, func WithAdmission(uint64, uint64) Option
 pkg github.com/hmdsefi/lockstep, func WithDefaultMailbox(int, MailboxPolicy) Option
+pkg github.com/hmdsefi/lockstep, func WithGoroutineWarning(int) Option
 pkg github.com/hmdsefi/lockstep, func WithGuardianStrategy(Strategy) Option
 pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOption
+pkg github.com/hmdsefi/lockstep, func WithMaxActors(int) Option
+pkg github.com/hmdsefi/lockstep, func WithMemoryEstimates() Option
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
+pkg github.com/hmdsefi/lockstep, func WithWatchdog(time.Duration) Option
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Own(io.Closer)
@@ -116,6 +127,7 @@ pkg github.com/hmdsefi/lockstep, type System struct
 pkg github.com/hmdsefi/lockstep, type Terminated struct
 pkg github.com/hmdsefi/lockstep, type Terminated struct, Addr Address
 pkg github.com/hmdsefi/lockstep, type Terminated struct, Reason StopReason
+pkg github.com/hmdsefi/lockstep, var ErrActorCap error
 pkg github.com/hmdsefi/lockstep, var ErrAwaitInActor error
 pkg github.com/hmdsefi/lockstep, var ErrInvalidName error
 pkg github.com/hmdsefi/lockstep, var ErrInvalidOption error

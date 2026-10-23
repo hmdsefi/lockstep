@@ -3,7 +3,10 @@
 
 package lockstep
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // defaultNode is the node name of a system built by New without WithNodeName (ACT-020).
 const defaultNode = "local"
@@ -16,6 +19,14 @@ type systemConfig struct {
 	mbx   mailboxConfig // the default mailbox of the system's actors (MBX-010)
 
 	guardian Strategy // the user guardian's strategy (SUP-370)
+
+	// The overload options (OVL §4.1). Only the cap acts in Phase 1; the others are validated
+	// and kept for the features that read them.
+	maxActors        int             // the actor cap (OVL-010)
+	admission        admissionConfig // WithAdmission's thresholds (OVL-350)
+	estimates        bool            // per-actor memory estimates are on (OVL-400)
+	watchdog         time.Duration   // the stuck-turn timeout; 0 is off
+	goroutineWarning int             // the goroutine warning bound; 0 is off
 
 	at     int // 1-based position of the option being applied
 	nodeAt int // position of the WithNodeName whose name is in node; 0 if none
@@ -53,7 +64,10 @@ func WithNodeName(name string) Option {
 // engineNode is the node name of the engine the system is built on (ACT-015): it replaces the
 // default and WithNodeName is ignored. The error is the first invalid setting in argument order.
 func newConfig(opts []Option, engineNode string) (*systemConfig, error) {
-	c := &systemConfig{node: defaultNode, mbx: defaultMailbox, guardian: OneForOne(nil)}
+	c := &systemConfig{
+		node: defaultNode, mbx: defaultMailbox, guardian: OneForOne(nil),
+		maxActors: DefaultMaxActors, watchdog: DefaultWatchdogTimeout, goroutineWarning: DefaultGoroutineWarning,
+	}
 	if engineNode != "" {
 		c.node, c.fixed = engineNode, true
 	}

@@ -189,8 +189,10 @@ func (c *cell[M]) finishStop() {
 	c.liveInc = 0 // the incarnation has ended: Pipe's continuations drop (MSG-610)
 	c.mu.Unlock()
 
-	// Step 4: the name is free and the address not alive (ACT-550).
+	// Step 4: the name is free and the address not alive (ACT-550), and the actor's slot returns
+	// to the actor cap (OVL-020).
 	watchers := sys.reg.Remove(c.addr.path)
+	sys.actors.Release()
 
 	// Step 5. An ask whose request was among the dead letters fails after the drain, once
 	// (MSG-340).

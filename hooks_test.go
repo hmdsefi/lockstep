@@ -33,7 +33,7 @@ func systemOf(t *testing.T, b hooks.Built) *lockstep.System {
 	return sys
 }
 
-// AT-ENG-11 (all but the WithMaxActors clause): ENG-200.
+// AT-ENG-11: ENG-200.
 func TestATENG11HookSet(t *testing.T) {
 	if hooks.NewSystem == nil {
 		t.Fatal("hooks.NewSystem is nil")
@@ -67,6 +67,11 @@ func TestATENG11HookSet(t *testing.T) {
 	b := built(t, "n1", []lockstep.Option{lockstep.WithNodeName("x")})
 	if got := systemOf(t, b).Node(); got != "n1" {
 		t.Errorf("WithNodeName(x) on engine n1: Node() = %q, want n1", got)
+	}
+
+	_, err = hooks.NewSystem(enginetest.New("n1", 1).Engine(), []lockstep.Option{lockstep.WithMaxActors(0)})
+	if !errors.Is(err, lockstep.ErrInvalidOption) {
+		t.Errorf("WithMaxActors(0): err = %v, want ErrInvalidOption", err)
 	}
 }
 

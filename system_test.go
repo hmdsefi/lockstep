@@ -185,13 +185,14 @@ func TestNewEmitsNoRecord(t *testing.T) {
 	}
 }
 
-// ENG-125: the system binds admission exactly once, while it is built.
+// ENG-125: the system binds admission exactly once, while it is built. With no actor spawned the
+// usage is zero (OVL-020).
 func TestBindOnceWithNoopCallbacks(t *testing.T) {
 	_, eng := newManualSystem(t)
 	if got := eng.Usage(); got != (engine.Usage{}) {
 		t.Errorf("Usage() = %+v, want zero", got)
 	}
-	// A change before OVL (plan 1.3) does nothing and does not panic.
+	// A change does nothing yet and does not panic.
 	eng.ChangeAdmission(engine.AdmissionChange{Source: engine.SourcePressure, On: true, Shedding: true})
 }
 
