@@ -62,6 +62,9 @@ type heldMsg struct {
 // pair's rule; the rule goes when it has no drop part either and no message is held. It panics if
 // min < 0 or max < min. Replies, timer messages, effect results and system messages are never
 // delayed. The call records lockstep.fault with op=delay.
+//
+// The delays are not faultline faults: schedule.json does not list them, a run replays them
+// exactly from its seed, and faultline cannot minimize them.
 func (s *Sim) DelayBetween(from, to lockstep.Address, min, max time.Duration) {
 	s.check()
 	if min < 0 || max < min {
@@ -84,6 +87,9 @@ func (s *Sim) DelayBetween(from, to lockstep.Address, min, max time.Duration) {
 // location with probability ppm/1_000_000, before it is offered. 0 removes the drop part of the
 // pair's rule; the rule goes when it has no delay part either and no message is held. It panics if
 // ppm > 1_000_000. The call records lockstep.fault with op=drop.
+//
+// The drops are not faultline faults: schedule.json does not list them, a run replays them
+// exactly from its seed, and faultline cannot minimize them.
 func (s *Sim) DropBetween(from, to lockstep.Address, ppm uint32) {
 	s.check()
 	if ppm > maxPPM {
