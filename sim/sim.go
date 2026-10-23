@@ -56,6 +56,10 @@ type node struct {
 	// be built and after a crash.
 	eng *simEngine
 	sys *lockstep.System
+
+	// pressure counts the node's active pressure episodes. It belongs to the kernel node, so it
+	// survives crashes and restarts (SFT-125).
+	pressure int
 }
 
 // World returns the faultline World of this run.
@@ -144,8 +148,8 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e.host = b.Host
 	s.w.Net.Handle(n, e.arrive)
 
-	// Apply the node's pressure state to e's admission gate (SFT-125). This step comes with SFT's
-	// pressure support in plan 1.5; until then a node has no pressure state.
+	// Apply the node's pressure state to e's admission gate (SFT-125).
+	ln.bootPressure(e)
 
 	ln.sys = sys
 	ln.setup(sys)
