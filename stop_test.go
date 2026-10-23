@@ -841,23 +841,39 @@ func TestATSUP10SpawnRefusedWhileStopping(t *testing.T) {
 	}
 }
 
-// SUP-090: Spawn with a Restarting actor's context as parent returns ErrStopped.
+// SUP-090, ACT-600: while a cell ends its incarnation for a restart it is Restarting: Spawn with
+// it as parent and Watch return ErrStopped. Its Stopped hook, the only code that runs then,
+// observes them; a watch it registered would outlive the incarnation (SUP-340).
 func TestSUP090SpawnUnderRestartingParent(t *testing.T) {
-	sys, eng := newManualSystem(t)
-	var spawnErr error
-	p, err := Spawn(sys, "p", actorOf[any](&fnActor[any]{receive: func(ctx *Context[any], _ any) {
-		ctx.cell.setState(supervise.Restarting) // a restart's state, set by hand
+	sys, eng := newManualSystem(t, WithGuardianStrategy(r0()))
+	x, err := Spawn(sys, "x", idle[any]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnErr, watchErr error
+	var state supervise.State
+	p, err := Spawn(sys, "p", actorOf[any](&rProbe{obs: new([]string), onStop: func(ctx *Context[any], r StopReason) {
+		if r.Kind != StopRestarting {
+			return
+		}
+		state = ctx.cell.state
 		_, spawnErr = Spawn(ctx, "x", idle[any]())
-		ctx.cell.state = supervise.Running // back, so the test system can stop it
+		watchErr = Watch(ctx, x.Address())
 	}}))
 	if err != nil {
 		t.Fatal(err)
 	}
+	send(t, sys, p, any("panic"))
 	eng.RunUntilIdle()
-	send(t, sys, p, any("go"))
-	eng.RunUntilIdle()
-	if !errors.Is(spawnErr, ErrStopped) {
-		t.Errorf("Spawn under a restarting parent = %v, want ErrStopped", spawnErr)
+	if state != supervise.Restarting || !errors.Is(spawnErr, ErrStopped) || !errors.Is(watchErr, ErrStopped) {
+		t.Errorf("in Stopped of a restart: state %v, Spawn = %v, Watch = %v; want restarting, ErrStopped twice",
+			state, spawnErr, watchErr)
+	}
+	if got := sys.reg.Watchers(x.Address().Path()); len(got) != 0 {
+		t.Errorf("watch entries of X %+v, want none", got)
+	}
+	if _, inc := cellOf(t, sys, p).lifecycle(); inc != 2 {
+		t.Errorf("inc = %d after the restart, want 2", inc)
 	}
 }
 
@@ -1127,7 +1143,7 @@ func TestStopPanicsOnNonCellEntry(t *testing.T) {
 	t.Run("guardian", func(t *testing.T) {
 		sys, _ := newManualSystem(t)
 		sys.reg.Add(sys.user.Path(), "bogus", sys.allocUID, "not a cell")
-		g := &sys.shut.sweep
+		g := &sys.guardians
 		g.phase = sweepUser
 		mustPanic(t, func() { g.next() })
 	})

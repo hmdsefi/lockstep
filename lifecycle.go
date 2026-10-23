@@ -19,8 +19,6 @@ import (
 type begin struct{}
 
 // end ends incarnation inc for a restart caused by err (SUP-190).
-//
-//nolint:unused // the fields are the restart's, read once supervisors decide failures (SUP-190)
 type end struct {
 	inc uint32
 	err error
@@ -43,9 +41,13 @@ type failed struct {
 	source supervise.Source
 }
 
+// String describes the notice for the lockstep.drop record of a stale failure (SUP §8): "failed",
+// the child's address and the incarnation, without the error, whose text is the user's.
+func (n failed) String() string {
+	return "failed " + n.child.String() + " inc " + strconv.FormatUint(uint64(n.inc), 10)
+}
+
 // ended reports that child ended incarnation inc for a restart (SUP-190 step 4).
-//
-//nolint:unused // the fields are read once supervisors restart children (SUP-190)
 type ended struct {
 	child Address
 	inc   uint32
@@ -126,23 +128,18 @@ func (c *cell[M]) callGuarded(fn func()) (failed bool, err error) {
 func (c *cell[M]) handlerFailed(src supervise.Source, err error) {
 	c.recordFail(src, err)
 	c.setState(supervise.Suspended)
-	c.sys.notifyFailed(c.parent, failed{child: c.addr, inc: c.inc, err: err, source: src}, c)
+	c.sys.notifySupervisor(c.parent, failed{child: c.addr, inc: c.inc, err: err, source: src}, c)
 }
 
-// notifyFailed pushes the failed notice n to the supervisor parent (SUP-150), the cell whose turn
-// pushes being from. A guardian has no cell, and the supervision of top-level and system actors
-// by the guardians (SUP-300) does not exist yet: a guardian child's notice is dropped here, and the
-// child stays Suspended.
-func (s *System) notifyFailed(parent Address, n failed, from engine.ActorRef) {
+// notifySupervisor pushes the notice m (failed, ended, stopped or cleanupFailed) to the supervisor
+// parent, the cell whose turn pushes being from. A guardian has no cell: the guardians' ActorRef
+// handles its children's notices (SUP-300). A parent cell that has completed its final stop is not
+// notified: there is nobody to notify.
+func (s *System) notifySupervisor(parent Address, m sysMsg, from engine.ActorRef) {
 	if s.isGuardian(parent) {
+		s.guardians.push(m, from)
 		return
 	}
-	s.pushToParent(parent, n, from)
-}
-
-// pushToParent pushes the notice m onto the system queue of the cell registered as parent. A
-// parent that has completed its final stop is not notified: there is nobody to notify.
-func (s *System) pushToParent(parent Address, m sysMsg, from engine.ActorRef) {
 	if c, ok := s.lookupCell(registryAddr(parent)); ok {
 		c.pushSystem(m, from)
 	}

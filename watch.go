@@ -29,7 +29,7 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 	if addr.node != sys.node {
 		return fmt.Errorf("%w: %s", ErrNotLocal, addr)
 	}
-	if c.stopping() { // only Stopped runs in a turn of a stopping incarnation
+	if c.ending() { // only Stopped runs in a turn of an incarnation that stops or restarts
 		return fmt.Errorf("%w: %s", ErrStopped, c.addr)
 	}
 	if addr == c.addr {

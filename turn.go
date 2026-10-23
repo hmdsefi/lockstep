@@ -122,13 +122,28 @@ func (c *cell[M]) processSystem(m sysMsg) {
 	case stop:
 		c.startStop(m.reason)
 	case stopped:
+		c.sup.childStopped(m.child)
 		c.childStopped(m.child)
-	case failed, ended, cleanupFailed:
-		// A child's notice. Deciding failures (SUP-170 to SUP-230) does not exist yet: the notice
-		// changes nothing and the child stays Suspended.
-	case end, resume:
-		// A supervisor's command for a failed incarnation (SUP-190, SUP-210): no supervisor sends
-		// one yet.
+	case failed:
+		// Decided in Running (SUP-170). Starting has no child, and Restarting, Stopping and
+		// Stopped discard it. SUP-160 keeps it in Suspended until a resume; that keeping comes with
+		// the resume command (SUP-210), and until then Suspended discards it too.
+		if c.state == supervise.Running {
+			c.sup.childFailed(c.sys, c.addr, m, c)
+		}
+	case ended:
+		// The restart of a child goes on in Running (SUP-190). In Restarting and Stopping the
+		// child is being stopped. Suspended discards it until it keeps notices (SUP-160, SUP-210).
+		if c.state == supervise.Running {
+			c.sup.childEnded(c.sys, m, c)
+		}
+	case cleanupFailed:
+		// A child's Stopped failed (SUP-110): it is never decided and never counted. Its
+		// ChildFailed{Cleanup: true} goes to Signal with the supervision signals (SUP-230, SUP-320).
+	case end:
+		c.endIncarnation(m)
+	case resume:
+		// The resume command (SUP-210): no supervisor sends one yet.
 	}
 }
 
@@ -136,8 +151,12 @@ func (c *cell[M]) processSystem(m sysMsg) {
 // call; on a non-nil actor it numbers the new incarnation (SUP-020), decides its optional
 // interfaces once (ACT-100), records lockstep.start, calls Started and changes to Running. A
 // factory that panics or returns nil fails with source factory: no incarnation begins and inc is
-// unchanged (SUP-040).
+// unchanged (SUP-040). In Restarting, once the incarnation has ended, begin changes to Starting
+// first (SUP-190); in any other state it is discarded.
 func (c *cell[M]) begin() {
+	if c.state == supervise.Restarting && c.ctx == nil && c.waitChild.IsZero() {
+		c.setState(supervise.Starting)
+	}
 	if c.state != supervise.Starting {
 		return
 	}

@@ -53,7 +53,7 @@ func (c *cell[M]) recordClose(index int, r io.Closer, err error) {
 	}
 	tr.Record("lockstep.close",
 		engine.Attr{Key: "actor", Value: c.addr.String()},
-		engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(c.ctx.inc), 10)},
+		engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(c.inc), 10)},
 		engine.Attr{Key: "index", Value: strconv.Itoa(index)},
 		engine.Attr{Key: "type", Value: reflect.TypeOf(r).String()},
 		engine.Attr{Key: "err", Value: desc},

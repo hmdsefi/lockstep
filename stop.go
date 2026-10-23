@@ -63,30 +63,55 @@ func (c *cell[M]) ending() bool {
 // more user messages; if an incarnation is live, its watches leave every watcher list and its
 // watched set (SUP-340, ACT-640). Then the children start to stop (step 2). A request that reaches
 // the cell before its begin finds it Starting with no incarnation: it stops with inc 0 (SUP-010).
+//
+// A cell in Restarting has done step 1 already, when its restart began (SUP-190 step 1). If it is
+// still stopping its children for the restart, the stop replaces the restart: it waits for the
+// same child, the children left get the stop's reason, and Stopped receives that reason; no new
+// incarnation starts. If its incarnation has ended (it waits for begin), it has no child and no
+// incarnation, so it stops at once without a Stopped call (SUP-060, SUP-290).
 func (c *cell[M]) startStop(reason StopReason) {
 	if c.stopping() {
 		return // unreachable: requestStop queues one request (SUP-050)
 	}
+	restarting := c.state == supervise.Restarting
 	c.setState(supervise.Stopping)
 	c.stopReason = reason
-	if c.ctx != nil {
-		// Cancelling the incarnation's timers (TMR-080) and effects (EFF) belongs here, with its
-		// watches.
-		c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
-		c.ctx.watched = watchedSet{}
+	if restarting {
+		c.endErr = nil
+		if !c.waitChild.IsZero() {
+			return // childStopped goes on with the stop
+		}
+	} else {
+		c.endIncarnationWork()
 	}
 	c.stopNextChild()
 }
 
+// endIncarnationWork is step 1 of SUP-060 and SUP-190 for a live incarnation: its watches leave
+// every watcher list and its watched set (SUP-340, ACT-640). Cancelling the incarnation's timers
+// (TMR-080) and effects (EFF) belongs here too.
+func (c *cell[M]) endIncarnationWork() {
+	if c.ctx == nil {
+		return
+	}
+	c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
+	c.ctx.watched = watchedSet{}
+}
+
 // stopNextChild asks the most recently spawned child that has not stopped to stop, and waits for
-// its stopped notice; with no child left it completes the stop (SUP-060 step 2, SUP-070). A child
-// that stops on its own meanwhile has left the registry's child list and is skipped. The children
-// are the registry's spawn-ordered list, never a map.
+// its stopped notice; with no child left it completes the stop, or the end of the incarnation for
+// a restart (SUP-060 step 2, SUP-070, SUP-190 step 2). A child that stops on its own meanwhile has
+// left the registry's child list and is skipped. The children are the registry's spawn-ordered
+// list, never a map.
 func (c *cell[M]) stopNextChild() {
 	for {
 		kids := c.sys.reg.Children(c.addr.path)
 		if len(kids) == 0 {
-			c.finishStop()
+			if c.state == supervise.Restarting {
+				c.finishEnd()
+			} else {
+				c.finishStop()
+			}
 			return
 		}
 		k := kids[len(kids)-1]
@@ -95,7 +120,7 @@ func (c *cell[M]) stopNextChild() {
 			continue // it completed its stop after Children returned
 		}
 		c.waitChild = Address{node: k.Node, path: k.Path, uid: k.UID}
-		child.requestStop(childReason(c.stopReason), c)
+		child.requestStop(c.childStopReason(), c)
 		return
 	}
 }
@@ -116,6 +141,15 @@ func (s *System) lookupCell(k registry.Addr) (actorCell, bool) {
 	return c, true
 }
 
+// childStopReason is the reason of a child the cell stops: ParentStopping while it ends its
+// incarnation for a restart, otherwise the reason that follows from its own stop (SUP-080).
+func (c *cell[M]) childStopReason() StopReason {
+	if c.state == supervise.Restarting {
+		return ParentStopping
+	}
+	return childReason(c.stopReason)
+}
+
 // childReason is the reason of a child stopped by a parent stopping with r (SUP-080).
 func childReason(r StopReason) StopReason {
 	if r.Kind == StopShutdown {
@@ -124,11 +158,12 @@ func childReason(r StopReason) StopReason {
 	return ParentStopping
 }
 
-// childStopped processes a child's stopped notice. The notice of the child the stop sequence
-// waits for moves it to the next child; any other (a child that stopped on its own, while the
-// cell runs or waits for another child) changes nothing, since that child has left the registry.
+// childStopped processes a child's stopped notice for the stop sequence and the restart's step 2
+// (SUP-190). The notice of the child the sequence waits for moves it to the next child; any other
+// (a child that stopped on its own, while the cell runs or waits for another child) changes
+// nothing, since that child has left the registry.
 func (c *cell[M]) childStopped(child Address) {
-	if c.state != supervise.Stopping || child != c.waitChild {
+	if c.state != supervise.Stopping && c.state != supervise.Restarting || child != c.waitChild {
 		return
 	}
 	c.waitChild = Address{}
@@ -145,7 +180,7 @@ func (c *cell[M]) finishStop() {
 	// hook (SUP-100, SUP-120).
 	if c.ctx != nil {
 		if c.stopper != nil {
-			c.callStopped()
+			c.callStopped(c.stopReason)
 		}
 		c.closeOwned()
 	}
@@ -191,31 +226,22 @@ func (c *cell[M]) drain() {
 	}
 }
 
-// callStopped calls Stopped with the stop's reason as a guarded call during the turn. A failure
-// in it (a panic or a Fail) is a cleanup failure (SUP-110): it is reported and the stop continues
-// as if Stopped had returned.
-func (c *cell[M]) callStopped() {
-	if failed, err := c.callGuarded(func() { c.stopper.Stopped(c.ctx, c.stopReason) }); failed {
+// callStopped calls Stopped with reason r as a guarded call during the turn. A failure in it (a
+// panic or a Fail) is a cleanup failure (SUP-110): it is reported and the stop or restart
+// continues as if Stopped had returned.
+func (c *cell[M]) callStopped(r StopReason) {
+	if failed, err := c.callGuarded(func() { c.stopper.Stopped(c.ctx, r) }); failed {
 		c.failCleanup(err)
 	}
 }
 
 // failCleanup reports a failure of Stopped (SUP-110): it records lockstep.fail with source
-// stopped and pushes cleanupFailed to the supervisor. It is never decided and never counts toward
-// restart intensity, and the cell keeps its state: the stop it is in goes on.
+// stopped and pushes cleanupFailed to the supervisor, before the owned resources are closed and
+// so before the stopped or ended notice. It is never decided and never counts toward restart
+// intensity, and the cell keeps its state: the stop or restart it is in goes on.
 func (c *cell[M]) failCleanup(err error) {
 	c.recordFail(supervise.InStopped, err)
-	c.sys.notifyCleanupFailed(c.parent, cleanupFailed{child: c.addr, inc: c.inc, err: err}, c)
-}
-
-// notifyCleanupFailed pushes the cleanupFailed notice n to the supervisor parent, the cell whose
-// turn pushes being from. A guardian has no cell, and the supervision of top-level and system
-// actors by the guardians (SUP-300) does not exist yet: a guardian child's notice is dropped here.
-func (s *System) notifyCleanupFailed(parent Address, n cleanupFailed, from engine.ActorRef) {
-	if s.isGuardian(parent) {
-		return
-	}
-	s.pushToParent(parent, n, from)
+	c.sys.notifySupervisor(c.parent, cleanupFailed{child: c.addr, inc: c.inc, err: err}, c)
 }
 
 // pushTerminated pushes Terminated{key, reason} to the watcher of one entry of a stopped actor's
@@ -230,14 +256,10 @@ func (s *System) pushTerminated(w registry.Watch, reason StopReason, from engine
 	c.pushSystem(signalMsg{sig: Terminated{Addr: key, Reason: reason}, seq: w.Seq}, from)
 }
 
-// notifyParent pushes stopped{child} to the parent's system queue (SUP-060 step 7). A guardian
-// parent has no cell and gets the notice through guardianChildStopped.
+// notifyParent pushes stopped{child} to the parent's system queue (SUP-060 step 7), or to the
+// guardians' ActorRef for a guardian parent (notifySupervisor).
 func (s *System) notifyParent(parent, child Address, from engine.ActorRef) {
-	if s.isGuardian(parent) {
-		s.guardianChildStopped(child, from)
-		return
-	}
-	s.pushToParent(parent, stopped{child: child}, from)
+	s.notifySupervisor(parent, stopped{child: child}, from)
 }
 
 // recordStop emits lockstep.stop (SUP §8) for a cell that reached Stopped: inc is its last

@@ -356,12 +356,14 @@ func TestPipeDropIncarnation(t *testing.T) {
 func TestPipeToPanics(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var received []any
+	var ctx1 *Context[any]
 	a, err := Spawn(sys, "a", actorOf[any](&fnActor[any]{
 		receive: func(ctx *Context[any], m any) {
 			if m != "go" {
 				received = append(received, m)
 				return
 			}
+			ctx1 = ctx
 			rt, r := NewReply[int](ctx)
 			Pipe(ctx, r, func(int, error) any { panic("to boom") })
 			rt.Send(ctx, 1)
@@ -379,11 +381,13 @@ func TestPipeToPanics(t *testing.T) {
 	c := cellOf(t, sys, a)
 	fails := recordsOf(eng.Records(), "lockstep.fail")
 	want := []string{"actor=" + a.String(), "inc=1", "source=receive", "err=lockstep: panic: to boom"}
-	if c.state != supervise.Suspended || len(fails) != 1 || !slices.Equal(fails[0], want) {
-		t.Errorf("state %v, lockstep.fail %q; want suspended and [%q]", c.state, fails, want)
+	// The user guardian restarts the failed actor after the default backoff, which the manual
+	// clock never reaches: the incarnation has ended and "later" waits for the next one.
+	if c.state != supervise.Restarting || len(fails) != 1 || !slices.Equal(fails[0], want) {
+		t.Errorf("state %v, lockstep.fail %q; want restarting and [%q]", c.state, fails, want)
 	}
-	if len(received) != 0 || c.ctx.inTurn.Load() {
-		t.Errorf("Receive got %v; in-turn flag %v", received, c.ctx.inTurn.Load())
+	if len(received) != 0 || ctx1.inTurn.Load() || queued(c) != 1 {
+		t.Errorf("Receive got %v; in-turn flag %v; queued %d, want 1", received, ctx1.inTurn.Load(), queued(c))
 	}
 }
 
