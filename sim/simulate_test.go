@@ -20,19 +20,28 @@ import (
 func TestATSIM04SimulateSeeds(t *testing.T) {
 	var names []string
 	var seeds []uint64
+	runs := 1
 	sim.SimulateSeeds(t, sim.Options{}, func(s *sim.Sim) {
+		if s.World().Options().CheckDeterminism {
+			runs = 2 // every seed runs twice in the same subtest
+		}
 		names = append(names, s.World().T().Name())
 		seeds = append(seeds, s.World().Seed())
 	}, 0x1, 0x2)
 
-	// LOCKSTEP_CHECK_DETERMINISM=1 runs each seed twice; the subtests stay the same.
-	names, seeds = slices.Compact(names), slices.Compact(seeds)
-	wantNames := []string{t.Name() + "/seed=0x0000000000000001", t.Name() + "/seed=0x0000000000000002"}
+	var wantNames []string
+	var wantSeeds []uint64
+	for _, seed := range []uint64{1, 2} {
+		for range runs {
+			wantNames = append(wantNames, fmt.Sprintf("%s/seed=0x%016x", t.Name(), seed))
+			wantSeeds = append(wantSeeds, seed)
+		}
+	}
 	if !slices.Equal(names, wantNames) {
 		t.Errorf("subtests %q, want %q", names, wantNames)
 	}
-	if want := []uint64{1, 2}; !slices.Equal(seeds, want) {
-		t.Errorf("World().Seed() %v, want %v", seeds, want)
+	if !slices.Equal(seeds, wantSeeds) {
+		t.Errorf("World().Seed() %v, want %v", seeds, wantSeeds)
 	}
 }
 
@@ -40,12 +49,16 @@ func TestATSIM04SimulateSeeds(t *testing.T) {
 func TestSIM010SimulateRunsEverySeed(t *testing.T) {
 	var sims []*sim.Sim
 	var worlds []*faultline.World
+	want := 3
 	sim.Simulate(t, sim.Options{Options: faultline.Options{Seeds: 3}}, func(s *sim.Sim) {
+		if s.World().Options().CheckDeterminism {
+			want = 6 // every seed runs twice
+		}
 		sims = append(sims, s)
 		worlds = append(worlds, s.World())
 	})
-	if len(sims) != 3 && len(sims) != 6 { // 6 with LOCKSTEP_CHECK_DETERMINISM=1
-		t.Fatalf("body ran %d times, want 3 (or 6 with run-twice checks)", len(sims))
+	if len(sims) != want {
+		t.Fatalf("body ran %d times, want %d", len(sims), want)
 	}
 	for i := 1; i < len(sims); i++ {
 		if sims[i] == sims[i-1] || worlds[i] == worlds[i-1] {
@@ -67,13 +80,18 @@ func expectEnded(t testing.TB, what string, fn func()) {
 	fn()
 }
 
-// SIM-040: a Sim kept from one run panics when used in a later run or after SimulateSeeds
-// returns, and works in kernel callbacks of its own run after body returned.
+// SIM-040: a Sim kept from one run panics when used in a later run, in a cleanup of the seed
+// subtest or after SimulateSeeds returns, and works in kernel callbacks of its own run after body
+// returned.
 func TestSIM040UsedAfterRun(t *testing.T) {
 	var saved *sim.Sim
-	var later int
+	var later, cleanups int
 	sim.SimulateSeeds(t, sim.Options{}, func(s *sim.Sim) {
 		w := s.World()
+		w.T().Cleanup(func() {
+			cleanups++
+			expectEnded(w.T(), "Sim in a cleanup that body registered", func() { s.World() })
+		})
 		w.Sim.After(time.Millisecond, "test/later", func() {
 			if s.World() != w {
 				w.T().Error("World() in a callback of the run returned another World")
@@ -88,6 +106,9 @@ func TestSIM040UsedAfterRun(t *testing.T) {
 	}, 0x1, 0x2)
 	if later == 0 {
 		t.Error("the callback scheduled by body never ran")
+	}
+	if cleanups == 0 {
+		t.Error("the cleanup registered by body never ran")
 	}
 	expectEnded(t, "Sim after SimulateSeeds returned", func() { saved.World() })
 }

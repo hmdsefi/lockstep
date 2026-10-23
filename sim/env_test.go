@@ -69,14 +69,15 @@ func buildEnvModule(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The root's requirements pin faultline and the rest of the build list, so nothing is
-	// downloaded.
+	// The root go.mod is copied verbatim apart from its module line: its requirements pin
+	// faultline and the rest of the build list, so nothing is downloaded. A relative replace or
+	// tool directive in it would not resolve from the temporary directory.
 	const self = "module github.com/hmdsefi/lockstep\n"
 	if !strings.HasPrefix(string(gomod), self) {
 		t.Fatalf("%s/go.mod does not start with %q", root, self)
 	}
 	mod := "module example.com/simenv\n" + strings.TrimPrefix(string(gomod), self) +
-		"\nrequire github.com/hmdsefi/lockstep v0.0.0\n\nreplace github.com/hmdsefi/lockstep => " + root + "\n"
+		"\nrequire github.com/hmdsefi/lockstep v0.0.0\n\nreplace github.com/hmdsefi/lockstep => " + strconv.Quote(root) + "\n"
 
 	dir := t.TempDir()
 	for _, f := range []struct{ name, data string }{
@@ -86,6 +87,8 @@ func buildEnvModule(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	// go test puts its own GOROOT/bin first on PATH, so this is the go that built this binary;
+	// with GOTOOLCHAIN=local it must be at least go.mod's go version.
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +198,8 @@ func TestATSIM03EnvironmentSwitch(t *testing.T) {
 // in the non-test files of the package in dir that SIM-030 does not allow: a call outside env.go,
 // or a call in env.go whose argument is not the literal name LOCKSTEP_CHECK_DETERMINISM or
 // LOCKSTEP_WORKLOAD, or a second read of one name. It also reports env.go not reading
-// LOCKSTEP_CHECK_DETERMINISM.
+// LOCKSTEP_CHECK_DETERMINISM. It finds calls through the package name only: dot-imports and
+// function values (f := os.Getenv) are not detected, as SIM-030 is about calls.
 func envReads(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
