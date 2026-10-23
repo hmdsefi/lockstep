@@ -27,7 +27,7 @@ func Stop(from Sender, addr Address) error {
 		return fmt.Errorf("%w: %s", ErrNotLocal, addr)
 	}
 	// A path address acts on the actor registered at its path, whatever its type (ACT-440).
-	c, _ := sys.resolve(addr, nil)
+	c, _, _ := sys.resolve(addr, nil)
 	if c == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, addr)
 	}
@@ -215,15 +215,20 @@ func (c *cell[M]) finishStop() {
 // drain closes both queues and records what they held (SUP-060 step 5, MBX-160), in this order:
 // each Sent entry, in queue order, as a dead letter with reason stopped, from its sender to the
 // stopped actor's address (MBX §8); each Self entry, piped replies included, as lockstep.drop
-// reason incarnation-ended; each signal left in the system queue as lockstep.drop reason
-// not-running. The other system messages are discarded without a record.
+// reason incarnation-ended, a piped reply described by its value or error (MBX §8); each signal
+// left in the system queue as lockstep.drop reason not-running. The other system messages are
+// discarded without a record.
 func (c *cell[M]) drain() {
 	sent, self, signals := c.closeQueues()
 	for _, e := range sent {
 		c.sys.deadLetter(e.from, c.addr, reasonStopped, e.msg)
 	}
 	for _, e := range self {
-		c.sys.recordDropEnded(c.addr, e.inc, e.msg)
+		msg := e.msg
+		if p, ok := msg.(pipedReply[M]); ok {
+			msg = p.reply
+		}
+		c.sys.recordDropEnded(c.addr, e.inc, msg)
 	}
 	for _, sig := range signals {
 		c.sys.recordDropNotRunning(c.addr, sig)

@@ -189,18 +189,27 @@ func (s *System) recordFail(addr Address, inc uint32, src supervise.Source, err 
 func (c *cell[M]) keep(m sysMsg) { c.kept = append(c.kept, m) }
 
 // dropKept empties the kept list when the Suspended cell's incarnation ends, by restart or stop
-// (SUP-160): each kept signal is recorded as lockstep.drop reason not-running, in arrival order;
-// the kept notices are discarded, since the children they name are being stopped. The children
-// whose failure the cell escalated are stopped the same way, so the escalated list is cleared
-// too (SUP-220).
+// (SUP-160): each kept signal is recorded as lockstep.drop reason not-running, in arrival order,
+// except a Terminated that a delivery would skip (ACT-630: its address is not watched, or is
+// watched under another Watch call's sequence number), which is discarded without a record; the
+// kept notices are discarded, since the children they name are being stopped. The children whose
+// failure the cell escalated are stopped the same way, so the escalated list is cleared too
+// (SUP-220).
 func (c *cell[M]) dropKept() {
 	kept := c.kept
 	c.kept = nil
 	c.sup.escalated = nil
 	for _, m := range kept {
-		if sm, ok := m.(signalMsg); ok {
-			c.sys.recordDropNotRunning(c.addr, sm.sig)
+		sm, ok := m.(signalMsg)
+		if !ok {
+			continue
 		}
+		if t, isTerm := sm.sig.(Terminated); isTerm && c.ctx != nil {
+			if seq, in := c.ctx.watched.seq(t.Addr); !in || seq != sm.seq {
+				continue
+			}
+		}
+		c.sys.recordDropNotRunning(c.addr, sm.sig)
 	}
 }
 

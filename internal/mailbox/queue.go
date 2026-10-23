@@ -85,8 +85,9 @@ type slot[T any] struct {
 	removed bool
 }
 
-// Queue is a user mailbox: FIFO, many producers, one consumer. Offer, OfferWait, Recheck, Len,
-// SentLen and Close are safe for concurrent use; Pop is called only by the owning actor's turn.
+// Queue is a user mailbox: FIFO, many producers, one consumer. Offer, OfferWait, OfferWaitNotify,
+// Recheck, Waiting, Len, SentLen and Close are safe for concurrent use; Pop is called only by the
+// owning actor's turn.
 type Queue[T any] struct {
 	mu       sync.Mutex
 	capacity int

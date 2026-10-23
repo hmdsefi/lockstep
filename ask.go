@@ -88,8 +88,9 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	})
 
 	// 7. The routing outcome (MSG-310). The router has already resolved the ask for a dead letter
-	// on this system (ErrTerminated) and made an enqueued request tracked by its target; a request
-	// handed to the transport or held by the interposer leaves the ask pending.
+	// on this system (ErrTerminated) and for a request the target's mailbox refused or dropped
+	// (askRefused), and made an enqueued request tracked by its target; a request handed to the
+	// transport or held by the interposer leaves the ask pending.
 	if o.kind == routeFailed {
 		sys.settle(p.addr, resolution{how: byRouting, from: to.addr, err: o.err})
 	}

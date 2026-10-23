@@ -31,9 +31,12 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 }
 
 // SendContext is Send, except that when from is a *System, the target's policy is BlockSender
-// and the message cannot be enqueued yet (the mailbox is full or the System sheds, OVL-120), it
-// waits until the message is enqueued or ctx ends, and then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
+// and the message cannot be enqueued yet, it waits until the message is enqueued or ctx ends, and
+// then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
 func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) error {
+	if ctx == nil {
+		panic("lockstep: SendContext: nil context") // MBX §7, before the Sender checks
+	}
 	sys, fromAddr, fromRef := mustSender(from).sendOrigin() // panics for a Context outside its turn (ACT-120)
 	if to.IsZero() {
 		return fmt.Errorf("%w: %s", ErrNotFound, to.addr)
@@ -213,11 +216,10 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 // through whoever removes its tracked entry: here, or the stop's sweep of its tracked asks
 // (MSG-340), so it fails once and leaves no tracked entry behind.
 func (s *System) offer(r routeRequest) outcome {
-	c, reason := s.resolve(r.to, r.typ)
+	c, owner, reason := s.resolve(r.to, r.typ)
 	if c == nil {
 		return s.deadRequest(r, reason)
 	}
-	owner := addressOf(c.Address())
 	shed := s.admitSend(owner)
 	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
 	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, size: r.size, kind: entrySent}
@@ -306,23 +308,25 @@ func (s *System) offerWaiting(c actorCell, r routeRequest, e entry, shed error) 
 	return out, err
 }
 
-// resolve returns the cell the local address to names, or nil and the dead-letter reason. A full
-// address needs an actor registered with exactly that path and uid (reason stopped). A path
-// address (uid 0) names whichever actor is registered at its path, provided it was spawned with
-// message type typ (reason not-found; ACT-440).
-func (s *System) resolve(to Address, typ reflect.Type) (actorCell, string) {
+// resolve returns the cell the local address to names and the cell's full address, or nil and
+// the dead-letter reason. A full address needs an actor registered with exactly that path and uid
+// (reason stopped). A path address (uid 0) names whichever actor is registered at its path,
+// provided it was spawned with message type typ (reason not-found; ACT-440). The address comes
+// from the registry, not from the cell: Spawn writes the cell's addr only after it registers the
+// cell, so reading it here without the cell's lock would race.
+func (s *System) resolve(to Address, typ reflect.Type) (actorCell, Address, string) {
 	uid, a, ok := s.reg.Lookup(to.path)
 	c, _ := a.(actorCell)
 	if to.uid == 0 {
 		if !ok || c == nil || typ != nil && c.msgType() != typ {
-			return nil, reasonNotFound
+			return nil, Address{}, reasonNotFound
 		}
-		return c, ""
+		return c, Address{node: s.node, path: to.path, uid: uid}, ""
 	}
 	if !ok || c == nil || uid != to.uid {
-		return nil, reasonStopped
+		return nil, Address{}, reasonStopped
 	}
-	return c, ""
+	return c, Address{node: s.node, path: to.path, uid: uid}, ""
 }
 
 // sendRemote routes r to another node: to the transport, or to a dead letter when the engine has

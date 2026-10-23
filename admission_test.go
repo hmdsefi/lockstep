@@ -479,7 +479,8 @@ func TestOVL150ChangeRecords(t *testing.T) {
 // AT-OVL-46's Phase 1 part: OVL-120, OVL-150, MBX-075. An outside sender to a BlockSender mailbox
 // with room waits while shedding, recorded as event=shed dropped=none; the change to admitting
 // rechecks the mailbox and its message is delivered. A wait whose context ends first returns the
-// context's error with no further record.
+// context's error with no further record. A sender whose context has ended before it could wait
+// gets the context's error, and its shed message is recorded as event=shed dropped=new.
 func TestOVL150RecheckReleasesWaiter(t *testing.T) {
 	t.Run("released", func(t *testing.T) {
 		sys, rec, adm := newAdmissionSystem(t)
@@ -523,6 +524,24 @@ func TestOVL150RecheckReleasesWaiter(t *testing.T) {
 		}))
 		if n := cellOf(t, sys, tp).user.Waiting(); n != 0 {
 			t.Errorf("%d senders wait, want 0", n)
+		}
+	})
+
+	t.Run("ended", func(t *testing.T) {
+		sys, rec, adm := newAdmissionSystem(t)
+		tp := spawnTarget(t, sys, "t", 1, BlockSender)
+		to := tp.Address()
+		adm.change(pressure(true, true))
+		adm.refuseSends(shedPressure)
+		before := len(rec.Records())
+		if err := SendContext(cancelled(), sys, tp, 1); err != context.Canceled {
+			t.Errorf("SendContext = %v, want context.Canceled unwrapped", err)
+		}
+		sameLines(t, "records", offerRecords(rec.Records(), before, to), []string{
+			shedRecord(sys.user, to, BlockSender, "new"),
+		})
+		if n := cellOf(t, sys, tp).user.Len(); n != 0 {
+			t.Errorf("the mailbox holds %d messages, want 0", n)
 		}
 	})
 }
