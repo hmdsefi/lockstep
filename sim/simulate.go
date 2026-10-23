@@ -21,6 +21,10 @@ type Options struct {
 	// System holds options applied, in order, to the System of every lockstep node at every
 	// boot. lockstep.WithNodeName has no effect: a node system's name is its kernel node's name.
 	System []lockstep.Option
+
+	// Budget sets count-based admission budgets for every lockstep node. The zero value sets
+	// none. See Budget.
+	Budget Budget
 }
 
 // Simulate runs body once for every run of every seed, as faultline.Run does, with a fresh Sim
@@ -32,7 +36,7 @@ type Options struct {
 func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 	t.Helper()
 	fo := setup(t, opts)
-	r := &runner{body: body, system: slices.Clone(opts.System)}
+	r := &runner{body: body, system: slices.Clone(opts.System), budget: opts.Budget}
 	defer r.end()
 	faultline.Run(t, fo, r.run)
 }
@@ -42,7 +46,7 @@ func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 func SimulateSeeds(t *testing.T, opts Options, body func(s *Sim), seeds ...uint64) {
 	t.Helper()
 	fo := setup(t, opts)
-	r := &runner{body: body, system: slices.Clone(opts.System)}
+	r := &runner{body: body, system: slices.Clone(opts.System), budget: opts.Budget}
 	defer r.end()
 	faultline.RunSeeds(t, fo, r.run, seeds...)
 }
@@ -71,6 +75,9 @@ func validate(opts Options) (faultline.Options, error) {
 			return faultline.Options{}, fmt.Errorf("lockstep: sim: Options.System[%d] is nil", i)
 		}
 	}
+	if err := validateBudget(opts.Budget); err != nil {
+		return faultline.Options{}, err
+	}
 	return opts.Options, nil
 }
 
@@ -78,6 +85,7 @@ func validate(opts Options) (faultline.Options, error) {
 type runner struct {
 	body   func(s *Sim)
 	system []lockstep.Option // Options.System
+	budget Budget            // Options.Budget
 	cur    *Sim              // the Sim of the latest run
 }
 
@@ -87,7 +95,7 @@ type runner struct {
 // returns, this cleanup runs before the ones body registered.
 func (r *runner) run(w *faultline.World) {
 	r.end()
-	s := &Sim{w: w, system: r.system}
+	s := &Sim{w: w, system: r.system, budget: r.budget}
 	r.cur = s
 	s.registerChecks()
 	w.Sim.OnCrash(s.crashed)

@@ -5,7 +5,6 @@ package sim
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel"
@@ -19,6 +18,7 @@ type Sim struct {
 	w      *faultline.World
 	ended  bool
 	system []lockstep.Option // Options.System, applied at every boot (SIM-070)
+	budget Budget            // Options.Budget, for every node system (SFT-140)
 
 	// slots holds the first failure stored for each named check, indexed like checkNames.
 	slots [len(checkNames)]error
@@ -122,7 +122,7 @@ func (s *Sim) fifo(a, b kernel.NodeID) {
 func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e := newEngine(s, n, n.Incarnation())
 	ln.eng = e
-	b, err := hooks.NewSystem(e.bundle, slices.Clip(s.system))
+	b, err := hooks.NewSystem(e.bundle, s.systemOptions())
 	if err != nil {
 		ln.sys = nil
 		e.misuse(err)

@@ -202,6 +202,10 @@ pkg github.com/hmdsefi/lockstep/sim, method (*Sim) World() *faultline.World
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Effect() any
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Now() time.Time
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Rand() *rand.Rand
+pkg github.com/hmdsefi/lockstep/sim, type Budget struct
+pkg github.com/hmdsefi/lockstep/sim, type Budget struct, Actors int
+pkg github.com/hmdsefi/lockstep/sim, type Budget struct, Bytes int64
+pkg github.com/hmdsefi/lockstep/sim, type Budget struct, ResumePercent int
 pkg github.com/hmdsefi/lockstep/sim, type Counts struct
 pkg github.com/hmdsefi/lockstep/sim, type Counts struct, Asks uint64
 pkg github.com/hmdsefi/lockstep/sim, type Counts struct, DeadLetters uint64
@@ -225,6 +229,7 @@ pkg github.com/hmdsefi/lockstep/sim, type EffectResult struct, Err error
 pkg github.com/hmdsefi/lockstep/sim, type EffectResult struct, Latency time.Duration
 pkg github.com/hmdsefi/lockstep/sim, type EffectResult struct, Value any
 pkg github.com/hmdsefi/lockstep/sim, type Options struct
+pkg github.com/hmdsefi/lockstep/sim, type Options struct, Budget Budget
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, System []lockstep.Option
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, embedded faultline.Options
 pkg github.com/hmdsefi/lockstep/sim, type PressureRule struct
