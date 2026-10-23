@@ -51,13 +51,23 @@ func (r toyRow) scenario() scenario {
 	return scenario{name: r.name, run: func(t *testing.T) { r.run(t, &toyObs{}) }}
 }
 
-// toyRows are the scenarios of DET-260, in its order.
+// toyRows are the scenarios of DET-260, in its order, then the rows other specs add under DET-265.
 var toyRows = []toyRow{
 	{name: "pingpong", baseSeed: 0x1001, body: pingpongBody},
 	{name: "fanin", baseSeed: 0x1002, body: faninBody},
 	{name: "ticker", baseSeed: 0x1003, body: tickerBody},
 	{name: "ask", baseSeed: 0x1004, body: askBody, after: askAfter},
 	{name: "beacon-crash", baseSeed: 0x1005, body: beaconCrashBody},
+	{name: "pingpong-faults", baseSeed: 0x1006, body: pingpongFaultsBody}, // AT-SIM-28
+}
+
+// toyScenarios returns toyRows as golden scenarios, in table order.
+func toyScenarios() []scenario {
+	list := make([]scenario, 0, len(toyRows))
+	for _, row := range toyRows {
+		list = append(list, row.scenario())
+	}
+	return list
 }
 
 // boot runs the simulation until every node's setup has run (DET-260).
@@ -170,6 +180,32 @@ func beaconCrashBody(s *sim.Sim, _ *toyObs) {
 		// Beats to the crashed and then restarted listener are dead letters.
 		if p.Sent != 40 || p.Heard >= 40 {
 			return fmt.Errorf("beacon sent %d and listener heard %d, want 40 sent and fewer heard", p.Sent, p.Heard)
+		}
+		return nil
+	})
+}
+
+// pingpongFaultsBody is the ping-pong across three nodes of AT-SIM-28: two pingers play the one
+// ponger while random crash and partition faults hit the nodes. A restarted pinger gets no
+// StartPing and pings to a crashed ponger are dead letters, so neither probe passes 50; the seed
+// passing means no check of the runtime failed under the faults.
+func pingpongFaultsBody(s *sim.Sim, _ *toyObs) {
+	p1, p3 := &toys.PingPongProbe{}, &toys.PingPongProbe{}
+	var pinger1, pinger3 lockstep.PID[toys.PingerMsg]
+	var ponger lockstep.PID[toys.PongerMsg]
+	s.Node("n1", func(sys *lockstep.System) { pinger1 = must(toys.SpawnPinger(sys, p1)) })
+	s.Node("n2", func(sys *lockstep.System) { ponger = must(toys.SpawnPonger(sys)) })
+	s.Node("n3", func(sys *lockstep.System) { pinger3 = must(toys.SpawnPinger(sys, p3)) })
+	s.World().Plan(&fault.Random{Rules: []fault.Rule{
+		{Kind: fault.KindCrash, Every: 500 * time.Millisecond, MaxFor: 100 * time.Millisecond},
+		{Kind: fault.KindPartition, Every: 400 * time.Millisecond, MaxFor: 150 * time.Millisecond},
+	}})
+	boot(s)
+	send(s, "n1", pinger1, toys.PingerMsg(toys.StartPing{Peer: ponger, Rounds: 50}))
+	send(s, "n3", pinger3, toys.PingerMsg(toys.StartPing{Peer: ponger, Rounds: 50}))
+	s.World().Final("pingpong-faults", func() error {
+		if p1.Rounds > 50 || p3.Rounds > 50 {
+			return fmt.Errorf("pingers received pongs %d and %d, want at most 50", p1.Rounds, p3.Rounds)
 		}
 		return nil
 	})

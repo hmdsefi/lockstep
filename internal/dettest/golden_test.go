@@ -39,9 +39,9 @@ type scenario struct {
 	run  func(t *testing.T)
 }
 
-// scenarios is the list TestGolden runs. Plan 1.5 adds the scenarios of DET-260; until then the
-// list is empty and the committed file holds the two header lines only (AT-DET-18).
-var scenarios []scenario
+// scenarios is the list TestGolden runs: the toy scenarios of DET-260, then those other specs add
+// under DET-265, in the order of their table.
+var scenarios = toyScenarios()
 
 // goldenSkipVars are the variables that make TestGolden skip, in the order DET-270 step 1 checks
 // them.
@@ -424,20 +424,33 @@ func TestCompareGolden(t *testing.T) {
 	}
 }
 
-// AT-DET-18: the committed file is exactly the header, and parses to no entries.
+// AT-DET-18, DET-160: the committed file is in FormatGolden's form and pins three seeds of every
+// scenario of the list, and nothing else.
 func TestGoldenFile(t *testing.T) {
 	data, err := os.ReadFile(goldenFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != header {
-		t.Errorf("%s = %q, want %q", goldenFile, data, header)
+	es, err := ParseGolden(data)
+	if err != nil {
+		t.Fatalf("ParseGolden(%s): %v", goldenFile, err)
 	}
-	if es, err := ParseGolden(data); err != nil || len(es) != 0 {
-		t.Errorf("ParseGolden(%s) = %v, %v", goldenFile, es, err)
+	if string(FormatGolden(es)) != string(data) {
+		t.Errorf("FormatGolden of the entries of %s differs from the file", goldenFile)
 	}
-	if string(FormatGolden(nil)) != string(data) {
-		t.Errorf("FormatGolden(nil) differs from %s", goldenFile)
+	counts := make([]int, len(scenarios))
+	for _, e := range es {
+		i := slices.IndexFunc(scenarios, func(s scenario) bool { return s.name == e.Scenario })
+		if i < 0 {
+			t.Errorf("%s pins %s seed 0x%016x, which is not a listed scenario", goldenFile, e.Scenario, e.Seed)
+			continue
+		}
+		counts[i]++
+	}
+	for i, n := range counts {
+		if n != goldenSeeds {
+			t.Errorf("%s pins %d seeds of %s, want %d", goldenFile, n, scenarios[i].name, goldenSeeds)
+		}
 	}
 }
 
@@ -733,9 +746,8 @@ func TestGoldenSuite(t *testing.T) {
 	}
 }
 
-// AT-DET-18: TestGolden with the header-only file and the empty list passes and compares nothing;
-// with a variable of DET-270 step 1 set it skips with that variable's text, FAULTLINE_RESULTS
-// included.
+// AT-DET-18: TestGolden passes with the committed file; with a variable of DET-270 step 1 set it
+// skips with that variable's text, FAULTLINE_RESULTS included.
 func TestGoldenSkips(t *testing.T) {
 	res := runGoldenChild(t, "TestGolden")
 	if res.exit != 0 || !strings.Contains(res.out, "--- PASS: TestGolden") {
