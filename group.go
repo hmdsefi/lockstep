@@ -42,7 +42,7 @@ func (op *groupOp) waits(child Address) bool {
 
 // pendingBegin is the delay timer of a group restart. The timer's callback runs in engine context,
 // outside any turn, so the two flags are atomic: the callback sets fired when it starts, and
-// abandonGroup sets abandoned, which the callback checks before it pushes anything. That closes
+// abandonGroup sets abandoned, which the callback checks before it pushes anything. That narrows
 // the window in which Cancel loses to a callback that has started (ENG-070).
 type pendingBegin struct {
 	cancel    engine.Cancel
