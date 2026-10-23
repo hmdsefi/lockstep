@@ -225,7 +225,13 @@ func TestGateReentrantSet(t *testing.T) {
 			if len(got) != 1 {
 				t.Errorf("nested change reported inside onChange: %+v", got)
 			}
-			shedSource(t, "AdmitSend from onChange", g.AdmitSend(), engine.SourcePressure)
+			// This runs on the goroutine below, so a failure must not call t.Fatalf.
+			err := g.AdmitSend()
+			var ae *engine.AdmissionError
+			if !errors.As(err, &ae) || ae.Source != engine.SourcePressure || !errors.Is(err, engine.ErrOverloaded) {
+				t.Errorf("AdmitSend from onChange = %v, want an *engine.AdmissionError from %v matching engine.ErrOverloaded",
+					err, engine.SourcePressure)
+			}
 		}
 	}, nil)
 
