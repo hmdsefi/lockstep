@@ -85,12 +85,15 @@ type slot[T any] struct {
 	removed bool
 }
 
-// Queue is a user mailbox: FIFO, many producers, one consumer. Offer, Len, SentLen and Close are
-// safe for concurrent use; Pop is called only by the owning actor's turn.
+// Queue is a user mailbox: FIFO, many producers, one consumer. Offer, OfferWait, Recheck, Len,
+// SentLen and Close are safe for concurrent use; Pop is called only by the owning actor's turn.
 type Queue[T any] struct {
 	mu       sync.Mutex
 	capacity int
 	policy   Policy
+
+	cond    sync.Cond    // signalled when a waiter's state changes or its context ends; L is &mu
+	waiters []*waiter[T] // senders waiting in OfferWait, in the order they started waiting
 
 	ring    []slot[T] // growable ring; the used slots are ring[head : head+used) modulo len(ring)
 	head    int
@@ -108,7 +111,9 @@ func New[T any](capacity int, policy Policy) *Queue[T] {
 	if policy > BlockSender {
 		panic("mailbox: unknown policy " + strconv.Itoa(int(policy)))
 	}
-	return &Queue[T]{capacity: capacity, policy: policy}
+	q := &Queue[T]{capacity: capacity, policy: policy}
+	q.cond.L = &q.mu
+	return q
 }
 
 // Capacity returns the capacity passed to New.
@@ -123,6 +128,11 @@ func (q *Queue[T]) Policy() Policy { return q.policy }
 func (q *Queue[T]) Offer(v T, kind Kind, forceFull bool) (out Outcome, dropped T) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	return q.offer(v, kind, forceFull)
+}
+
+// offer is Offer with q.mu held.
+func (q *Queue[T]) offer(v T, kind Kind, forceFull bool) (out Outcome, dropped T) {
 	if q.closed {
 		return Closed, dropped
 	}
@@ -151,7 +161,8 @@ func (q *Queue[T]) Offer(v T, kind Kind, forceFull bool) (out Outcome, dropped T
 }
 
 // Pop removes and returns the oldest entry. ok is false if the queue is empty. It takes the queue
-// mutex because producers run concurrently.
+// mutex because producers run concurrently. When it removes a Sent entry it hands the freed slot to
+// the first waiting sender if that sender is admitted (MBX-070).
 func (q *Queue[T]) Pop() (v T, kind Kind, ok bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -164,10 +175,11 @@ func (q *Queue[T]) Pop() (v T, kind Kind, ok bool) {
 	*s = slot[T]{}
 	q.head = (q.head + 1) % len(q.ring)
 	q.used--
+	q.skipRemoved()
 	if kind == Sent {
 		q.sent--
+		q.handOff()
 	}
-	q.skipRemoved()
 	return v, kind, true
 }
 
@@ -186,7 +198,7 @@ func (q *Queue[T]) SentLen() int {
 }
 
 // Close closes the queue and returns the remaining entries in queue order with their kinds.
-// Later offers return Closed. Close on a closed queue returns nil.
+// Waiting senders return Closed. Later offers return Closed. Close on a closed queue returns nil.
 func (q *Queue[T]) Close() []Entry[T] {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -202,6 +214,7 @@ func (q *Queue[T]) Close() []Entry[T] {
 		}
 	}
 	q.ring, q.head, q.used, q.removed, q.sent = nil, 0, 0, 0, 0
+	q.closeWaiters()
 	return rest
 }
 
