@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"io"
+	"math/rand/v2"
 	"sync/atomic"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -63,6 +64,13 @@ func (c *Context[M]) mustInTurn() {
 	if !c.inTurn.Load() {
 		panic("lockstep: Context of " + c.cell.addr.String() + " used outside its turn")
 	}
+}
+
+// Rand returns the random source of the current incarnation. Every call in one incarnation
+// returns the same *rand.Rand; a restart gets a new one. Use it only inside the actor's handlers.
+func (c *Context[M]) Rand() *rand.Rand {
+	c.mustInTurn()
+	return c.cell.random()
 }
 
 func (*Context[M]) spawner() {}
