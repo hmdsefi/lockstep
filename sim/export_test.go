@@ -25,8 +25,8 @@ type EngineBundle = engine.Engine
 // Stored returns the failure stored in the slot of check, or nil.
 func (s *Sim) Stored(check string) error { return s.slots[slot(check)] }
 
-// Engine returns the engine bundle of node name's latest boot, or the zero bundle before the first
-// boot or after a boot that built no system.
+// Engine returns the engine bundle of node name's latest boot, also when that boot built no
+// system, or the zero bundle before the first boot.
 func (s *Sim) Engine(name string) engine.Engine {
 	if e := s.lookup(name).eng; e != nil {
 		return e.bundle

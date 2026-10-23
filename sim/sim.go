@@ -129,7 +129,8 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e.host = b.Host
 	s.w.Net.Handle(n, e.arrive)
 
-	// Apply the node's pressure state to e's admission gate (SFT-125).
+	// Apply the node's pressure state to e's admission gate (SFT-125). This step comes with SFT's
+	// pressure support in plan 1.5; until then a node has no pressure state.
 
 	ln.sys = sys
 	ln.setup(sys)
