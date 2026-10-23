@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hmdsefi/lockstep/internal/dettest"
+	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
@@ -18,5 +19,22 @@ func TestMain(m *testing.M) { dettest.Main(m) }
 func TestATENG10HookUnset(t *testing.T) {
 	if hooks.NewSystem != nil {
 		t.Error("hooks.NewSystem != nil without package lockstep")
+	}
+}
+
+// AT-SIM-32 (the unset half), ENG-210: nothing in this binary initializes package lockstep, so
+// none of SIM's hooks is set.
+func TestHooksUnset(t *testing.T) {
+	if hooks.Discard != nil {
+		t.Error("hooks.Discard != nil without package lockstep")
+	}
+	if hooks.AskResolved != nil {
+		t.Error("hooks.AskResolved != nil without package lockstep")
+	}
+	if hooks.PendingAsks != nil {
+		t.Error("hooks.PendingAsks != nil without package lockstep")
+	}
+	if got := (hooks.PendingAsk{}); got.ByActor || got.Ask != (engine.Address{}) {
+		t.Errorf("zero PendingAsk = %+v", got)
 	}
 }

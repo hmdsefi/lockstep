@@ -57,7 +57,7 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Failer:     e,
 		Waiter:     e,
 		Interposer: nil, // SFT-070
-		Stop:       nil, // SIM-195
+		Stop:       e.stop,
 	}
 	return e
 }
@@ -89,6 +89,11 @@ func (e *simEngine) postTurn(a engine.ActorRef) {
 	})
 }
 
+// stop is the bundle's Stop, which System.Shutdown calls after every actor stopped (ENG-140): it
+// marks the engine dead (SIM-195, SIM-120). The node stays up, and System keeps returning the
+// stopped system until the next boot.
+func (e *simEngine) stop() { e.dead = true }
+
 // InTurn reports whether the caller runs inside a kernel callback (SIM-195, ENG-055).
 func (e *simEngine) InTurn() bool { return kernel.Active() != nil }
 
@@ -117,8 +122,11 @@ func (e *simEngine) Rand(label string) *rand.Rand {
 func (e *simEngine) Enabled() bool { return true }
 
 // Record emits a runtime record as a kernel record of the node, with the text of its owner's
-// template (SIM-185).
+// template (SIM-185). A dead engine records nothing (SIM-120).
 func (e *simEngine) Record(kind string, attrs ...engine.Attr) {
+	if e.dead {
+		return
+	}
 	e.emit(kind, recordText(kind, attrs), attrs)
 }
 
