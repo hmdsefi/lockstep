@@ -122,8 +122,9 @@ func (c *cell[M]) processSystem(m sysMsg) {
 	case stop:
 		c.startStop(m.reason)
 	case stopped:
-		c.sup.childStopped(m.child)
+		c.sup.childStopped(c.sys, m.child, c)
 		c.childStopped(m.child)
+		c.replayHeld()
 	case failed:
 		// Decided in Running (SUP-170) and kept in Suspended until a resume (SUP-160). Starting
 		// has no failed child, and Restarting, Stopping and Stopped discard it: the children are
@@ -140,6 +141,7 @@ func (c *cell[M]) processSystem(m sysMsg) {
 		switch c.state {
 		case supervise.Running:
 			c.sup.childEnded(c.sys, m, c)
+			c.replayHeld()
 		case supervise.Suspended:
 			c.keep(m)
 		}
@@ -183,6 +185,7 @@ func (c *cell[M]) begin() {
 	c.mu.Unlock()
 	c.actor = a
 	c.ctx = &Context[M]{cell: c, inc: c.inc}
+	c.rng = nil // the stream of an earlier incarnation is never reused (TMR-120)
 	c.starter, _ = a.(Starter[M])
 	c.stopper, _ = a.(Stopper[M])
 	c.signals, _ = a.(SignalReceiver[M])
