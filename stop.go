@@ -92,13 +92,15 @@ func (c *cell[M]) startStop(reason StopReason) {
 
 // endIncarnationWork is step 1 of SUP-060 and SUP-190 for a live incarnation: its timers are
 // cancelled (TMR-080), its watches leave every watcher list and its watched set (SUP-340,
-// ACT-640), and its Overloaded subscription ends (OVL-170). Cancelling the incarnation's effects
-// (EFF) belongs here too.
+// ACT-640), and its Overloaded subscription ends (OVL-170). Its pending effects are cancelled in
+// ID order after the timers and before the watches, the order of SUP-060 and SUP-190 step 1
+// (EFF-100); the effects' records come before anything the Stopped hook or the stop records.
 func (c *cell[M]) endIncarnationWork() {
 	if c.ctx == nil {
 		return
 	}
 	c.cancelTimers()
+	c.cancelEffects()
 	c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
 	c.ctx.watched = watchedSet{}
 	if c.ctx.overloadSub {

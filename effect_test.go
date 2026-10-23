@@ -704,9 +704,20 @@ func TestEFF050ExactlyOneOutcome(t *testing.T) {
 	}
 }
 
-// EFF-080, MBX-170: a result of an incarnation that has ended is never delivered: it is dropped
-// as a Self entry of an ended incarnation, whether it was in the mailbox when the incarnation
-// ended or arrived after.
+// doneSpy keeps the done function of the last effect started through it.
+type doneSpy struct {
+	engine.Effects
+	done func(v any, err error)
+}
+
+func (s *doneSpy) Start(req engine.EffectRequest, done func(v any, err error)) engine.Cancel {
+	s.done = done
+	return s.Effects.Start(req, done)
+}
+
+// EFF-080, EFF-100, MBX-170: a result of an incarnation that has ended is never delivered. One
+// still in the mailbox when the incarnation ends is dropped as a Self entry of an ended
+// incarnation; an effect still pending is cancelled, so its late result is ignored.
 func TestEFF080ResultOfEndedIncarnation(t *testing.T) {
 	restart := func(t *testing.T, sys *System, eng *enginetest.Engine, pid PID[any]) {
 		t.Helper()
@@ -728,18 +739,30 @@ func TestEFF080ResultOfEndedIncarnation(t *testing.T) {
 	}
 
 	t.Run("arrives after the restart", func(t *testing.T) {
-		sys, eng := newManualSystem(t)
+		// The restart cancelled the effect (EFF-100), so a result the engine still reports is
+		// ignored without a record (EFF-060), and nothing of it reaches the new incarnation.
+		eng := enginetest.New("local", 1)
+		b := eng.Engine()
+		spy := &doneSpy{Effects: b.Effects}
+		b.Effects = spy
+		sys, err := newSystem(b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
 		pid, a := spawnEffectActor(t, sys, eng)
 		inTurn(t, sys, eng, pid, func(ctx *Context[any]) { doFetch(ctx, "X") })
 		restart(t, sys, eng, pid)
-		eng.CompleteEffect(1, int64(7), nil)
+		before := len(eng.Records())
+		spy.done(int64(7), nil)
 		eng.RunUntilIdle()
 		if len(a.got) != 0 {
 			t.Errorf("the new incarnation got %v", a.got)
 		}
-		d := drops(eng)
-		if len(d) != 1 || d[0]["msg"] != "7" || d[0]["inc"] != "1" || d[0]["to"] != pid.Address().String() {
-			t.Errorf("drop records = %v, want one for the value 7 of incarnation 1", d)
+		if n := len(eng.Records()) - before; n != 0 {
+			t.Errorf("%d records for the late result, want none: %v", n, eng.Records()[before:])
+		}
+		if d := drops(eng); len(d) != 0 {
+			t.Errorf("drop records = %v, want none", d)
 		}
 	})
 
