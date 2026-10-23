@@ -452,3 +452,41 @@ func TestATACT18MessagesBeforeStart(t *testing.T) {
 		t.Errorf("events %v, want %v", seq, want)
 	}
 }
+
+// A Send to a path address can find an actor that Spawn registered a moment ago, while Spawn is
+// still setting the cell up; it must not read the cell's address without the cell's lock. Run
+// under -race, this test fails if routing reads it.
+func TestSendByPathWhileSpawning(t *testing.T) {
+	sys := newLocalSystem(t)
+	const n = 100
+	paths := make([]PID[int], n)
+	for i := range paths {
+		paths[i] = PIDAt[int](sys.node, "/user/r"+strconv.Itoa(i))
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			for _, p := range paths {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				_ = Send(sys, p, 1)
+			}
+		}
+	}()
+	for i := range n {
+		if _, err := Spawn(sys, "r"+strconv.Itoa(i), actorOf[int](&fnActor[int]{})); err != nil {
+			t.Errorf("Spawn r%d: %v", i, err)
+		}
+	}
+	close(done)
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sending goroutine did not stop within 10 s")
+	}
+}
