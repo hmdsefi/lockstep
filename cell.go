@@ -4,13 +4,12 @@
 package lockstep
 
 import (
-	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/mailbox"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // actorCell is the untyped view of a cell: the registry stores cells as this interface (in an
@@ -36,19 +35,9 @@ type actorCell interface {
 	// requestStop puts stop{reason} on the system queue unless the cell already has a stop
 	// request (ACT-710, SUP-050). from is the cell whose turn asks, or nil.
 	requestStop(reason StopReason, from engine.ActorRef)
+	// lifecycle returns the cell's state and incarnation number; any goroutine may call it.
+	lifecycle() (supervise.State, uint32)
 }
-
-// cellState is a cell's lifecycle state as the turn loop sees it. Plan 1.3's state machine (SUP)
-// replaces it.
-type cellState uint8
-
-const (
-	cellStarting cellState = iota // begin not processed yet: user messages wait (ACT-340)
-	cellRunning                   // the incarnation accepts user messages (ENG-310 step 2)
-	cellFailed                    // a handler failed: no further user message is popped
-	cellStopping                  // the stop sequence runs (SUP-060): no user message is popped
-	cellStopped                   // the final stop completed; the queues are closed
-)
 
 // cell is one actor: the engine.ActorRef that engines schedule (ENG-300). The same cell, with the
 // same Slot, serves every incarnation for the PID's lifetime.
@@ -79,19 +68,21 @@ type cell[M any] struct {
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)
 	stopReq bool   // a stop request was queued; later ones are discarded (SUP-050, ACT-710)
 	liveInc uint32 // the live incarnation's number, 0 while none is live: Pipe checks it (MSG-610)
+	// seenState and seenInc mirror the turn-owned state and inc for lifecycle.
+	seenState supervise.State
+	seenInc   uint32
 	// held and heldReady are the test-only hold hook (hold.go): the cell runs no turn while held,
 	// and heldReady remembers a Ready or a turn that the hold swallowed.
 	held, heldReady bool
 
 	// turn-owned
-	state   cellState
-	inc     uint32 // incarnation number: 0 at spawn, +1 per started incarnation (SUP-020)
+	state   supervise.State // changed only by setState, along the edges of SUP-010
+	inc     uint32          // incarnation number: 0 at spawn, +1 per started incarnation (SUP-020)
 	actor   Actor[M]
 	ctx     *Context[M]
 	starter Starter[M]        // the incarnation's optional interfaces, asserted once (ACT-100)
 	stopper Stopper[M]        // called by the stop sequence (SUP-060)
 	signals SignalReceiver[M] // called by deliverSignal
-	failure error             // the error handlerFailed got; supervision's in plan 1.3
 
 	// turn-owned, from cellStopping on (stop.go)
 	stopReason StopReason // the reason of the one stop request
@@ -102,11 +93,13 @@ type cell[M any] struct {
 // validated, and whose system queue is unbounded (MBX-010).
 func newCell[M any](sys *System, parent Address, factory func() Actor[M], mbx mailboxConfig) *cell[M] {
 	return &cell[M]{
-		sys:     sys,
-		parent:  parent,
-		factory: factory,
-		sysq:    mailbox.NewSystemQueue[sysMsg](),
-		user:    mailbox.New[entry](mbx.capacity, mbx.policy.queuePolicy()),
+		sys:       sys,
+		parent:    parent,
+		factory:   factory,
+		sysq:      mailbox.NewSystemQueue[sysMsg](),
+		user:      mailbox.New[entry](mbx.capacity, mbx.policy.queuePolicy()),
+		state:     supervise.Starting, // SUP-010
+		seenState: supervise.Starting,
 	}
 }
 
@@ -207,14 +200,6 @@ func (c *cell[M]) closeQueues() []entry {
 	return sent
 }
 
-// handlerFailed is the one place a failed handler goes (ENG-330): a recovered panic of the
-// factory, Started or Receive, or a nil actor from the factory. Until supervision (plan 1.3) it
-// keeps err and stops the cell from popping user messages.
-func (c *cell[M]) handlerFailed(err error) {
-	c.failure = err
-	c.state = cellFailed
-}
-
 // schedule asks the engine to run c after an enqueue (ENG-350), unless c is held (hold.go). from is
 // the cell whose turn enqueues, or nil. The caller holds no lock.
 func (c *cell[M]) schedule(from engine.ActorRef) {
@@ -238,22 +223,9 @@ func (s *System) ready(a, from engine.ActorRef) {
 	s.eng.Scheduler.Ready(a)
 }
 
-// errNilActor is the failure of a factory that returns nil (SUP-040).
-var errNilActor = errors.New("lockstep: factory returned nil actor")
-
-// handlerPanic is the error of a recovered panic in actor code, until SUP's PanicError (plan 1.3)
-// replaces it.
-type handlerPanic struct{ value any }
-
-func (p *handlerPanic) Error() string { return fmt.Sprintf("lockstep: panic: %v", p.value) }
-
-// sysMsg is one system-queue message: begin, signals (signalMsg), stop and stopped (stop.go).
+// sysMsg is one system-queue message: a command or a notice of SUP §3 (lifecycle.go) or a signal
+// (signalMsg).
 type sysMsg interface{ isSysMsg() }
-
-// begin starts the first incarnation (ACT-340, SUP-030).
-type begin struct{}
-
-func (begin) isSysMsg() {}
 
 // fifo is an unbounded first-in, first-out queue for the guardian sweep's messages (system.go). It
 // is not safe for concurrent use; its owner's mu guards it.

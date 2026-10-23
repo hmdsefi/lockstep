@@ -4,13 +4,12 @@
 package lockstep
 
 import (
-	"errors"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/engine/enginetest"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // ENG-310, ENG-320: the budget bounds user messages per turn; more reports what is left.
@@ -61,8 +60,8 @@ func TestRunTurnBudget(t *testing.T) {
 	}
 }
 
-// ENG-330: a panic in Receive stays inside RunTurn, goes to handlerFailed, and the cell pops no
-// further user message.
+// ENG-330, SUP-150: a panic in Receive stays inside RunTurn, suspends the cell, and the cell pops
+// no further user message.
 func TestRunTurnRecoversPanic(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var got []int
@@ -84,8 +83,10 @@ func TestRunTurnRecoversPanic(t *testing.T) {
 	if !slices.Equal(got, []int{1}) {
 		t.Errorf("received %v, want [1]", got)
 	}
-	if c.state != cellFailed || c.failure == nil || !strings.Contains(c.failure.Error(), "boom") {
-		t.Errorf("state %d, failure %v; want cellFailed and the panic", c.state, c.failure)
+	fails := recordsOf(eng.Records(), "lockstep.fail")
+	want := []string{"actor=" + pid.String(), "inc=1", "source=receive", "err=lockstep: panic: boom"}
+	if c.state != supervise.Suspended || len(fails) != 1 || !slices.Equal(fails[0], want) {
+		t.Errorf("state %v, lockstep.fail %q; want suspended and [%q]", c.state, fails, want)
 	}
 	if c.ctx.inTurn.Load() {
 		t.Error("in-turn flag still set after the panic")
@@ -100,22 +101,23 @@ func TestRunTurnRecoversPanic(t *testing.T) {
 	}
 
 	// A factory that returns nil or panics fails the start: no incarnation, no Started.
-	for name, factory := range map[string]func() Actor[int]{
-		"nil":   func() Actor[int] { return nil },
-		"panic": func() Actor[int] { panic("factory boom") },
+	for _, f := range []struct {
+		name    string
+		factory func() Actor[int]
+	}{
+		{"nil", func() Actor[int] { return nil }},
+		{"panic", func() Actor[int] { panic("factory boom") }},
 	} {
-		p, err := Spawn(sys, name, factory)
+		name := f.name
+		p, err := Spawn(sys, name, f.factory)
 		if err != nil {
 			t.Fatal(err)
 		}
 		send(t, sys, p, 1)
 		eng.RunUntilIdle()
 		c := cellOf(t, sys, p)
-		if c.state != cellFailed || c.inc != 0 || c.ctx != nil {
-			t.Errorf("%s factory: state %d, inc %d, ctx %p; want cellFailed, 0, nil", name, c.state, c.inc, c.ctx)
-		}
-		if name == "nil" && !errors.Is(c.failure, errNilActor) {
-			t.Errorf("nil factory: failure %v", c.failure)
+		if c.state != supervise.Suspended || c.inc != 0 || c.ctx != nil {
+			t.Errorf("%s factory: state %v, inc %d, ctx %p; want suspended, 0, nil", name, c.state, c.inc, c.ctx)
 		}
 	}
 }

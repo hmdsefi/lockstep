@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // Balance is the message the pipe tests turn a reply into: the answer or the error of an ask.
@@ -289,7 +291,7 @@ func TestATMSG27PipeMisuseAndFanOut(t *testing.T) {
 	if want := "lockstep: Context of " + a.String() + " used outside its turn"; outside != want {
 		t.Errorf("Pipe outside the turn panicked with %v, want %q", outside, want)
 	}
-	if f := eng.Failures(); len(f) != 0 || cellOf(t, sys, a).state != cellRunning {
+	if f := eng.Failures(); len(f) != 0 || cellOf(t, sys, a).state != supervise.Running {
 		t.Errorf("the misuse panics leaked: failures %v, state %d", f, cellOf(t, sys, a).state)
 	}
 
@@ -349,8 +351,8 @@ func TestPipeDropIncarnation(t *testing.T) {
 	}
 }
 
-// MSG-620: a panic in to is a panic of the turn. handlerFailed gets it, Receive is not called, the
-// in-turn flag is cleared and the cell pops no further user message.
+// MSG-620: a panic in to is a failure of Receive (SUP-150). Receive is not called, the in-turn flag
+// is cleared and the Suspended cell pops no further user message.
 func TestPipeToPanics(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var received []any
@@ -375,8 +377,10 @@ func TestPipeToPanics(t *testing.T) {
 	eng.RunUntilIdle()
 
 	c := cellOf(t, sys, a)
-	if c.state != cellFailed || c.failure == nil || c.failure.Error() != "lockstep: panic: to boom" {
-		t.Errorf("state %d, failure %v; want cellFailed and the panic of to", c.state, c.failure)
+	fails := recordsOf(eng.Records(), "lockstep.fail")
+	want := []string{"actor=" + a.String(), "inc=1", "source=receive", "err=lockstep: panic: to boom"}
+	if c.state != supervise.Suspended || len(fails) != 1 || !slices.Equal(fails[0], want) {
+		t.Errorf("state %v, lockstep.fail %q; want suspended and [%q]", c.state, fails, want)
 	}
 	if len(received) != 0 || c.ctx.inTurn.Load() {
 		t.Errorf("Receive got %v; in-turn flag %v", received, c.ctx.inTurn.Load())

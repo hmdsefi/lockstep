@@ -3,6 +3,8 @@
 
 package lockstep
 
+import "github.com/hmdsefi/lockstep/internal/supervise"
+
 // Signal is a notification from lockstep itself, delivered through SignalReceiver[M].Signal and
 // never as an M. It is implemented only by Terminated and ChildFailed (SUP), Overloaded (OVL) and,
 // from Phase 3, NodeDown and NodeUp (CLU).
@@ -38,7 +40,7 @@ func (c *cell[M]) pushSignal(sig Signal) { c.pushSystem(signalMsg{sig: sig}, nil
 // leaves the set when the Terminated is delivered (ACT-630). An actor without SignalReceiver
 // consumes the watch the same way, so a later Watch of the address registers again.
 func (c *cell[M]) deliverSignal(sig Signal) {
-	if c.state != cellRunning {
+	if c.state != supervise.Running {
 		return
 	}
 	if t, ok := sig.(Terminated); ok && !c.ctx.watched.remove(t.Addr) {
@@ -47,7 +49,5 @@ func (c *cell[M]) deliverSignal(sig Signal) {
 	if c.signals == nil {
 		return
 	}
-	c.enter()
-	defer c.leave()
-	c.signals.Signal(c.ctx, sig)
+	c.callHandler(supervise.InSignal, func() { c.signals.Signal(c.ctx, sig) })
 }

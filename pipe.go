@@ -3,7 +3,10 @@
 
 package lockstep
 
-import "github.com/hmdsefi/lockstep/internal/engine"
+import (
+	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/supervise"
+)
 
 // Pipe delivers the resolution of r to the actor of ctx as one of its own messages: when r
 // resolves, to(value, err) is called during a turn of the same incarnation and its result is
@@ -69,13 +72,13 @@ func (c *cell[M]) processSelf(e entry) (msg any, ok bool) {
 		c.dropPiped(p.ask)
 		return nil, false
 	}
-	// to and Receive are both calls of this turn (MSG-620): one in-turn window, so a panic of
-	// either goes to handlerFailed through leave.
-	c.enter()
-	defer c.leave()
-	m := p.call()
-	msg, ok = m, true
-	c.actor.Receive(c.ctx, m)
+	// to and Receive are both calls of this turn (MSG-620): one guarded handler call with source
+	// receive, so a panic or a Fail in either is a failure of Receive (SUP-140, SUP-150).
+	c.callHandler(supervise.InReceive, func() {
+		m := p.call()
+		msg, ok = m, true
+		c.actor.Receive(c.ctx, m)
+	})
 	return msg, ok
 }
 

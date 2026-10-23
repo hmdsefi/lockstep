@@ -47,6 +47,7 @@ pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOptio
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]

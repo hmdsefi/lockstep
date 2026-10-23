@@ -7,13 +7,16 @@ import (
 	"strconv"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // RunTurn runs one turn of the actor (engine.ActorRef, ENG-310): system messages first, every one
-// of them, including those that arrive during the turn; between them up to budget user messages
-// while the incarnation accepts them. It reports whether the actor still has work (ENG-320). It
-// never blocks, starts no goroutine and recovers every panic of actor code (ENG-330). The engine
-// re-queues the cell when it returns true; the runtime never calls Ready for that (ENG-350).
+// of them, including those that arrive during the turn, each between two handler calls; between
+// them up to budget user messages while the cell is Running (SUP-010). A handler that fails ends
+// the popping of user messages for the turn: the cell is Suspended. RunTurn reports whether the
+// actor still has work (ENG-320). It never blocks, starts no goroutine and recovers every panic of
+// actor code (ENG-330, SUP-140). The engine re-queues the cell when it returns true; the runtime
+// never calls Ready for that (ENG-350).
 func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if budget < 1 {
 		panic("lockstep: RunTurn budget " + strconv.Itoa(budget) + " < 1")
@@ -51,9 +54,9 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	return c.hasWork()
 }
 
-// accepting reports whether the incarnation takes user messages: it has started, no handler
-// failed and no stop has started (ENG-310 step 2).
-func (c *cell[M]) accepting() bool { return c.state == cellRunning }
+// accepting reports whether the cell pops user messages: only in Running (SUP-010, ENG-310 step
+// 2), so not before the incarnation has started, after a handler failed, or once a stop started.
+func (c *cell[M]) accepting() bool { return c.state == supervise.Running }
 
 // popSystem and popUser pop under c.mu, so a hold that starts during a turn stops it at the next
 // pop (hold.go); a held cell pops nothing.
@@ -108,7 +111,8 @@ func (c *cell[M]) recordTurn(system int, shown bool, u int, first any) {
 	)
 }
 
-// processSystem handles one system message.
+// processSystem handles one system message, in every state but Stopped (SUP-010): a Stopped cell
+// has closed its queues, so it pops none.
 func (c *cell[M]) processSystem(m sysMsg) {
 	switch m := m.(type) {
 	case begin:
@@ -119,55 +123,50 @@ func (c *cell[M]) processSystem(m sysMsg) {
 		c.startStop(m.reason)
 	case stopped:
 		c.childStopped(m.child)
+	case failed, ended, cleanupFailed:
+		// A child's notice. Deciding failures (SUP-170 to SUP-230) does not exist yet: the notice
+		// changes nothing and the child stays Suspended.
+	case end, resume:
+		// A supervisor's command for a failed incarnation (SUP-190, SUP-210): no supervisor sends
+		// one yet.
 	}
 }
 
-// begin processes the begin message (ACT-340, SUP-030): it calls the factory, numbers the new
-// incarnation, decides its optional interfaces once (ACT-100), calls Started and lets the
-// incarnation take user messages.
+// begin processes begin in Starting (SUP-030), in one turn: it calls the factory as a guarded
+// call; on a non-nil actor it numbers the new incarnation (SUP-020), decides its optional
+// interfaces once (ACT-100), records lockstep.start, calls Started and changes to Running. A
+// factory that panics or returns nil fails with source factory: no incarnation begins and inc is
+// unchanged (SUP-040).
 func (c *cell[M]) begin() {
-	if c.state != cellStarting {
+	if c.state != supervise.Starting {
 		return
 	}
-	a, err := c.callFactory()
-	if err == nil && a == nil {
-		err = errNilActor
+	var a Actor[M]
+	failed, err := guard(func() { a = c.factory() })
+	if !failed && a == nil {
+		failed, err = true, errNilActor
 	}
-	if err != nil {
-		c.handlerFailed(err) // no incarnation begins and inc is unchanged (SUP-040)
+	if failed {
+		c.handlerFailed(supervise.InFactory, err)
 		return
 	}
 	c.inc++
 	c.mu.Lock()
 	c.liveInc = c.inc // Pipe's continuations enqueue for this incarnation from now on (MSG-610)
+	c.seenInc = c.inc
 	c.mu.Unlock()
 	c.actor = a
 	c.ctx = &Context[M]{cell: c, inc: c.inc}
 	c.starter, _ = a.(Starter[M])
 	c.stopper, _ = a.(Stopper[M])
 	c.signals, _ = a.(SignalReceiver[M])
+	c.recordStart()
 	if c.starter != nil {
-		c.callStarted()
+		c.callHandler(supervise.InStarted, func() { c.starter.Started(c.ctx) })
 	}
-	if c.state == cellStarting {
-		c.state = cellRunning
+	if c.state == supervise.Starting { // Started did not fail
+		c.setState(supervise.Running)
 	}
-}
-
-// callFactory calls the factory, turning a panic into an error.
-func (c *cell[M]) callFactory() (a Actor[M], err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			a, err = nil, &handlerPanic{value: p}
-		}
-	}()
-	return c.factory(), nil
-}
-
-func (c *cell[M]) callStarted() {
-	c.enter()
-	defer c.leave()
-	c.starter.Started(c.ctx)
 }
 
 // processUser handles one user message: it hands a Sent entry to Receive and a Self entry to
@@ -177,22 +176,9 @@ func (c *cell[M]) processUser(e entry) (msg any, shown bool) {
 	if e.kind == entrySelf {
 		return c.processSelf(e)
 	}
-	m, _ := e.msg.(M)        // a nil e.msg of an interface type M is M's zero value
-	msg, shown = e.msg, true // set before Receive: a panic of Receive still leaves the description
-	c.enter()
-	defer c.leave()
-	c.actor.Receive(c.ctx, m)
-	return msg, shown
-}
-
-// enter sets the in-turn flag before a handler call (ACT-120).
-func (c *cell[M]) enter() { c.ctx.inTurn.Store(true) }
-
-// leave runs deferred after a handler call: it clears the in-turn flag and hands a panic of the
-// handler to handlerFailed (ENG-330).
-func (c *cell[M]) leave() {
-	c.ctx.inTurn.Store(false)
-	if p := recover(); p != nil {
-		c.handlerFailed(&handlerPanic{value: p})
-	}
+	m, _ := e.msg.(M) // a nil e.msg of an interface type M is M's zero value
+	// A failing Receive consumes its message: it is never redelivered (SUP-150), and it stays the
+	// turn record's description.
+	c.callHandler(supervise.InReceive, func() { c.actor.Receive(c.ctx, m) })
+	return e.msg, true
 }
