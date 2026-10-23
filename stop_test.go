@@ -976,9 +976,11 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 	tr := eng.Engine().Tracer
 	stoppedAt := -1
 	var obs []string
-	a, err := Spawn(sys, "a", actorOf[any](&supProbe{obs: &obs, onStop: func(*Context[any], StopReason) {
-		stoppedAt = len(eng.Records())
-	}}))
+	a, err := Spawn(sys, "a", actorOf[any](&supProbe{
+		obs:     &obs,
+		onStart: func(ctx *Context[any]) { ctx.After(time.Millisecond, "t1") },
+		onStop:  func(*Context[any], StopReason) { stoppedAt = len(eng.Records()) },
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +989,7 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 	release := c.holdTurns()
 
 	send(t, sys, a, any("m1"))
-	c.offerSelf(entry{msg: "t1", kind: entrySelf, inc: c.inc, timer: 1}) // a timer message of the live incarnation
+	eng.Advance(time.Millisecond) // t1 fires: a timer message of the live incarnation
 	piped := pipedReply[any]{ask: gone(), call: func() any { return "r" }}
 	c.offerSelf(entry{msg: piped, kind: entrySelf, inc: c.inc})
 	inTurn(t, sys, eng, s, func(ctx *Context[any]) {

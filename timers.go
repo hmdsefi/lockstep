@@ -63,14 +63,49 @@ func (c *Context[M]) Every(d time.Duration, msg M) TimerID {
 	return c.setTimer(d, msg, true)
 }
 
+// CancelTimer stops timer id. It reports whether the timer was active. Once it returns, the actor
+// receives no message from that timer, even one already in the mailbox.
+func (c *Context[M]) CancelTimer(id TimerID) bool {
+	c.mustInTurn()
+	cl := c.cell
+	cl.tmu.Lock()
+	defer cl.tmu.Unlock()
+	// cl.timers holds only timers of the live incarnation (cancelTimers empties it when one ends),
+	// but the incarnation is checked too (TMR-090).
+	t := cl.timers[id]
+	if t == nil || !t.active || t.inc != c.inc {
+		return false
+	}
+	// A message the callback has already enqueued stays in the mailbox; its timer is gone from
+	// cl.timers, so popTimer finds none and the pop records it as timer-cancelled (TMR-070). A
+	// callback that runs after this critical section finds the timer inactive.
+	t.active = false
+	t.cancel()
+	delete(cl.timers, id)
+	cl.recordTimer(t.inc, t.id, "cancel")
+	return true
+}
+
 // setTimer allocates a TimerID, registers an active timer of c's incarnation, arms its first
 // firing on the engine clock and records lockstep.timer op set (TMR-020, TMR-030, TMR-040).
 // The firing never runs inside the call (ENG-070). The armed AfterFunc is stored, and set is
 // recorded, before the timer lock is released, so a callback on another goroutine finds the
 // timer complete and records fire after set.
+//
+// Inside Stopped the incarnation is ending: setTimer schedules nothing, leaves the counter
+// unchanged, records op refused and returns 0 (TMR-100).
 func (c *Context[M]) setTimer(d time.Duration, msg M, every bool) TimerID {
 	cl := c.cell
 	tr := cl.sys.eng.Tracer
+	if cl.ending() {
+		if tr.Enabled() {
+			cl.recordTimer(c.inc, 0, "refused",
+				engine.Attr{Key: "d", Value: d.String()},
+				engine.Attr{Key: "repeat", Value: strconv.FormatBool(every)},
+			)
+		}
+		return 0
+	}
 	desc := ""
 	if tr.Enabled() {
 		desc = tr.Describe(msg)
@@ -85,11 +120,7 @@ func (c *Context[M]) setTimer(d time.Duration, msg M, every bool) TimerID {
 	cl.timers[t.id] = t
 	t.cancel = cl.sys.eng.Clock.AfterFunc(max(d, 0), timerLabel, func() { cl.fireTimer(t) })
 	if tr.Enabled() {
-		tr.Record("lockstep.timer",
-			engine.Attr{Key: "actor", Value: cl.addr.String()},
-			engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(t.inc), 10)},
-			engine.Attr{Key: "timer", Value: strconv.FormatUint(uint64(t.id), 10)},
-			engine.Attr{Key: "op", Value: "set"},
+		cl.recordTimer(t.inc, t.id, "set",
 			engine.Attr{Key: "d", Value: d.String()},
 			engine.Attr{Key: "repeat", Value: strconv.FormatBool(every)},
 			engine.Attr{Key: "msg", Value: desc},
@@ -98,21 +129,19 @@ func (c *Context[M]) setTimer(d time.Duration, msg M, every bool) TimerID {
 	return t.id
 }
 
-// cancelTimer makes the active timer id inactive, cancels its armed AfterFunc and reports whether
-// there was one. It checks no incarnation and records nothing.
-func (c *Context[M]) cancelTimer(id TimerID) bool {
-	c.mustInTurn()
-	cl := c.cell
-	cl.tmu.Lock()
-	defer cl.tmu.Unlock()
-	t := cl.timers[id]
-	if t == nil || !t.active {
-		return false
+// cancelTimers ends the timers of the incarnation that is ending (TMR-080, SUP-060 step 1,
+// SUP-190 step 1): each becomes inactive, its armed AfterFunc is cancelled, and the cell forgets
+// it. A message one of them already enqueued is dropped when popped (MBX-170) or at the stop's
+// drain (MBX-160). A callback running concurrently either enqueued before this critical section
+// or finds its timer inactive after it.
+func (c *cell[M]) cancelTimers() {
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
+	for _, t := range c.timers { //lockstep:maporder each Cancel only removes a pending engine callback, so the order is unobservable (TMR §6)
+		t.active = false
+		t.cancel()
 	}
-	t.active = false
-	t.cancel()
-	delete(cl.timers, id)
-	return true
+	clear(c.timers)
 }
 
 // fireTimer is the callback of t's AfterFunc, which runs in engine context (TMR-050). A timer that
@@ -123,26 +152,26 @@ func (c *Context[M]) cancelTimer(id TimerID) bool {
 //
 // Lock order: tmu, then offerSelf's mu and the queue's lock.
 func (c *cell[M]) fireTimer(t *timer[M]) {
-	tr := c.sys.eng.Tracer
-	desc := ""
-	if tr.Enabled() {
-		desc = tr.Describe(t.msg) // outside the lock: Describe calls user methods
-	}
 	c.tmu.Lock()
 	defer c.tmu.Unlock()
 	if !t.active {
 		return
 	}
+	tr := c.sys.eng.Tracer
 	if t.every {
 		t.cancel = c.sys.eng.Clock.AfterFunc(t.d, timerLabel, func() { c.fireTimer(t) })
 		if t.queued {
-			c.recordTimer(t, "skip", nil)
+			if tr.Enabled() {
+				c.recordTimer(t.inc, t.id, "skip")
+			}
 			return
 		}
 	}
 	e := entry{msg: t.msg, kind: entrySelf, inc: t.inc, timer: t.id}
 	if !c.offerSelf(e) {
-		// The incarnation has ended or the cell has stopped: nothing will pop this message.
+		// The incarnation has ended or the cell has stopped: nothing will pop this message. Ending
+		// an incarnation runs cancelTimers first, which makes its timers inactive, so this only
+		// guards against a timer outliving its incarnation.
 		t.active = false
 		if t.every {
 			t.cancel()
@@ -152,26 +181,25 @@ func (c *cell[M]) fireTimer(t *timer[M]) {
 	}
 	t.queued = true
 	if tr.Enabled() {
-		c.recordTimer(t, "fire", &desc)
+		// Only a firing that enqueues describes the message. Describe runs user code, under the
+		// timer lock but never under mu or the queue's lock.
+		c.recordTimer(t.inc, t.id, "fire", engine.Attr{Key: "msg", Value: tr.Describe(t.msg)})
 	}
 }
 
-// recordTimer emits lockstep.timer (TMR §8) for t with operation op, and msg when it is not nil.
-// The caller holds c.tmu, which orders the records of one timer.
-func (c *cell[M]) recordTimer(t *timer[M], op string, msg *string) {
+// recordTimer emits lockstep.timer (TMR §8) for timer id of incarnation inc with operation op,
+// followed by the attributes more. A caller that holds c.tmu orders the records of one timer.
+func (c *cell[M]) recordTimer(inc uint32, id TimerID, op string, more ...engine.Attr) {
 	tr := c.sys.eng.Tracer
 	if !tr.Enabled() {
 		return
 	}
-	attrs := []engine.Attr{
+	attrs := append([]engine.Attr{
 		{Key: "actor", Value: c.addr.String()},
-		{Key: "inc", Value: strconv.FormatUint(uint64(t.inc), 10)},
-		{Key: "timer", Value: strconv.FormatUint(uint64(t.id), 10)},
+		{Key: "inc", Value: strconv.FormatUint(uint64(inc), 10)},
+		{Key: "timer", Value: strconv.FormatUint(uint64(id), 10)},
 		{Key: "op", Value: op},
-	}
-	if msg != nil {
-		attrs = append(attrs, engine.Attr{Key: "msg", Value: *msg})
-	}
+	}, more...)
 	tr.Record("lockstep.timer", attrs...)
 }
 

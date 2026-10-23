@@ -48,6 +48,7 @@ pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) After(time.Duration, M) TimerID
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Every(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
