@@ -91,10 +91,7 @@ type PanicError struct {
 	Stack []byte // runtime/debug.Stack() at recovery; never recorded in traces
 }
 
-// Error returns "lockstep: panic: " followed by a description of Value (SUP-145): Value.Error() if
-// it is an error, Value.String() if it is a fmt.Stringer, the string itself for a string kind, the
-// decimal number for an integer kind, "true" or "false" for a bool kind, and otherwise the type
-// name ("nil" for a nil Value). The text is the same on every run: it never uses a %v verb.
+// Error returns "lockstep: panic: " followed by a description of Value (SUP-145).
 func (e *PanicError) Error() string {
 	return "lockstep: panic: " + describePanic(e.Value)
 }
@@ -105,8 +102,21 @@ func (e *PanicError) Unwrap() error {
 	return err
 }
 
-// describePanic renders v by the rules of SUP-145.
-func describePanic(v any) string {
+// describePanic renders v by the rules of SUP-145: v.Error() if it is an error, v.String() if it
+// is a fmt.Stringer, the string itself for a string kind, the decimal number for an integer kind,
+// "true" or "false" for a bool kind, and otherwise the type name ("nil" for a nil v). It never
+// uses a %v verb, so the text is the same on every run.
+//
+// A panic inside the Error or String method of v, for example a typed nil pointer whose method
+// dereferences its receiver, is recovered and v is described by its type name, SUP-145's
+// "otherwise" case: the runtime calls PanicError.Error while it handles a failure, so a second
+// panic there must not escape.
+func describePanic(v any) (s string) {
+	defer func() {
+		if recover() != nil {
+			s = reflect.TypeOf(v).String()
+		}
+	}()
 	switch x := v.(type) {
 	case nil:
 		return "nil"

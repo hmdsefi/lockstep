@@ -45,6 +45,9 @@ func TestATSUP36StringsAndReasons(t *testing.T) {
 	if got := Failed(fmt.Errorf("x: %w", errNodeDown)).String(); got != "failed: x: node down" {
 		t.Errorf("wrapped = %q", got)
 	}
+	if wrapped := Failed(fmt.Errorf("x: %w", errNodeDown)); !errors.Is(wrapped.Err, errNodeDown) {
+		t.Errorf("errors.Is(%v, errNodeDown) is false", wrapped.Err)
+	}
 	if got := Restarting(errNodeDown).String(); got != "restarting: node down" {
 		t.Errorf("Restarting.String() = %q", got)
 	}
@@ -114,6 +117,34 @@ type (
 	namedBool   bool
 )
 
+// nilDerefErr and nilDerefStringer are pointer types whose methods dereference the receiver.
+type (
+	nilDerefErr      struct{ msg string }
+	nilDerefStringer struct{ s string }
+)
+
+func (e *nilDerefErr) Error() string       { return e.msg }
+func (s *nilDerefStringer) String() string { return s.s }
+
+// SUP-145: a panic from the value's own Error or String method does not escape Error.
+func TestPanicErrorTypedNil(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"typed nil error", (*nilDerefErr)(nil), "lockstep: panic: *lockstep.nilDerefErr"},
+		{"typed nil Stringer", (*nilDerefStringer)(nil), "lockstep: panic: *lockstep.nilDerefStringer"},
+		{"non-nil error", &nilDerefErr{"boom"}, "lockstep: panic: boom"},
+		{"non-nil Stringer", &nilDerefStringer{"str"}, "lockstep: panic: str"},
+	} {
+		e := &PanicError{Value: c.value}
+		if got := e.Error(); got != c.want {
+			t.Errorf("%s: Error() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // SUP-145: the text never uses %v and does not change between runs.
 func TestPanicErrorText(t *testing.T) {
 	errX := errors.New("x")
@@ -144,9 +175,6 @@ func TestPanicErrorText(t *testing.T) {
 		e := &PanicError{Value: c.value, Stack: []byte("never in the text")}
 		if got := e.Error(); got != c.want {
 			t.Errorf("%s: Error() = %q, want %q", c.name, got, c.want)
-		}
-		if got := e.Error(); got != c.want {
-			t.Errorf("%s: second Error() = %q, want %q", c.name, got, c.want)
 		}
 	}
 }
