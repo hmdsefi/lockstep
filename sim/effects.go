@@ -16,7 +16,7 @@ import (
 // lockstep.misuse, and returns a Cancel that reports true the first time it is called; done is
 // never called. A dead engine does nothing and returns a Cancel that reports false (SIM-120).
 func (e *simEngine) Start(req engine.EffectRequest, _ func(v any, err error)) engine.Cancel {
-	if e.dead {
+	if !e.canSchedule() {
 		return func() bool { return false }
 	}
 	e.s.store(checkNoEffectHandler, fmt.Errorf("%w: effect %q called by %s", lockstep.ErrNoEffectHandler, req.Name, req.Actor))

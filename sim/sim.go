@@ -23,10 +23,11 @@ type Sim struct {
 	// slots holds the first failure stored for each named check, indexed like checkNames.
 	slots [len(checkNames)]error
 
-	// nodes are the lockstep nodes in NodeID order; byName finds one by name and is only read by
-	// key (SIM-330).
+	// nodes are the lockstep nodes in NodeID order; byName and byID find one by name and by
+	// kernel node ID, and are only read by key (SIM-330).
 	nodes  []*node
 	byName map[string]*node
+	byID   map[kernel.NodeID]*node
 
 	counts Counts
 }
@@ -36,8 +37,8 @@ type node struct {
 	n     *kernel.Node
 	setup func(sys *lockstep.System)
 
-	// Set at each boot. sys is nil before the first boot and after a boot whose system could
-	// not be built.
+	// Set at each boot. sys is nil before the first boot, after a boot whose system could not
+	// be built and after a crash.
 	eng *simEngine
 	sys *lockstep.System
 }
@@ -95,6 +96,10 @@ func (s *Sim) add(method, name string, setup func(*lockstep.System),
 		s.byName = make(map[string]*node)
 	}
 	s.byName[name] = ln
+	if s.byID == nil {
+		s.byID = make(map[kernel.NodeID]*node)
+	}
+	s.byID[n.ID()] = ln
 	return n
 }
 
@@ -129,6 +134,27 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 
 	ln.sys = sys
 	ln.setup(sys)
+}
+
+// crashed is the crash hook of s, registered once per run with w.Sim.OnCrash (SIM-110). The
+// kernel runs it after node n is down and kernel.crash is recorded, and not for a crash before
+// the first boot. For a lockstep node it marks the engine dead, discards the node's system and
+// leaves the node without one, in that order: the engine is dead before Discard resolves the
+// pending asks, so none of that is recorded (SIM-120). Discarding runs no Stopped hook, closes
+// nothing and records no lockstep.stop (SUP-360), and the discarded actors are not checked for
+// leaks. Other nodes are not sim's.
+func (s *Sim) crashed(n *kernel.Node) {
+	ln, ok := s.byID[n.ID()]
+	if !ok {
+		return
+	}
+	if ln.eng != nil {
+		ln.eng.kill()
+	}
+	if ln.sys != nil {
+		hooks.Discard(ln.sys)
+		ln.sys = nil
+	}
 }
 
 // System returns the System of node name's current incarnation, or nil while the node is down

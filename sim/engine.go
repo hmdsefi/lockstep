@@ -39,7 +39,11 @@ type simEngine struct {
 	deferred []deferredFrame
 	host     engine.Host
 
-	dead bool // the engine ignores every seam call (SIM-120)
+	// dead is set when the node crashes (SIM-110) or the system stops (SIM-195): the engine then
+	// ignores every seam call (SIM-120). The kernel itself discards the events a crashed
+	// incarnation scheduled, so its turns, timers and deferred sends never run, even after a
+	// restart.
+	dead bool
 }
 
 // newEngine returns the engine of incarnation inc of node n, with its bundle (SIM-070, SIM §5.3).
@@ -59,7 +63,7 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Failer:     e,
 		Waiter:     e,
 		Interposer: nil, // SFT-070
-		Stop:       e.stop,
+		Stop:       e.kill,
 	}
 	return e
 }
@@ -91,10 +95,12 @@ func (e *simEngine) postTurn(a engine.ActorRef) {
 	})
 }
 
-// stop is the bundle's Stop, which System.Shutdown calls after every actor stopped (ENG-140): it
-// marks the engine dead (SIM-195, SIM-120). The node stays up, and System keeps returning the
+// kill marks the engine dead, so it ignores every seam call from now on (SIM-120). It is the one
+// way an engine dies: the crash hook calls it when the node crashes, before the system is
+// discarded (SIM-110), and it is the bundle's Stop, which System.Shutdown calls after every actor
+// stopped (ENG-140, SIM-195). After a Stop the node stays up, and System keeps returning the
 // stopped system until the next boot.
-func (e *simEngine) stop() { e.dead = true }
+func (e *simEngine) kill() { e.dead = true }
 
 // InTurn reports whether the caller runs inside a kernel callback (SIM-195, ENG-055).
 func (e *simEngine) InTurn() bool { return kernel.Active() != nil }
@@ -173,8 +179,14 @@ func attrValue(attrs []engine.Attr, key string) string {
 	return ""
 }
 
-// Fail reports misuse the runtime detected (SIM-190, ENG-130).
-func (e *simEngine) Fail(err error) { e.misuse(err) }
+// Fail reports misuse the runtime detected (SIM-190, ENG-130). A dead engine ignores it
+// (SIM-120): the system of a crashed or stopped node makes no more calls that count.
+func (e *simEngine) Fail(err error) {
+	if e.dead {
+		return
+	}
+	e.misuse(err)
+}
 
 // misuse emits lockstep.misuse with err's text and stores err in the lockstep/misuse slot unless
 // a failure is stored there already, so the first misuse fails the seed (SIM-190).
@@ -192,12 +204,18 @@ func closed(done <-chan struct{}) bool {
 }
 
 // Wait never waits and never drives the run (SIM-210): it returns nil if done is closed, and
-// otherwise fails the seed with a misuse failure and returns it.
+// otherwise fails the seed with a misuse failure and returns it. A dead engine returns the error
+// without recording or storing it (SIM-120). Through the runtime that case does not occur: a crash
+// or a stop resolves every pending ask of the system before its engine is used again, and an ask
+// made afterwards is resolved at once, so a body's Await on one of its replies returns without
+// waiting.
 func (e *simEngine) Wait(_ context.Context, done <-chan struct{}) error {
 	if closed(done) {
 		return nil
 	}
 	err := fmt.Errorf("lockstep: sim: wait on a pending reply from the test body; use sim.Ask: %w", lockstep.ErrAwaitInActor)
-	e.misuse(err)
+	if !e.dead {
+		e.misuse(err)
+	}
 	return err
 }

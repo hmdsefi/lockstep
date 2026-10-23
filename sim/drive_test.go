@@ -127,13 +127,14 @@ func TestATSIM16AskTimeoutAndRunEnd(t *testing.T) {
 	})
 }
 
-// SIM-200: Ask returns the node-down error for a node that is not booted yet, and stops
-// running the simulation as soon as the node goes down while the reply is pending.
+// SIM-200: Ask returns the node-down error for a node that is not booted yet, without running
+// the simulation, and panics for an unknown node. A crash while the reply is pending is
+// AT-SIM-18's.
 func TestSIM200NodeDown(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var pid lockstep.PID[Ping]
-		n1 := s.Node("n1", silentSetup(&pid))
+		s.Node("n1", silentSetup(&pid))
 		const want = "lockstep: sim: node n1 is down: lockstep: stopped"
 		if _, err := sim.Ask(s, "n1", pid, buildPing(1)); !errors.Is(err, lockstep.ErrStopped) || err.Error() != want {
 			tt.Errorf("Ask before boot: %v, want %q wrapping ErrStopped", err, want)
@@ -142,16 +143,6 @@ func TestSIM200NodeDown(t *testing.T) {
 			tt.Errorf("Ask before boot ran the simulation to %v (%d events)", w.Sim.Now(), w.Sim.Executed())
 		}
 		expectPanic(tt, `lockstep: sim: unknown node "nope"`, func() { _, _ = sim.Ask(s, "nope", pid, buildPing(1)) })
-
-		w.RunFor(time.Second)
-		n1.After(time.Second, "test/crash", n1.Crash)
-		_, err := sim.Ask(s, "n1", pid, buildPing(1))
-		if !errors.Is(err, lockstep.ErrStopped) || err.Error() != want {
-			tt.Errorf("Ask across a crash: %v, want %q wrapping ErrStopped", err, want)
-		}
-		if now, want := w.Sim.Now(), kernel.Time(2*time.Second); now != want {
-			tt.Errorf("Now() = %v after Ask, want the crash time %v", now, want)
-		}
 	})
 }
 
