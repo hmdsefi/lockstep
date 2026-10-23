@@ -83,9 +83,8 @@ type runner struct {
 
 // run is the function passed to faultline: it ends the previous run's Sim (SIM-040), builds a
 // new one on w, registers the named checks (SIM-300) and the crash hook (SIM-110), and calls
-// body with it. The Sim also ends
-// when the seed subtest's cleanups run: registered after body returns, this cleanup runs before
-// the ones body registered.
+// body with it. The Sim also ends when the seed subtest's cleanups run: registered after body
+// returns, this cleanup runs before the ones body registered.
 func (r *runner) run(w *faultline.World) {
 	r.end()
 	s := &Sim{w: w, system: r.system}
