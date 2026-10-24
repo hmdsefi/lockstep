@@ -135,7 +135,8 @@ func TestUseFindingNames(t *testing.T) {
 		"(*sync.RWMutex).RLock",
 		"net.Dial", "net.DialTimeout", "net.Listen", "net.ListenPacket", "net.LookupHost", "net.ResolveTCPAddr",
 		"(net.Conn).Read", "(net.Conn).Write", "(net.Listener).Accept", "(net.PacketConn).ReadFrom",
-		"(*net.TCPListener).AcceptTCP", "(*net.UDPConn).WriteToUDP",
+		"(*net.TCPListener).AcceptTCP", "(*net.UDPConn).WriteToUDP", "(*net.Dialer).DialContext",
+		"(*net.Resolver).LookupHost", "(*net.ListenConfig).Listen",
 		"net/http.Get", "net/http.Head", "net/http.Post", "net/http.PostForm", "net/http.ListenAndServe",
 		"net/http.ListenAndServeTLS", "net/http.Serve", "net/http.ServeTLS",
 		"(*net/http.Client).Do", "(*net/http.Client).Get", "(*net/http.Client).Head", "(*net/http.Client).Post",
@@ -233,7 +234,7 @@ type useCase struct {
 var (
 	randCtorNames     = []string{"New", "NewSource", "NewZipf", "NewPCG", "NewChaCha8"}
 	netFuncPrefixes   = []string{"Dial", "Listen", "Lookup", "Resolve"}
-	netMethodPrefixes = []string{"Read", "Write", "Accept"}
+	netMethodPrefixes = []string{"Read", "Write", "Accept", "Dial", "Listen", "Lookup"}
 )
 
 // prefixCase expects a blocking finding for fn when its name starts with one of prefixes and is
