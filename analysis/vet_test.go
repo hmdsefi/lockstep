@@ -21,6 +21,10 @@ import (
 // commandTimeout bounds every run of the go tool or of the built lockstep-vet.
 const commandTimeout = 5 * time.Minute
 
+// waitDelay bounds the wait for a command's output pipes once the command has exited or been
+// killed: a process it started, such as the vet tool that go vet runs, may still hold them.
+const waitDelay = 10 * time.Second
+
 // wallClockLine is the start of the LS100 diagnostic for time.Now (ANL-130).
 const wallClockLine = "LS100: time.Now uses the wall clock"
 
@@ -39,6 +43,7 @@ func run(t *testing.T, dir string, env []string, name string, args ...string) re
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // test runs the go tool
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
+	cmd.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -182,7 +187,7 @@ func TestVetTool(t *testing.T) {
 }
 
 // TestDeterministicOutput checks AT-ANL-28: two runs of lockstep-vet -json over a copy of the
-// ls100/bad corpus package print byte-equal output (ANL-120).
+// ls100/bad corpus package print byte-equal output and exit with the same code (ANL-120).
 func TestDeterministicOutput(t *testing.T) {
 	tmp := t.TempDir()
 	bin := buildVetTool(t, tmp)
@@ -200,5 +205,8 @@ func TestDeterministicOutput(t *testing.T) {
 	}
 	if !bytes.Equal(first.stdout, second.stdout) {
 		t.Errorf("lockstep-vet -json ./...: the two outputs differ\nfirst:\n%s\nsecond:\n%s", first.stdout, second.stdout)
+	}
+	if !bytes.Equal(first.stderr, second.stderr) {
+		t.Errorf("lockstep-vet -json ./...: the two error outputs differ\nfirst:\n%s\nsecond:\n%s", first.stderr, second.stderr)
 	}
 }
