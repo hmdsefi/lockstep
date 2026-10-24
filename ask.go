@@ -4,8 +4,10 @@
 package lockstep
 
 import (
+	"context"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,8 +34,10 @@ func WithTimeout(d time.Duration) AskOption {
 
 // Ask sends the message build returns to the actor to and returns the future of its answer.
 // build receives the ask's ReplyTo and is called once, synchronously, before Ask returns, unless
-// the ask fails before sending (MSG-300). An invalid option value resolves the reply with an error
-// wrapping ErrInvalidOption. Ask panics if from or build is nil, an option is nil, or from is a
+// the ask fails before sending (MSG-300). With a *System sender, a full BlockSender mailbox on a
+// blocking engine makes Ask wait until the request is enqueued or the ask resolves, at its timeout
+// at the latest (MSG-330). An invalid option value resolves the reply with an error wrapping
+// ErrInvalidOption. Ask panics if from or build is nil, an option is nil, or from is a
 // Context outside its turn.
 func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...AskOption) *Reply[R] {
 	// 1. Misuse panics.
@@ -77,7 +81,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	// 6. Timer, record, routing exactly as Send's, with the ask address in the mailbox entry.
 	sys.armTimeout(p)
 	sys.recordAsk(fromAddr, p, msg)
-	o := sys.route(routeRequest{
+	req := routeRequest{
 		from:    fromAddr,
 		fromRef: fromRef,
 		to:      to.addr,
@@ -85,17 +89,49 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 		msg:     msg,
 		ask:     p.addr,
 		size:    size,
-	})
+	}
+	if _, outside := from.(*System); outside {
+		// A wait for room in a BlockSender mailbox starts after the timer and ends when the ask
+		// resolves, at its timeout at the latest (MSG-115, MSG-330); an actor never waits.
+		req.wait = askWait{done: r.done, resolved: &r.resolved}
+	}
+	o := sys.route(req)
 
 	// 7. The routing outcome (MSG-310). The router has already resolved the ask for a dead letter
 	// on this system (ErrTerminated) and for a request the target's mailbox refused or dropped
-	// (askRefused), and made an enqueued request tracked by its target; a request handed to the
-	// transport or held by the interposer leaves the ask pending.
+	// (askRefused), and made an enqueued request tracked by its target; a wait for room ended only
+	// because the ask resolved (MSG-330). A request handed to the transport or held by the
+	// interposer leaves the ask pending.
 	if o.kind == routeFailed {
 		sys.settle(p.addr, resolution{how: byRouting, from: to.addr, err: o.err})
 	}
 	return r
 }
+
+// askWait is the context of a *System sender's wait inside Ask for room in a BlockSender mailbox
+// (MSG-330): it ends when the ask resolves, so its Done is the reply's done channel. It needs no
+// goroutine and no timer of its own, since the ask's timeout resolves the reply. Its Err is
+// context.Canceled once the ask has resolved; the wait then leaves the line without enqueueing the
+// request and Ask returns the resolved reply. A slot handed to the waiter after the ask resolved but
+// before the waiter saw it still enqueues the request (MBX-070): the hand-off came first in the
+// queue's order, and the target's answer is then recorded as late.
+type askWait struct {
+	done     <-chan struct{} // the reply's done channel, closed at resolution
+	resolved *atomic.Bool    // the reply's resolved mark, set before done is closed
+}
+
+func (askWait) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (w askWait) Done() <-chan struct{} { return w.done }
+
+func (w askWait) Err() error {
+	if w.resolved.Load() {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (askWait) Value(any) any { return nil }
 
 // buildRequest calls build with p's ReplyTo and returns the request and its size for the mailbox
 // estimate of the target at to (OVL-410). If build or Size panics, p leaves the table before the

@@ -35,8 +35,10 @@ func (signalMsg) isSysMsg() {}
 // receiveSignal handles the signal message m at the head of the system queue by the cell's
 // lifecycle state (SUP-320): a Running cell delivers it (deliverSignal); a Suspended cell keeps it,
 // in arrival order, until a resume delivers it or the end of the incarnation drops it (SUP-160);
-// in Starting, Restarting and Stopping it is recorded as lockstep.drop reason not-running. A
-// Stopped cell has closed its system queue, whose drain records the signals left in it (SUP-060).
+// in Starting, Restarting and Stopping it is recorded as lockstep.drop reason not-running, except a
+// Terminated that a delivery to the incarnation that ended last would skip (ACT-630), which is
+// discarded without a record. A Stopped cell has closed its system queue, whose drain records the
+// signals left in it (SUP-060).
 func (c *cell[M]) receiveSignal(m signalMsg) {
 	switch c.state {
 	case supervise.Running:
@@ -44,8 +46,23 @@ func (c *cell[M]) receiveSignal(m signalMsg) {
 	case supervise.Suspended:
 		c.keep(m)
 	default:
-		c.sys.recordDropNotRunning(c.addr, m.sig)
+		if !c.endedWatched.skips(m) {
+			c.sys.recordDropNotRunning(c.addr, m.sig)
+		}
 	}
+}
+
+// skips reports whether m is a Terminated that a delivery against the watched set w would skip:
+// its Addr is not in w, or is there under another Watch call's sequence number (ACT-630). Such a
+// signal answers no watch of the incarnation, so the not-running paths discard it without a
+// record, as a delivery would.
+func (w *watchedSet) skips(m signalMsg) bool {
+	t, ok := m.sig.(Terminated)
+	if !ok {
+		return false
+	}
+	seq, in := w.seq(t.Addr)
+	return !in || seq != m.seq
 }
 
 // deliverSignal delivers the signal message m to the Running incarnation (MSG-810): an
@@ -62,7 +79,7 @@ func (c *cell[M]) deliverSignal(m signalMsg) {
 	sig := m.sig
 	switch s := sig.(type) {
 	case Terminated:
-		if seq, in := c.ctx.watched.seq(s.Addr); !in || seq != m.seq {
+		if c.ctx.watched.skips(m) {
 			return
 		}
 		c.ctx.watched.remove(s.Addr)
