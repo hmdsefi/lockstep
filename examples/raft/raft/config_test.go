@@ -137,7 +137,8 @@ func TestNewKeepsSetFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("factory returned %T, want *Node", f())
 	}
-	if n.cfg.ElectionMin != cfg.ElectionMin || n.cfg.Heartbeat != cfg.Heartbeat ||
+	if n.cfg.ElectionMin != cfg.ElectionMin || n.cfg.ElectionMax != cfg.ElectionMax ||
+		n.cfg.Heartbeat != cfg.Heartbeat ||
 		n.cfg.MaxBatch != cfg.MaxBatch || n.cfg.MaxPending != cfg.MaxPending {
 		t.Fatalf("New changed set fields: %+v", n.cfg)
 	}
