@@ -5,7 +5,6 @@ package analysis
 
 import (
 	"cmp"
-	"errors"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -111,12 +110,12 @@ type actorSearch struct {
 	code *actorCode
 }
 
-// runActors computes the package's actorCode. Its only error is a missing SSA result, which
-// the driver guarantees; problems in the analyzed code are never errors.
+// runActors computes the package's actorCode. It never returns an error (ANL §7): without an
+// SSA result, which the driver guarantees, it finds no actor code.
 func runActors(pass *analysis.Pass) (any, error) {
 	ssaResult, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {
-		return nil, errors.New("lsactors: no SSA result")
+		return &actorCode{byBody: map[ast.Node]*actorFunc{}}, nil
 	}
 	s := &actorSearch{
 		pass:     pass,

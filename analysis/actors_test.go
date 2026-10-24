@@ -152,6 +152,25 @@ func TestActorFuncInspect(t *testing.T) {
 	}
 }
 
+// TestActorsNoSSA checks that a missing SSA result is not an error (ANL §7): the search finds
+// no actor code.
+func TestActorsNoSSA(t *testing.T) {
+	result, err := runActors(&analysis.Pass{})
+	if err != nil {
+		t.Fatalf("runActors: %v, want a nil error", err)
+	}
+	code, ok := result.(*actorCode)
+	if !ok {
+		t.Fatalf("result %T, want *actorCode", result)
+	}
+	if len(code.Actors) != 0 || len(code.Funcs) != 0 {
+		t.Errorf("got %d actor types and %d functions, want none", len(code.Actors), len(code.Funcs))
+	}
+	if got := code.funcOf(&ast.FuncLit{}); got != nil {
+		t.Errorf("funcOf = %v, want nil", got)
+	}
+}
+
 // describeActor renders an actor type as "<name> message <M> receive <method> roots [<roots>]".
 func describeActor(a *actorType) string {
 	q := types.RelativeTo(a.Type.Obj().Pkg())
