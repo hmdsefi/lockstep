@@ -33,11 +33,13 @@ type registrar interface {
 	Final(name string, check func() error)
 }
 
-// hooks are setup's test seams: reg receives the invariants and finals, and wrap, if not nil,
-// returns the Observer the servers get in place of the oracle.
+// hooks are setup's test seams: reg receives the invariants and finals, wrap, if not nil, returns
+// the Observer the servers get in place of the oracle, and store, if not nil, is the stable store
+// in place of a new one, so that a test's effect handler can read and write it.
 type hooks struct {
-	reg  registrar
-	wrap func(raft.Observer) raft.Observer
+	reg   registrar
+	wrap  func(raft.Observer) raft.Observer
+	store *raft.MemStore
 }
 
 // Setup builds c inside s (RFT-390) and returns its oracle. Invalid c fails the test.
@@ -73,7 +75,10 @@ func setup(s *sim.Sim, c Cluster, h hooks) *Oracle {
 	if h.wrap != nil {
 		obs = h.wrap(o)
 	}
-	store := raft.NewMemStore()
+	store := h.store
+	if store == nil {
+		store = raft.NewMemStore()
+	}
 
 	// 2. The servers, in order, so that server i is node i (see newOracle). The setup runs at
 	// every boot.
