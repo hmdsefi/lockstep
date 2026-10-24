@@ -4,6 +4,8 @@
 package kv_test
 
 import (
+	"encoding/binary"
+	"hash/fnv"
 	"testing"
 
 	"github.com/hmdsefi/lockstep/examples/raft/kv"
@@ -90,13 +92,40 @@ func TestKVEncoding(t *testing.T) {
 	}
 }
 
-// TestATRFT25KVHash checks that Hash does not depend on insertion order and that an empty store
-// hashes to ChainSeed.
+// refHash is RFT-330's encoding, folded with the standard library's FNV-1a 64: for each pair, in
+// the order given, be32(len(k)) || k || be32(len(v)) || v.
+func refHash(pairs [][2]string) uint64 {
+	var b []byte
+	for _, p := range pairs {
+		b = binary.BigEndian.AppendUint32(b, uint32(len(p[0]))) //nolint:gosec // G115: test keys are short
+		b = append(b, p[0]...)
+		b = binary.BigEndian.AppendUint32(b, uint32(len(p[1]))) //nolint:gosec // G115: test values are short
+		b = append(b, p[1]...)
+	}
+	h := fnv.New64a()
+	_, _ = h.Write(b)
+	return h.Sum64()
+}
+
+// TestATRFT25KVHash checks that Hash follows RFT-330's encoding with the keys in byte order, does
+// not depend on insertion order, and that an empty store hashes to ChainSeed.
 func TestATRFT25KVHash(t *testing.T) {
 	if got := kv.New().Hash(); got != raft.ChainSeed {
 		t.Errorf("empty Hash = %d, want ChainSeed %d", got, raft.ChainSeed)
 	}
+
+	// Inserted out of byte order; Hash folds the keys in byte order.
+	ak := kv.New()
+	ak.Apply(1, kv.EncodePut("k", "v"))
+	ak.Apply(2, kv.EncodePut("a", "b"))
+	if got, want := ak.Hash(), uint64(0x591ae43210b4cceb); got != want {
+		t.Errorf("Hash of {a:b, k:v} = %#x, want %#x", got, want)
+	}
+	if got, want := ak.Hash(), refHash([][2]string{{"a", "b"}, {"k", "v"}}); got != want {
+		t.Errorf("Hash of {a:b, k:v} = %#x, reference fold %#x", got, want)
+	}
 	pairs := [][2]string{{"a", "1"}, {"b", "2"}, {"c", "3"}, {"", "e"}, {"d", ""}}
+	sorted := [][2]string{{"", "e"}, {"a", "1"}, {"b", "2"}, {"c", "3"}, {"d", ""}} // pairs in byte order
 	forward, backward := kv.New(), kv.New()
 	for _, p := range pairs {
 		forward.Apply(1, kv.EncodePut(p[0], p[1]))
@@ -106,6 +135,9 @@ func TestATRFT25KVHash(t *testing.T) {
 	}
 	if f, b := forward.Hash(), backward.Hash(); f != b {
 		t.Errorf("Hash depends on insertion order: %d != %d", f, b)
+	}
+	if got, want := forward.Hash(), refHash(sorted); got != want {
+		t.Errorf("Hash = %#x, reference fold over the keys in byte order %#x", got, want)
 	}
 	if forward.Hash() == raft.ChainSeed {
 		t.Error("a non-empty store hashes to ChainSeed")
