@@ -29,11 +29,20 @@ const missing = "(not declared)"
 // reduced to its exported fields: the owners declare these types as struct{ /* unexported */ },
 // so the internal fields of the real types are not API and the stub does not reproduce them. Type
 // parameters, the kind of the type and the exported fields stay compared. An entry that a package
-// does not declare has the object string "(not declared)".
+// does not declare has the object string "(not declared)". An entry that the real package does
+// not declare gives the line
+//
+//	stub entry <entry>: lockstep does not declare it
+//
+// whatever the stub declares.
 func compareStub(real, stub *types.Package) []string {
 	var diffs []string
 	for _, entry := range apiEntries {
 		want, got := objectString(real, entry), objectString(stub, entry)
+		if want == missing {
+			diffs = append(diffs, "stub entry "+entry+": lockstep does not declare it")
+			continue
+		}
 		if want != got {
 			diffs = append(diffs, "stub entry "+entry+" differs:\n  lockstep: "+want+"\n  stub:     "+got)
 		}
@@ -138,6 +147,7 @@ func stubGOPATH(t *testing.T) string {
 }
 
 // moduleName returns the module path that the go.mod file at path declares, or "" if it has none.
+// A trailing // comment on the module line is ignored.
 func moduleName(t *testing.T, path string) string {
 	t.Helper()
 	f, err := os.Open(path)
@@ -147,7 +157,8 @@ func moduleName(t *testing.T, path string) string {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		if fields := strings.Fields(sc.Text()); len(fields) == 2 && fields[0] == "module" {
+		line, _, _ := strings.Cut(sc.Text(), "//")
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "module" {
 			return strings.Trim(fields[1], `"`)
 		}
 	}
@@ -205,6 +216,7 @@ func TestCompareStub(t *testing.T) {
 	tests := []struct {
 		name      string
 		old, repl string
+		both      bool // the change applies to the real package too
 		want      []string
 	}{
 		{
@@ -249,10 +261,21 @@ func TestCompareStub(t *testing.T) {
 				"  lockstep: func (*lockstep.Context[M]).Every(d time.Duration, msg M) lockstep.TimerID\n" +
 				"  stub:     " + missing},
 		},
+		{
+			name: "method removed from both",
+			old:  "func (c *Context[M]) Every(d time.Duration, msg M) TimerID { panic(\"stub\") }",
+			repl: "",
+			both: true,
+			want: []string{"stub entry Context.Every: lockstep does not declare it"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := compareStub(stub, mutatedStub(t, tt.old, tt.repl))
+			real := stub
+			if tt.both {
+				real = mutatedStub(t, tt.old, tt.repl)
+			}
+			got := compareStub(real, mutatedStub(t, tt.old, tt.repl))
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d lines, want %d:\n%s", len(got), len(tt.want), strings.Join(got, "\n"))
 			}
@@ -260,6 +283,29 @@ func TestCompareStub(t *testing.T) {
 				if got[i] != tt.want[i] {
 					t.Errorf("line %d:\n got: %s\nwant: %s", i, got[i], tt.want[i])
 				}
+			}
+		})
+	}
+}
+
+// TestModuleName checks that moduleName reads the module path of a go.mod file.
+func TestModuleName(t *testing.T) {
+	tests := []struct {
+		name, content, want string
+	}{
+		{"plain", "module example.com/m\n\ngo 1.26.0\n", "example.com/m"},
+		{"quoted", "module \"example.com/m\"\n", "example.com/m"},
+		{"trailing comment", "module example.com/m // the module\n", "example.com/m"},
+		{"no module line", "go 1.26.0\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "go.mod")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := moduleName(t, path); got != tt.want {
+				t.Errorf("moduleName(%q) = %q, want %q", tt.content, got, tt.want)
 			}
 		})
 	}
