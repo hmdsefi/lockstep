@@ -526,7 +526,7 @@ func TestSpawnFromStopped(t *testing.T) {
 
 // SUP-060 step 5, MBX-160, SFT-040: the final stop closes the queues and drains them, returning the
 // Sent and the Self entries each in queue order and the signals and inject commands of the system
-// queue, without its other messages; a closed mailbox refuses every later entry and a closed system queue drops every later
+// queue, the signals with their Watch sequence numbers, without its other messages; a closed mailbox refuses every later entry and a closed system queue drops every later
 // message.
 func TestStopDrain(t *testing.T) {
 	sys, eng := newManualSystem(t)
@@ -543,7 +543,7 @@ func TestStopDrain(t *testing.T) {
 	sig := Terminated{Addr: gone(), Reason: NoActor}
 	inj := inject{err: errors.New("injected")}
 	c.pushSystem(stopped{child: gone()}, nil)
-	c.pushSystem(signalMsg{sig: sig}, nil)
+	c.pushSystem(signalMsg{sig: sig, seq: 7}, nil)
 	c.pushSystem(inj, nil)
 	sent, self, notRunning := c.closeQueues()
 	if len(sent) != 2 || sent[0].msg != "m1" || sent[1].msg != "m2" {
@@ -552,7 +552,7 @@ func TestStopDrain(t *testing.T) {
 	if len(self) != 1 || self[0].msg != "s1" || self[0].inc != c.inc {
 		t.Errorf("drained Self entries %+v, want s1 of inc %d", self, c.inc)
 	}
-	if want := []any{sig, inj}; !slices.Equal(notRunning, want) {
+	if want := []sysMsg{signalMsg{sig: sig, seq: 7}, inj}; !slices.Equal(notRunning, want) {
 		t.Errorf("drained not-running system messages %v, want %v", notRunning, want)
 	}
 	if out, _ := c.offerUser(entry{msg: "late", kind: entrySent}, nil, false); out != mailbox.Closed {
@@ -1011,8 +1011,10 @@ func TestATMBX21DrainAtStop(t *testing.T) {
 	if err := Stop(sys, a.Address()); err != nil {
 		t.Fatal(err)
 	}
-	sig := Terminated{Addr: gone(), Reason: NoActor}
-	c.pushSystem(signalMsg{sig: sig}, nil) // behind the stop request: never delivered
+	// Behind the stop request: never delivered. Not a Terminated, which the drain would discard
+	// without a record unless the incarnation watched its address under its sequence number.
+	sig := ChildFailed{Child: gone(), Err: errX}
+	c.pushSystem(signalMsg{sig: sig}, nil)
 	release()
 	eng.RunUntilIdle()
 

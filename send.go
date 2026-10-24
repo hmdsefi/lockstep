@@ -132,10 +132,11 @@ type routeRequest struct {
 	ask     Address         // MBX-092's ask address of an Ask request, zero for every other message
 	seq     uint64          // the inbound envelope's Seq (MBX-120), 0 for a local send
 	size    int64           // msg's bytes for the target's mailbox estimate (OVL-410), computed by the caller before routing
-	// wait is set only for an outside sender, a Send or SendContext from a *System: the context that
-	// ends its wait for room in a BlockSender mailbox on a blocking engine (MBX-090). It is nil for
-	// every sender that never waits: an actor, an Ask request, an inbound envelope (MBX-120) and a
-	// message the interposer held, which the engine offers.
+	// wait is set only for an outside sender, a Send, SendContext or Ask from a *System: the context
+	// that ends its wait for room in a BlockSender mailbox on a blocking engine (MBX-090). For an Ask
+	// it ends when the ask resolves (askWait, MSG-330). It is nil for every sender that never waits:
+	// an actor, an inbound envelope (MBX-120) and a message the interposer held, which the engine
+	// offers.
 	wait context.Context
 }
 
