@@ -27,6 +27,8 @@ func sorted[S interface{ ~[]int }](m map[string]int, s S) {
 	}
 	_ = slices.SortedFunc(maps.Keys(m), strings.Compare)
 	_ = slices.Sorted(maps.Values(m))
+	_ = slices.SortedStableFunc(maps.Keys(m), strings.Compare)
+	_ = slices.Sorted[string](maps.Keys(m))
 	for _, v := range s {
 		_ = v
 	}
