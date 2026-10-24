@@ -166,11 +166,11 @@ func mailboxActions(recs []engine.Record, from int, to Address) []string {
 // AT-MSG-34 (local clause): MSG-115, MSG-330. A *System sender's Ask to a full BlockSender mailbox
 // on a blocking engine waits for room. The target is held with one queued message rather than
 // blocked in Receive: the local engine runs every turn and timer on one goroutine, so a blocked
-// Receive would also keep the ask's timer from firing. The wait ends when the ask resolves: at its timeout the
-// request is not enqueued, Ask returns the reply resolved with ErrTimeout, and the target receives
-// only the message its turn blocked on and the one queued before. The wait also ends when the
-// request is enqueued, and the target then answers it. An actor's Ask never waits: BlockSender acts
-// as FailSend and the ask resolves with ErrMailboxFull at once.
+// Receive would also keep the ask's timer from firing. The wait ends when the ask resolves: at
+// its timeout the request is not enqueued, Ask returns the reply resolved with ErrTimeout, and
+// the target then receives only the queued message, never the ask's request. The wait also ends
+// when the request is enqueued, and the target then answers it. An actor's Ask never waits:
+// BlockSender acts as FailSend and the ask resolves with ErrMailboxFull at once.
 func TestATMSG34AskBlockSender(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		sys, rec := newRecordingSystem(t)
