@@ -44,7 +44,11 @@ func TestScenario(t *testing.T) {
 	}
 	i := slices.IndexFunc(plantedBugs, func(p plantedBug) bool { return p.bug.String() == name })
 	if i < 0 {
-		t.Fatalf("RAFTDEMO_BUG=%q: want vote-ignores-log, stale-read or vote-not-durable", name)
+		names := make([]string, len(plantedBugs))
+		for j, p := range plantedBugs {
+			names[j] = p.bug.String()
+		}
+		t.Fatalf("RAFTDEMO_BUG=%q: want one of %s", name, strings.Join(names, ", "))
 	}
 	p := plantedBugs[i]
 	c := DefaultCluster()
@@ -150,11 +154,16 @@ func TestATRFT46BugsDetected(t *testing.T) {
 // fails the same way, with the same trace hash.
 func TestDemoPartitionBug(t *testing.T) {
 	skipHeavy(t)
-	p := plantedBugs[slices.IndexFunc(plantedBugs, func(p plantedBug) bool { return p.bug == raft.BugVoteIgnoresLog })]
+	i := slices.IndexFunc(plantedBugs, func(p plantedBug) bool { return p.bug == raft.BugVoteIgnoresLog })
+	if i < 0 {
+		t.Fatal("vote-ignores-log has no row in plantedBugs")
+	}
+	p := plantedBugs[i]
 	first := firstFailure(t, p)
 	t.Logf("Planted bug vote-ignores-log: a server grants its vote without checking that the candidate's log is up to date.")
-	t.Logf("The cluster runs %d servers and %d clients under random network partitions, for up to %d seeds of 20 s simulated time each.", DefaultCluster().Servers, DefaultCluster().Clients, p.bound)
-	t.Logf("Of the first %d seeds, seed %d (%s) is the first to fail.", p.bound, first.Index+1, first.Seed)
+	t.Logf("The cluster runs %d servers and %d clients under random network partitions, for up to %d seeds of %v simulated time each.",
+		DefaultCluster().Servers, DefaultCluster().Clients, p.bound, Options(p.bound).Duration)
+	t.Logf("Seed %s (index %d of the first %d) is the first to fail.", first.Seed, first.Index, p.bound)
 	t.Logf("It fails the %q check: %s", first.Check, first.Message)
 
 	rs, out, code := runScenario(t, p.bug, "FAULTLINE_SEED="+first.Seed)
