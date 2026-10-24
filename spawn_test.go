@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -96,25 +97,61 @@ func TestATACT15NameRules(t *testing.T) {
 	}
 }
 
-// AT-ACT-16 (the clauses without the actor cap and restarts): ACT-320.
-func TestATACT16GeneratedNames(t *testing.T) {
-	sys, eng := newManualSystem(t)
+// AT-ACT-16: ACT-320. Generated names under the system and under an actor, across a restart of
+// the actor (on a system without a cap), and with the actor cap (on a second system).
+func TestATACT16GeneratedNamesCapAndRestart(t *testing.T) {
+	sys, eng := newManualSystem(t, WithGuardianStrategy(r0()))
 	for i := 1; i <= 3; i++ {
 		p, err := Spawn(sys, "", idle[int]())
 		if want := fmt.Sprintf("/user/$%d", i); err != nil || p.Address().Path() != want {
 			t.Errorf("generated spawn %d = %v, %v; want %s", i, p, err, want)
 		}
 	}
-	var child PID[int]
-	var childErr error
-	if _, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{
-		started: func(ctx *Context[int]) { child, childErr = Spawn(ctx, "", idle[int]()) },
-	})); err != nil {
+	// Every incarnation of a spawns one generated child from Started.
+	var children []PID[int]
+	a, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{
+		started: func(ctx *Context[int]) {
+			child, err := Spawn(ctx, "", idle[int]())
+			if err != nil {
+				t.Errorf("generated child of a: %v", err)
+			}
+			children = append(children, child)
+		},
+		receive: func(ctx *Context[int], _ int) { ctx.Fail(errProbe) },
+	}))
+	if err != nil {
 		t.Fatal(err)
 	}
 	eng.RunUntilIdle()
-	if childErr != nil || child.Address().Path() != "/user/a/$1" {
-		t.Errorf("first generated child of a = %v, %v; want /user/a/$1", child, childErr)
+	send(t, sys, a, 1) // a restarts; its child is stopped first
+	eng.RunUntilIdle()
+	var paths []string
+	for _, c := range children {
+		paths = append(paths, c.Address().Path())
+	}
+	if want := []string{"/user/a/$1", "/user/a/$2"}; !slices.Equal(paths, want) {
+		t.Errorf("generated children of a across a restart = %v, want %v", paths, want)
+	}
+
+	// With the cap (reserve 1), a normal spawn is admitted only while fewer than 2 actors are live.
+	// The refused spawn consumes no number; the slot of $1 comes back when its stop completes.
+	capped, capEng := newManualSystem(t, WithMaxActors(3))
+	first, err := Spawn(capped, "", idle[int]())
+	if err != nil || first.Address().Path() != "/user/$1" {
+		t.Fatalf("first spawn under the cap = %v, %v; want /user/$1", first, err)
+	}
+	if p, err := Spawn(capped, "", idle[int]()); err != nil || p.Address().Path() != "/user/$2" {
+		t.Fatalf("second spawn under the cap = %v, %v; want /user/$2", p, err)
+	}
+	if p, err := Spawn(capped, "", idle[int]()); !errors.Is(err, ErrActorCap) || !p.IsZero() {
+		t.Fatalf("third spawn under the cap = %v, %v; want ErrActorCap", p, err)
+	}
+	if err := Stop(capped, first.Address()); err != nil {
+		t.Fatal(err)
+	}
+	capEng.RunUntilIdle()
+	if p, err := Spawn(capped, "", idle[int]()); err != nil || p.Address().Path() != "/user/$3" {
+		t.Errorf("spawn after $1 stopped = %v, %v; want /user/$3", p, err)
 	}
 }
 
@@ -264,8 +301,8 @@ func TestSpawnRecord(t *testing.T) {
 	}
 }
 
-// ACT-300: steps 3, 3a, 4, 5 and 6 in that order; ErrStopped names the parent.
-func TestSpawnCheckOrder(t *testing.T) {
+// AT-ACT-14: ACT-300. Steps 3, 3a, 4, 5 and 6 in that order; ErrStopped names the parent.
+func TestATACT14SpawnCheckOrder(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	if _, err := Spawn(sys, "a", idle[int]()); err != nil {
 		t.Fatal(err)
@@ -295,6 +332,52 @@ func TestSpawnCheckOrder(t *testing.T) {
 	if want := "lockstep: stopped: " + sys.user.String(); !errors.Is(err, ErrStopped) || err.Error() != want {
 		t.Errorf("Spawn while closing: %v, want %q", err, want)
 	}
+
+	// The same order on a system whose Shutdown is blocked in a Stopped hook, and with the actor cap
+	// reached.
+	t.Run("during a real shutdown", func(t *testing.T) {
+		live := newLocalSystem(t)
+		entered, release := make(chan struct{}, 1), make(chan struct{})
+		var once sync.Once
+		t.Cleanup(func() { once.Do(func() { close(release) }) }) // runs before the system's shutdown
+		if _, err := Spawn(live, "x", actorOf[any](&lifeActor[any]{stopped: func(*Context[any], StopReason) {
+			entered <- struct{}{}
+			<-release
+		}})); err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan error, 1)
+		go func() { result <- live.Shutdown(context.Background()) }()
+		recv(t, entered)
+
+		if _, err := Spawn(live, "bad/name", idle[int]()); !errors.Is(err, ErrInvalidName) {
+			t.Errorf("invalid name during the shutdown: %v, want ErrInvalidName", err)
+		}
+		_, err := Spawn(live, "y", idle[int](), WithStrategy(Strategy{}))
+		if want := "lockstep: invalid option: Strategy must be built with OneForOne or AllForOne"; !errors.Is(err, ErrInvalidOption) || err.Error() != want {
+			t.Errorf("invalid strategy during the shutdown: %v, want ErrInvalidOption with text %q", err, want)
+		}
+		if _, err := Spawn(live, "y", idle[int]()); !isStoppedErr(live, err) {
+			t.Errorf("Spawn during the shutdown = %v, want ErrStopped with text %q", err, stoppedText(live))
+		}
+		once.Do(func() { close(release) })
+		if err := recv(t, result); err != nil {
+			t.Errorf("Shutdown = %v, want nil", err)
+		}
+	})
+
+	t.Run("actor cap reached", func(t *testing.T) {
+		capped, _ := newManualSystem(t, WithMaxActors(1))
+		if _, err := Spawn(capped, "a", idle[int]()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Spawn(capped, "a", idle[int]()); !errors.Is(err, ErrNameTaken) {
+			t.Errorf("taken name at the cap: %v, want ErrNameTaken (step 5 before 6)", err)
+		}
+		if _, err := Spawn(capped, "b", idle[int]()); !errors.Is(err, ErrActorCap) {
+			t.Errorf("free name at the cap: %v, want ErrActorCap", err)
+		}
+	})
 }
 
 // ACT-030: the internal spawn function places children under /system, with their own counter.
