@@ -526,8 +526,8 @@ func TestSpawnFromStopped(t *testing.T) {
 
 // SUP-060 step 5, MBX-160, SFT-040: the final stop closes the queues and drains them, returning the
 // Sent and the Self entries each in queue order and the signals and inject commands of the system
-// queue, the signals with their Watch sequence numbers, without its other messages; a closed mailbox refuses every later entry and a closed system queue drops every later
-// message.
+// queue, the signals with their Watch sequence numbers, without its other messages; a closed
+// mailbox refuses every later entry and a closed system queue drops every later message.
 func TestStopDrain(t *testing.T) {
 	sys, eng := newManualSystem(t)
 	var received []any
