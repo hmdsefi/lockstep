@@ -19,11 +19,19 @@ func scopes() {
 	// more text
 	_ = probe // want `^visible$`
 
+	_ = []int{
+		//lockstep:allow LS100 not the last comment of its group, though the code is on the next line
+		/* x */ probe, // want `^visible$`
+	}
+
 	//lockstep:allow LS100 blank line between
 
 	_ = probe // want `^visible$`
 
 	//lockstep:allow LS110 other check
+	_ = probe // want `^visible$`
+
+	//lockstep:maporder the names of the determinism checks suppress nothing here
 	_ = probe // want `^visible$`
 
 	//lockstep:allow LS110,LS100 two checks

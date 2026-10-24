@@ -58,6 +58,12 @@ func moreCalls(db *sql.DB) {
 	_, _ = ln.Accept() // want `^LS100: \(net\.Listener\)\.Accept blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`
 	var udp *net.UDPConn
 	_, _, _ = udp.ReadFromUDP(nil) // want `^LS100: \(\*net\.UDPConn\)\.ReadFromUDP blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`
+	var dialer net.Dialer
+	_, _ = dialer.DialContext(context.Background(), "tcp", "localhost:1") // want `^LS100: \(\*net\.Dialer\)\.DialContext blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`
+	var resolver net.Resolver
+	_, _ = resolver.LookupHost(context.Background(), "localhost") // want `^LS100: \(\*net\.Resolver\)\.LookupHost blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`
+	var lc net.ListenConfig
+	_, _ = lc.Listen(context.Background(), "tcp", "localhost:0") // want `^LS100: \(\*net\.ListenConfig\)\.Listen blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`
 	var rw sync.RWMutex
 	rw.RLock()                               // want `^LS100: \(\*sync\.RWMutex\)\.RLock blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`
 	conn, _ := db.Conn(context.Background()) // want `^LS100: \(\*database/sql\.DB\)\.Conn blocks; run it as an effect with lockstep\.Do \(actor code: \(\*Account\)\.Receive -> calls -> moreCalls\)$`

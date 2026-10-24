@@ -67,7 +67,7 @@ func TestActorCode(t *testing.T) {
 				"(*Account).Started", "(*Account).Receive", "(*Account).Stopped", "(*Account).Signal",
 				"(Value).Receive", "(*Router[M]).Receive",
 				"shared", "(*Account).Receive$1", "(*Account).flush", "apply", "less", "generic",
-				"audit",
+				"viaArg", "late", "early", "audit",
 			},
 		},
 		{
@@ -119,7 +119,7 @@ func TestActorFuncInspect(t *testing.T) {
 		fn    string
 		calls []string
 	}{
-		{"(*Account).Receive", []string{"apply", "Slice", "f", "record", "spin", "generic", "Run", "shared"}},
+		{"(*Account).Receive", []string{"apply", "Slice", "f", "record", "spin", "run", "generic", "Run", "shared"}},
 		{"(*Account).Receive$1", []string{"append"}},
 	}
 	for _, tt := range tests {
@@ -149,6 +149,25 @@ func TestActorFuncInspect(t *testing.T) {
 				t.Errorf("calls in the body of %s:\n got  %q\n want %q", tt.fn, calls, tt.calls)
 			}
 		})
+	}
+}
+
+// TestActorsNoSSA checks that a missing SSA result is not an error (ANL §7): the search finds
+// no actor code.
+func TestActorsNoSSA(t *testing.T) {
+	result, err := runActors(&analysis.Pass{})
+	if err != nil {
+		t.Fatalf("runActors: %v, want a nil error", err)
+	}
+	code, ok := result.(*actorCode)
+	if !ok {
+		t.Fatalf("result %T, want *actorCode", result)
+	}
+	if len(code.Actors) != 0 || len(code.Funcs) != 0 {
+		t.Errorf("got %d actor types and %d functions, want none", len(code.Actors), len(code.Funcs))
+	}
+	if got := code.funcOf(&ast.FuncLit{}); got != nil {
+		t.Errorf("funcOf = %v, want nil", got)
 	}
 }
 

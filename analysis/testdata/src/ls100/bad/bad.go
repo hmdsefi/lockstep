@@ -77,7 +77,7 @@ func (a *Account) loop() {
 
 // stamp is reached from Started and from Receive.
 func stamp() {
-	_ = time.Since(time.Time{}) // want `^LS100: time\.Since uses the wall clock; use ctx\.Now, ctx\.After or ctx\.Every \(actor code: \(\*Account\)\.Started -> stamp\)$`
+	_ = time.Now() // want `^LS100: time\.Now uses the wall clock; use ctx\.Now, ctx\.After or ctx\.Every \(actor code: \(\*Account\)\.Started -> stamp\)$`
 }
 
 // more holds further names of the same sub-rules.
@@ -85,6 +85,7 @@ func more() {
 	c, cancel := context.WithTimeout(context.Background(), time.Second) // want `^LS100: context\.WithTimeout uses the wall clock; use ctx\.Now, ctx\.After or ctx\.Every \(actor code: \(\*Account\)\.Receive -> more\)$`
 	defer cancel()
 	_ = c
+	_ = time.Since(time.Time{})                   // want `^LS100: time\.Since uses the wall clock; use ctx\.Now, ctx\.After or ctx\.Every \(actor code: \(\*Account\)\.Receive -> more\)$`
 	time.Sleep(time.Millisecond)                  // want `^LS100: time\.Sleep uses the wall clock; use ctx\.Now, ctx\.After or ctx\.Every \(actor code: \(\*Account\)\.Receive -> more\)$`
 	_ = mrand.Intn(3)                             // want `^LS100: math/rand\.Intn uses global randomness; use ctx\.Rand\(\) \(actor code: \(\*Account\)\.Receive -> more\)$`
 	_ = rand.N(time.Second)                       // want `^LS100: math/rand/v2\.N uses global randomness; use ctx\.Rand\(\) \(actor code: \(\*Account\)\.Receive -> more\)$`
