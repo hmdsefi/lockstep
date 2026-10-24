@@ -55,7 +55,7 @@ func (r *reporter) report(pos token.Pos, id, text string) {
 
 // reportActor adds the diagnostic "<id>: <text> (actor code: <chain>)" at pos, for a check on
 // actor code; chain is the chain of the actor-code function holding pos (ANL-060).
-func (r *reporter) reportActor(pos token.Pos, id, text, chain string) { //nolint:unparam // every actor-code check of ANL-110 (LS100, LS110) reports through it
+func (r *reporter) reportActor(pos token.Pos, id, text, chain string) {
 	r.add(finding{pos: pos, id: id, message: id + ": " + text + " (actor code: " + chain + ")"})
 }
 
