@@ -412,6 +412,7 @@ func (c *core) commitTo(n uint64) {
 		c.obs.Applied(c.cfg.ID, i, e, c.sm.Hash())
 		if c.role == leader && len(c.pending) > 0 && c.pending[0].index == i {
 			pp := c.pending[0]
+			c.pending[0] = proposal{} // drop the answered ReplyTo from the backing array
 			c.pending = c.pending[1:]
 			r := Result{Status: Unknown}
 			if e.Term == pp.term && e.Client == pp.client && e.Seq == pp.seq {
