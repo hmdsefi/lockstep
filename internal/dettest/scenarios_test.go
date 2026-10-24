@@ -22,7 +22,8 @@ import (
 // toyObs collects what the bodies of one scenario record in every run of every seed, for the
 // checks across seeds that a World.Final check of a single seed cannot make.
 type toyObs struct {
-	ask []*toys.AskProbe // the probe of every run of the ask scenario
+	ask      []*toys.AskProbe      // the probe of every run of the ask scenario
+	requests []*toys.RequestsProbe // the probe of every run of the msg-asks scenario
 }
 
 // toyRow is one scenario of DET-260: the toy systems' scenario table. body adds the nodes, drives
@@ -61,9 +62,9 @@ var toyRows = []toyRow{
 	{name: "ticker", baseSeed: 0x1003, body: tickerBody},
 	{name: "ask", baseSeed: 0x1004, body: askBody, after: askAfter},
 	{name: "beacon-crash", baseSeed: 0x1005, body: beaconCrashBody},
-	{name: "pingpong-faults", baseSeed: 0x1006, body: pingpongFaultsBody}, // AT-SIM-28
-	{name: "act-lifecycle", baseSeed: 0x1007, body: actLifecycleBody},     // AT-ACT-33
-	{name: "msg-asks", baseSeed: 0x1008, body: msgAsksBody},               // AT-MSG-33
+	{name: "pingpong-faults", baseSeed: 0x1006, body: pingpongFaultsBody},        // AT-SIM-28
+	{name: "act-lifecycle", baseSeed: 0x1007, body: actLifecycleBody},            // AT-ACT-33
+	{name: "msg-asks", baseSeed: 0x1008, body: msgAsksBody, after: msgAsksAfter}, // AT-MSG-33
 }
 
 // toyScenarios returns toyRows as golden scenarios, in table order.
@@ -242,8 +243,9 @@ func actLifecycleBody(s *sim.Sim, _ *toyObs) {
 
 // msgAsksBody is the scenario of AT-MSG-33: a requester on n1 asks 50 questions across n2 and n3
 // with timeouts, one of them forwarded from n2 to n3, while random partitions cut the links.
-func msgAsksBody(s *sim.Sim, _ *toyObs) {
+func msgAsksBody(s *sim.Sim, obs *toyObs) {
 	p := &toys.RequestsProbe{}
+	obs.requests = append(obs.requests, p)
 	var requester lockstep.PID[toys.RequesterMsg]
 	var a, b lockstep.PID[toys.ResponderMsg]
 	s.Node("n1", func(sys *lockstep.System) { requester = must(toys.SpawnRequester(sys, p)) })
@@ -255,12 +257,28 @@ func msgAsksBody(s *sim.Sim, _ *toyObs) {
 	boot(s)
 	send(s, "n1", requester, toys.RequesterMsg(toys.StartRound{A: a, B: b, Count: 50}))
 	s.World().Final("msg-asks", func() error {
-		if p.Answered+p.TimedOut+p.Other != 50 || p.Wrong != 0 {
-			return fmt.Errorf("%d answered, %d timed out, %d failed otherwise and %d wrong, want 50 asks resolved and none wrong",
+		// The responders never stop and the mailboxes are unbounded: an ask ends answered or timed
+		// out, never with another error.
+		if p.Answered+p.TimedOut != 50 || p.Other != 0 || p.Wrong != 0 {
+			return fmt.Errorf("%d answered, %d timed out, %d failed otherwise and %d wrong, want 50 asks answered or timed out and none wrong",
 				p.Answered, p.TimedOut, p.Other, p.Wrong)
 		}
 		return nil
 	})
+}
+
+// msgAsksAfter is the check of AT-MSG-33 across the seeds of msg-asks: the partitions and the
+// timeouts bite, so some asks are answered and some time out.
+func msgAsksAfter(t *testing.T, obs *toyObs) {
+	t.Helper()
+	var answered, timedOut int
+	for _, p := range obs.requests {
+		answered += p.Answered
+		timedOut += p.TimedOut
+	}
+	if len(obs.requests) == 0 || answered == 0 || timedOut == 0 {
+		t.Errorf("over %d runs %d asks were answered and %d timed out, want some of each", len(obs.requests), answered, timedOut)
+	}
 }
 
 // TestToys is AT-DET-17: every scenario of DET-260 passes its final check on its three seeds,

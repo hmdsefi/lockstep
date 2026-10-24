@@ -6,7 +6,6 @@ package sim_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -180,19 +179,19 @@ func TestATMSG15VirtualTimeout(t *testing.T) {
 }
 
 // AT-MSG-29, MSG-110, MSG-340, MSG-350, MSG-410: an ask from c on n1 to kv on n2 gets the answer;
-// when kv is stopped before it answers, ErrTerminated names kv; when n1 and n2 are partitioned
+// when kv is stopped before it answers, ErrTerminated names kv by its full address; when n1 and n2 are partitioned
 // before the answer, the ask times out, and the answer after the heal is recorded as late.
 func TestATMSG29CrossNodeAsk(t *testing.T) {
 	kv := lockstep.PIDAt[Ping]("n2", "/user/kv")
-	boot := func(s *sim.Sim, delay time.Duration, got *[]askStep) *kernel.Node {
+	boot := func(s *sim.Sim, delay time.Duration, got *[]askStep, real *lockstep.PID[Ping]) *kernel.Node {
 		w := s.World()
 		n1 := s.Node("n1", func(sys *lockstep.System) { spawn(sys, "c", asker(w.Sim.Now, got)) })
 		s.Node("n2", func(sys *lockstep.System) {
 			if delay == 0 {
-				spawn(sys, "kv", echo())
+				*real = spawn(sys, "kv", echo())
 				return
 			}
-			spawn(sys, "kv", slowEcho(delay))
+			*real = spawn(sys, "kv", slowEcho(delay))
 		})
 		w.RunFor(time.Millisecond)
 		return n1
@@ -202,7 +201,8 @@ func TestATMSG29CrossNodeAsk(t *testing.T) {
 		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 			w, tt := s.World(), s.World().T()
 			var got []askStep
-			boot(s, 0, &got)
+			var real lockstep.PID[Ping]
+			boot(s, 0, &got, &real)
 			askFromN1(s, kv, 7, 0)
 			w.RunFor(time.Second)
 			if len(got) != 1 || got[0].v != 7 || got[0].err != nil {
@@ -215,16 +215,19 @@ func TestATMSG29CrossNodeAsk(t *testing.T) {
 		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 			w, tt := s.World(), s.World().T()
 			var got []askStep
-			n1 := boot(s, time.Second, &got)
+			var real lockstep.PID[Ping]
+			n1 := boot(s, time.Second, &got, &real)
 			askFromN1(s, kv, 7, 0)
 			w.RunFor(100 * time.Millisecond)
 			if err := s.StopActor(kv.Address()); err != nil {
 				tt.Fatalf("StopActor: %v", err)
 			}
 			w.RunFor(time.Second)
+			// MSG-340 names kv by its full address, with the uid of the incarnation that stopped.
+			want := "lockstep: actor terminated: " + real.Address().String()
 			if len(got) != 1 || got[0].v != 0 || !errors.Is(got[0].err, lockstep.ErrTerminated) ||
-				!strings.Contains(got[0].err.Error(), "lockstep://n2/user/kv#") {
-				tt.Fatalf("c got %+v, want 0 and an error wrapping ErrTerminated that names kv", got)
+				got[0].err.Error() != want {
+				tt.Fatalf("c got %+v, want 0 and an error wrapping ErrTerminated with text %q", got, want)
 			}
 			if d := got[0].at; d > kernel.Time(time.Second) {
 				tt.Errorf("c got the error at %v, want soon after the stop at about 101ms, not the 5s timeout", d)
@@ -241,7 +244,8 @@ func TestATMSG29CrossNodeAsk(t *testing.T) {
 		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 			w, tt := s.World(), s.World().T()
 			var got []askStep
-			n1 := boot(s, time.Second, &got)
+			var real lockstep.PID[Ping]
+			n1 := boot(s, time.Second, &got, &real)
 			askFromN1(s, kv, 7, 500*time.Millisecond)
 			w.RunFor(100 * time.Millisecond) // kv has the request and answers at 1s
 			w.Faults.Inject(fault.Event{Kind: fault.KindPartition, Groups: [][]string{{"n1"}, {"n2"}}})
@@ -267,25 +271,39 @@ func TestATMSG29CrossNodeAsk(t *testing.T) {
 	})
 }
 
-// AT-MSG-30, MSG-350: an ask to an actor of n2 that completed its stop resolves with
+// AT-MSG-30, MSG-310, MSG-350: an ask to an actor of n2 that completed its stop resolves with
 // ErrTerminated from n2, for the PID with its uid and for the path address, and not with
-// ErrTimeout.
+// ErrTimeout. n2 records one dead letter for each ask, addressed to the asked address, so the
+// failure is n2's and not a local dead letter on n1.
 func TestATMSG30AskAbsentRemoteActor(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []askStep
 		var kv lockstep.PID[Ping]
 		n1 := s.Node("n1", func(sys *lockstep.System) { spawn(sys, "c", asker(w.Sim.Now, &got)) })
-		s.Node("n2", func(sys *lockstep.System) { kv = spawn(sys, "kv", echo()) })
+		n2 := s.Node("n2", func(sys *lockstep.System) { kv = spawn(sys, "kv", echo()) })
 		w.RunFor(time.Millisecond)
 		if err := s.StopActor(kv.Address()); err != nil {
 			tt.Fatalf("StopActor: %v", err)
 		}
 		w.RunFor(10 * time.Millisecond) // the stop completes
 
+		byPath := lockstep.PIDAt[Ping]("n2", "/user/kv")
 		askFromN1(s, kv, 1, 0)
-		askFromN1(s, lockstep.PIDAt[Ping]("n2", "/user/kv"), 2, 0)
+		askFromN1(s, byPath, 2, 0)
 		w.RunFor(time.Second)
+
+		for _, to := range []lockstep.Address{kv.Address(), byPath.Address()} {
+			dead := 0
+			for _, r := range ofKind(w.Sim.Records(), "lockstep.deadletter") {
+				if r.Node == n2.ID() && attr(r, "to") == to.String() {
+					dead++
+				}
+			}
+			if dead != 1 {
+				tt.Errorf("%d lockstep.deadletter records on n2 for %v, want 1", dead, to)
+			}
+		}
 
 		if len(got) != 2 {
 			tt.Fatalf("c got %d resolutions, want 2", len(got))
