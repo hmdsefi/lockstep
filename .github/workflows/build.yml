@@ -150,6 +150,29 @@ jobs:
             echo "::endgroup::"
           done
 
+  vet:
+    name: lockstep-vet (examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: workspace with the root and all nested modules
+        run: |
+          go work init
+          go work use -r .
+      - name: build lockstep-vet
+        run: go -C analysis build -o "$RUNNER_TEMP/lockstep-vet" ./cmd/lockstep-vet
+      - name: lockstep-vet on the examples
+        run: |
+          set -e
+          for mod in $(git ls-files 'examples/*/go.mod' | xargs -r -n 1 dirname | sort); do
+            echo "::group::$mod"
+            go -C "$mod" vet -vettool="$RUNNER_TEMP/lockstep-vet" ./...
+            echo "::endgroup::"
+          done
+
   golden-trailer:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
