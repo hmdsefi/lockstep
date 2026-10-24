@@ -4,6 +4,7 @@
 package raftsim
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -98,7 +99,7 @@ func (o *Oracle) linearizable(ops []history.Op) error {
 // its point (RFT-510 step 1). An op without a point has has false.
 func (o *Oracle) finalOps(ops []history.Op) ([]*finalOp, error) {
 	ops = slices.Clone(ops)
-	slices.SortStableFunc(ops, func(a, b history.Op) int { return cmpInt64(a.ID, b.ID) })
+	slices.SortStableFunc(ops, func(a, b history.Op) int { return cmp.Compare(a.ID, b.ID) })
 
 	seqs := make(map[string]uint64) // per process, the ordinal of its latest op
 	var fops []*finalOp
@@ -189,7 +190,7 @@ func precedence(fops []*finalOp) error {
 		}
 	}
 	slices.SortStableFunc(events, func(a, b event) int {
-		if c := cmpInt64(a.index, b.index); c != 0 {
+		if c := cmp.Compare(a.index, b.index); c != 0 {
 			return c
 		}
 		switch {
@@ -289,14 +290,4 @@ func jsonText(v *string) string {
 		return "null" // unreachable: a *string always marshals
 	}
 	return string(b)
-}
-
-func cmpInt64(a, b int64) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }

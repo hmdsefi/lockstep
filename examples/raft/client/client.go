@@ -66,10 +66,9 @@ func (begin) clientMsg()    {}
 func (retry) clientMsg()    {}
 func (answered) clientMsg() {}
 
-// Config configures one client. New applies the defaults to zero fields, so a zero ReadPercent,
-// ThinkMax, Timeout, RetryDelay or MaxRetries means the default: 0 percent reads, a zero
-// ThinkMax and zero retries cannot be configured. Keys defaults only when it is nil, so an empty
-// non-nil Keys is an error.
+// Config configures one client. New replaces zero fields with their defaults, so ReadPercent 0,
+// ThinkMax 0 and MaxRetries 0 cannot be configured. Keys defaults only when nil; an empty non-nil
+// Keys is an error.
 type Config struct {
 	Name        string        // process name in the history, for example "c1"
 	ID          uint32        // client ID carried in commands

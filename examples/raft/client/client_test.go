@@ -279,6 +279,34 @@ func TestATRFT28Retries(t *testing.T) {
 	}
 }
 
+// RFT-360: later attempts go to the last server that answered, across operations. n1 answers
+// NotLeader with the hint n2 and n2 answers OK, so the second operation starts at n2, not at the
+// first drawn server n1.
+func TestStickyTarget(t *testing.T) {
+	servers := serversStartingAt(t, "c1", "n1", "n2")
+	var log attempts
+	var rec *recorder
+	run(t, "sticky", 2*time.Second, func(s *sim.Sim) {
+		log, rec = attempts{}, newRecorder(s)
+		addStubs(s, &log,
+			stubSpec{node: "n1", script: &script{answers: []raft.Result{{Status: raft.NotLeader, Leader: "n2"}}}},
+			stubSpec{node: "n2", script: okScript()})
+		addClient(s, "c1", client.Config{Name: "c1", ID: 1, Servers: servers, MaxOps: 2, Recorder: rec})
+		s.World().RunFor(2 * time.Second)
+	})
+	if got, want := log.nodes(), []string{"n1", "n2", "n2"}; !slices.Equal(got, want) {
+		t.Errorf("attempts %v, want %v", got, want)
+	}
+	if len(rec.ops) != 2 {
+		t.Fatalf("recorded %d operations, want 2", len(rec.ops))
+	}
+	for i, o := range rec.ops {
+		if !o.completed || o.outcome != client.OK {
+			t.Errorf("op %d = %+v, want a completed OK op", i+1, *o)
+		}
+	}
+}
+
 // RFT-360: NotLeader without a usable hint (empty, or a server outside Servers) retries at the next
 // server in Servers order after RetryDelay.
 func TestNotLeaderWithoutHint(t *testing.T) {
