@@ -541,7 +541,7 @@ func nestedModuleViolations(t *testing.T, root string) []string {
 }
 
 // nestedGoModViolations checks items 1 and 2 of REP-130 for the module in dir, which is
-// slash-separated and relative to root.
+// slash-separated and relative to root. Item 2 does not apply to analysisDir.
 func nestedGoModViolations(t *testing.T, root, dir string) []string {
 	t.Helper()
 	m := readGoMod(t, filepath.Join(root, filepath.FromSlash(dir), "go.mod"))
@@ -556,6 +556,9 @@ func nestedGoModViolations(t *testing.T, root, dir string) []string {
 			got = "(none)"
 		}
 		lines = append(lines, fmt.Sprintf("%s: go %s, want %s", file, got, goVersion))
+	}
+	if dir == analysisDir {
+		return lines
 	}
 	back, err := filepath.Rel(filepath.Join(root, filepath.FromSlash(dir)), root)
 	if err != nil {
@@ -627,6 +630,10 @@ func nestedImportViolations(t *testing.T, root, dir string) []string {
 	return lines
 }
 
+// analysisDir is the nested module that recognizes lockstep by import path and must not require
+// the root module (ANL-010), so REP-130 item 2 does not apply to it.
+const analysisDir = "analysis"
+
 // nestedGoMod returns the go.mod of a valid nested module (REP-130 items 1 and 2).
 func nestedGoMod(module, goVersion, replace string) string {
 	s := "module " + module + "\n\ngo " + goVersion + "\n\n" +
@@ -644,7 +651,7 @@ func validNestedTree() map[string]string {
 		"go.mod":                "module " + lockstepModule + "\n\ngo " + goVersion + "\n",
 		"examples/raft/go.mod":  nestedGoMod(lockstepModule+"/examples/raft", goVersion, "../.."),
 		"examples/raft/raft.go": "package raft\n\nimport _ \"" + lockstepModule + "\"\n",
-		"analysis/go.mod":       nestedGoMod(lockstepModule+"/analysis", goVersion, ".."),
+		"analysis/go.mod":       "module " + lockstepModule + "/analysis\n\ngo " + goVersion + "\n",
 		"analysis/analysis.go":  "package analysis\n\nimport _ \"" + lockstepModule + "/sim\"\n",
 		"internal/x/x.go":       "package x\n\nimport _ \"" + lockstepModule + "/internal/engine\"\n",
 		// The nested module's own internal package is not the root's.
@@ -696,8 +703,16 @@ func TestNestedModules(t *testing.T) {
 		},
 		{
 			name:   "replace to the wrong path",
-			change: map[string]string{"analysis/go.mod": nestedGoMod(lockstepModule+"/analysis", goVersion, "../..")},
-			want:   []string{"analysis/go.mod: requires github.com/hmdsefi/lockstep without replace => .."},
+			change: map[string]string{"examples/raft/go.mod": nestedGoMod(lockstepModule+"/examples/raft", goVersion, "..")},
+			want:   []string{"examples/raft/go.mod: requires github.com/hmdsefi/lockstep without replace => ../.."},
+		},
+		{
+			name:   "analysis: item 1 only, no replace",
+			change: map[string]string{"analysis/go.mod": "module example.com/analysis\n\ngo 1.25\n"},
+			want: []string{
+				"analysis/go.mod: module example.com/analysis, want github.com/hmdsefi/lockstep/analysis",
+				"analysis/go.mod: go 1.25, want 1.26.0",
+			},
 		},
 		{
 			name: "internal import in a test file",
