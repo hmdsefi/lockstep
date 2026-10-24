@@ -4,10 +4,7 @@
 package analysis
 
 import (
-	"cmp"
 	"fmt"
-	"go/token"
-	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -26,35 +23,20 @@ type problem struct {
 	id, text string
 }
 
-type located struct {
-	pos token.Pos
-	problem
-}
-
 func runDirectives(pass *analysis.Pass) (any, error) {
 	idx, ok := indexOf(pass)
 	if !ok {
 		return nil, nil
 	}
-	var found []located
+	// The reporter drops directives in generated files and reports in position order (ANL-120).
+	// Nothing is suppressed: LS001 and LS002 cannot be (ANL-080).
+	r := newReporter(pass, nil)
 	for _, d := range idx.directives {
-		if d.generated {
-			continue
-		}
 		for _, p := range d.problems() {
-			found = append(found, located{d.pos, p})
+			r.report(d.pos, p.id, p.text)
 		}
 	}
-	// Directives are indexed file by file; sort so the report order is the position order
-	// (ANL-120). The sort is stable: problems of one comment keep their order.
-	slices.SortStableFunc(found, func(a, b located) int { return cmp.Compare(a.pos, b.pos) })
-	for _, f := range found {
-		pass.Report(analysis.Diagnostic{
-			Pos:      f.pos,
-			Category: f.id,
-			Message:  f.id + ": " + f.text,
-		})
-	}
+	r.flush()
 	return nil, nil
 }
 

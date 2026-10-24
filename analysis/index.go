@@ -50,10 +50,9 @@ const (
 
 // directive is one //lockstep: comment as parsed from the source (ANL-070).
 type directive struct {
-	pos       token.Pos // start of the comment
-	name      string    // text after //lockstep: up to the first space or tab
-	args      string    // the rest, without leading and trailing spaces and tabs
-	generated bool      // in a generated file
+	pos  token.Pos // start of the comment
+	name string    // text after //lockstep: up to the first space or tab
+	args string    // the rest, without leading and trailing spaces and tabs
 
 	// allow only: field 1 of the arguments, the IDs when it is a well-formed list (nil
 	// otherwise), and the reason.
@@ -185,7 +184,6 @@ func collectDocs(file *ast.File) docs {
 // addFile indexes the directives of one file.
 func (x *directiveIndex) addFile(pass *analysis.Pass, file *ast.File) {
 	owners := collectDocs(file)
-	generated := ast.IsGenerated(file)
 	var src []byte // loaded when the first allow directive needs it
 	for _, group := range file.Comments {
 		for i, c := range group.List {
@@ -194,7 +192,6 @@ func (x *directiveIndex) addFile(pass *analysis.Pass, file *ast.File) {
 				continue
 			}
 			d := parseDirective(c, rest)
-			d.generated = generated
 			x.directives = append(x.directives, d)
 			switch d.name {
 			case "allow":
