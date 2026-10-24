@@ -401,7 +401,7 @@ func TestATRFT45ReplicasAgree(t *testing.T) {
 				wop(2, "c1", history.Info, "k0", "c", 3, 4), // committed at 4, the client timed out
 			},
 			setup: func(r *rig) {
-				r.o.Replied("n1", 2, 2, raft.Result{Status: raft.OK, Output: "1", Index: 5})
+				r.o.Replied("n1", 1, 2, raft.Result{Status: raft.OK, Index: 4}) // c1#2, the Info write
 				applyUpTo(r, "n1", log, 2)
 				applyUpTo(r, "n2", log, 2)
 				applyUpTo(r, "n3", log, 2)
