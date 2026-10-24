@@ -318,37 +318,44 @@ func applyUpTo(r *rig, server string, log *fakeLog, upTo uint64) {
 
 func TestATRFT45ReplicasAgree(t *testing.T) {
 	log := newLog(noop(1), put(1, 1, 1, "k0", "a"), put(1, 2, 1, "k1", "b"), put(1, 1, 2, "k0", "c"), put(1, 2, 2, "k1", "d"))
-	// ready returns a rig with the five entries committed, an OK reply at index 5 (A = 5), and
-	// every server recovered.
-	ready := func(ack bool) *rig {
+	// ready returns a rig with the five entries committed, OK replies at indexes 5 and 4, and
+	// every server recovered. The ops: c2's read served at 5 (A = 5) and c1's Info write at 4.
+	ready := func() *rig {
 		r := newRig()
 		r.start("n1", "n2", "n3")
 		r.commit(1, log)
-		if ack {
-			r.served(2, 2, 5)
-		}
+		r.served(2, 2, 5)
+		r.served(1, 2, 4)
 		return r
+	}
+	acked := []history.Op{
+		wop(1, "c1", history.OK, "k0", "a", 1, 2),
+		wop(2, "c2", history.OK, "k1", "b", 3, 4),
+		rop(3, "c2", history.OK, "k1", ptr("d"), 5, 6),
 	}
 	tests := []struct {
 		name  string
-		noAck bool
+		ops   []history.Op
 		setup func(r *rig)
 		up    []string
 		want  string
 	}{
 		{
 			name:  "all agree",
+			ops:   acked,
 			setup: func(r *rig) { applyUpTo(r, "n1", log, 5); applyUpTo(r, "n2", log, 5); applyUpTo(r, "n3", log, 5) },
 			up:    []string{"n1", "n2", "n3"},
 		},
 		{
 			name:  "applied below the acknowledged index",
+			ops:   acked,
 			setup: func(r *rig) { applyUpTo(r, "n1", log, 5); applyUpTo(r, "n2", log, 3); applyUpTo(r, "n3", log, 5) },
 			up:    []string{"n1", "n2", "n3"},
 			want:  "n2 applied up to 3 at the end, below acknowledged index 5",
 		},
 		{
 			name: "wrong state hash",
+			ops:  acked,
 			setup: func(r *rig) {
 				applyUpTo(r, "n1", log, 5)
 				applyUpTo(r, "n2", log, 4)
@@ -360,6 +367,7 @@ func TestATRFT45ReplicasAgree(t *testing.T) {
 		},
 		{
 			name: "up but never recovered in the current incarnation",
+			ops:  acked,
 			setup: func(r *rig) {
 				applyUpTo(r, "n1", log, 5)
 				applyUpTo(r, "n2", log, 5)
@@ -371,27 +379,49 @@ func TestATRFT45ReplicasAgree(t *testing.T) {
 		},
 		{
 			name:  "servers are visited in the given order",
+			ops:   acked,
 			setup: func(r *rig) { applyUpTo(r, "n1", log, 2); applyUpTo(r, "n2", log, 3); applyUpTo(r, "n3", log, 1) },
 			up:    []string{"n2", "n3", "n1"},
 			want:  "n2 applied up to 3 at the end, below acknowledged index 5",
 		},
 		{
 			name:  "a server that is not up is not checked",
+			ops:   acked,
 			setup: func(r *rig) { applyUpTo(r, "n1", log, 5); applyUpTo(r, "n3", log, 5) },
 			up:    []string{"n1", "n3"},
 		},
 		{
-			name:  "no acknowledged index: the empty state matches",
-			noAck: true,
-			setup: func(*rig) {},
-			up:    []string{"n1", "n2", "n3"},
+			name: "no acknowledged op: the empty state matches",
+			up:   []string{"n1", "n2", "n3"},
+		},
+		{
+			name: "an OK reply the client never saw does not raise A",
+			ops: []history.Op{
+				wop(1, "c1", history.OK, "k0", "a", 1, 2),
+				wop(2, "c1", history.Info, "k0", "c", 3, 4), // committed at 4, the client timed out
+			},
+			setup: func(r *rig) {
+				r.o.Replied("n1", 2, 2, raft.Result{Status: raft.OK, Output: "1", Index: 5})
+				applyUpTo(r, "n1", log, 2)
+				applyUpTo(r, "n2", log, 2)
+				applyUpTo(r, "n3", log, 2)
+			},
+			up: []string{"n1", "n2", "n3"},
+		},
+		{
+			name: "a server that is not in the cluster",
+			ops:  acked,
+			up:   []string{"n9"},
+			want: "n9 is up but not in the cluster",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := ready(!tt.noAck)
-			tt.setup(r)
-			err := r.o.replicasAgree(tt.up)
+			r := ready()
+			if tt.setup != nil {
+				tt.setup(r)
+			}
+			err := r.o.replicasAgree(tt.ops, tt.up)
 			switch {
 			case tt.want == "" && err != nil:
 				t.Errorf("replicasAgree = %q, want nil", err)

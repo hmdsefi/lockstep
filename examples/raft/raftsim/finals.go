@@ -6,7 +6,6 @@ package raftsim
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -68,6 +67,13 @@ func (o *Oracle) linearizable(ops []history.Op) error {
 		return err
 	}
 
+	// Step 1, continued: an acknowledged write has to be committed.
+	for _, f := range fops {
+		if f.ok() && !f.has && f.op.F == "write" {
+			return fmt.Errorf("%s was acknowledged but never committed", f.desc)
+		}
+	}
+
 	// Step 2: acknowledged reads against the committed log.
 	for _, f := range fops {
 		if !f.has || !f.ok() || !f.pos.read {
@@ -88,8 +94,8 @@ func (o *Oracle) linearizable(ops []history.Op) error {
 	return precedence(fops)
 }
 
-// finalOps decodes ops, skipping Fail ops, and gives each op its description and point (RFT-510
-// step 1). The first OK write that was never committed is an error.
+// finalOps decodes ops, skipping Fail ops, and gives each op its description and, if it has one,
+// its point (RFT-510 step 1). An op without a point has has false.
 func (o *Oracle) finalOps(ops []history.Op) ([]*finalOp, error) {
 	ops = slices.Clone(ops)
 	slices.SortStableFunc(ops, func(a, b history.Op) int { return cmpInt64(a.ID, b.ID) })
@@ -114,11 +120,8 @@ func (o *Oracle) finalOps(ops []history.Op) ([]*finalOp, error) {
 		case "write":
 			f.desc = fmt.Sprintf("write %s (%s=%s)", name, in["key"], in["value"])
 			i, committed := o.commands[cmd]
-			switch {
-			case isClient && committed:
+			if isClient && committed {
 				f.pos, f.has = logPosition{index: i}, true
-			case f.ok():
-				return nil, fmt.Errorf("%s was acknowledged but never committed", f.desc)
 			}
 		case "read":
 			f.desc = fmt.Sprintf("read %s (%s)", name, in["key"])
@@ -232,16 +235,23 @@ func (o *Oracle) progress(ops []history.Op, recovery kernel.Time, within time.Du
 // replicasAgree checks that every server in up, the servers that are up at the end in NodeID
 // order, recovered in its current incarnation, applied at least up to the largest acknowledged
 // index A, and holds the reference state at the index it applied up to (RFT-530). A is the
-// largest Index of any OK reply the servers sent.
-func (o *Oracle) replicasAgree(up []string) error {
+// largest point index of any OK op of ops, the history's operations in ID order: an OK reply the
+// client never saw does not count.
+func (o *Oracle) replicasAgree(ops []history.Op, up []string) error {
+	fops, err := o.finalOps(ops)
+	if err != nil {
+		return err
+	}
 	a := uint64(0)
-	if len(o.okIndex) > 0 {
-		a = slices.Max(slices.Collect(maps.Values(o.okIndex))) // a maximum does not depend on map order
+	for _, f := range fops {
+		if f.ok() && f.has {
+			a = max(a, f.pos.index)
+		}
 	}
 	for _, name := range up {
 		s := o.byName[name]
 		if s == nil {
-			panic("raftsim: replicasAgree of unknown server " + strconv.Quote(name))
+			return fmt.Errorf("%s is up but not in the cluster", name)
 		}
 		if !s.recovered {
 			return fmt.Errorf("%s is up but never loaded its state", name)
