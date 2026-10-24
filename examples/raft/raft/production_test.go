@@ -162,6 +162,12 @@ func TestStoppedRepliesUnknown(t *testing.T) {
 	cfg := oneServer(store)
 	cfg.Observer = obs
 	sys := lockstep.New()
+	stopped := false // the test shuts sys down itself; the cleanup covers an early failure
+	t.Cleanup(func() {
+		if !stopped {
+			shutdown(t, sys)
+		}
+	})
 	pid, err := Spawn(sys, cfg)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -172,6 +178,7 @@ func TestStoppedRepliesUnknown(t *testing.T) {
 	reply := ask(sys, pid, 1, kv.EncodePut("k", "v"))
 	waitFor(t, "appended proposal", func() bool { return obs.written.Load() >= 2 })
 
+	stopped = true
 	shutdown(t, sys)
 	ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
 	defer cancel()
