@@ -67,7 +67,7 @@ func TestActorCode(t *testing.T) {
 				"(*Account).Started", "(*Account).Receive", "(*Account).Stopped", "(*Account).Signal",
 				"(Value).Receive", "(*Router[M]).Receive",
 				"shared", "(*Account).Receive$1", "(*Account).flush", "apply", "less", "generic",
-				"audit",
+				"viaArg", "late", "early", "audit",
 			},
 		},
 		{
@@ -119,7 +119,7 @@ func TestActorFuncInspect(t *testing.T) {
 		fn    string
 		calls []string
 	}{
-		{"(*Account).Receive", []string{"apply", "Slice", "f", "record", "spin", "generic", "Run", "shared"}},
+		{"(*Account).Receive", []string{"apply", "Slice", "f", "record", "spin", "run", "generic", "Run", "shared"}},
 		{"(*Account).Receive$1", []string{"append"}},
 	}
 	for _, tt := range tests {
