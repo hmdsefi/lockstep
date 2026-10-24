@@ -176,7 +176,7 @@ func handleEffects(s *sim.Sim, o *Oracle, store *raft.MemStore, persistMin, pers
 		if !ok {
 			return wrongEffect(o, c)
 		}
-		err := store.Save(p.Node, p.HardState, p.From, p.Entries)
+		err := save(o, store, p)
 		return sim.EffectResult{Value: struct{}{}, Err: err, Latency: kernel.Uniform(c.Rand(), persistMin, persistMax)}
 	})
 	s.HandleEffect(raft.Load{}.Name(), func(c sim.EffectCall) sim.EffectResult {
@@ -187,6 +187,17 @@ func handleEffects(s *sim.Sim, o *Oracle, store *raft.MemStore, persistMin, pers
 		d, err := store.Load(l.Node) // a copy: the server never shares the store's log
 		return sim.EffectResult{Value: d, Err: err, Latency: kernel.Uniform(c.Rand(), 0, persistMin)}
 	})
+}
+
+// save writes p to store. The store rejects only a persist that would leave a hole in the log, a
+// bug in the server's persist pipeline rather than a fault, so a Save error is also a harness
+// violation (RFT-490): failing the effect alone would restart the server and hide the bug.
+func save(o *Oracle, store *raft.MemStore, p raft.Persist) error {
+	err := store.Save(p.Node, p.HardState, p.From, p.Entries)
+	if err != nil {
+		o.fail(CheckHarness, "%s: raft.persist: %v", p.Node, err)
+	}
+	return err
 }
 
 // wrongEffect records an effect value of the wrong type as a harness violation (RFT-490) and
