@@ -23,6 +23,7 @@ func (a *Account) Receive(ctx *lockstep.Context[Msg], msg Msg) {
 	_, _ = a.n.Await(context.Background()) //lockstep:allow LS110 the reply is already resolved
 	var w waiter
 	_, _ = w.Await(context.Background())
+	go func() { _, _ = a.n.Await(context.Background()) }()
 }
 
 // run is a test-style function that no root reaches.
