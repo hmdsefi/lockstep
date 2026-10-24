@@ -26,6 +26,11 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
+      - name: golangci-lint (analysis)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          working-directory: analysis
 
   build:
     name: Go build
