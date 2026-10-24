@@ -68,7 +68,11 @@ func TestSubRules(t *testing.T) {
 		{"cryptorand", originFaultline},
 		{"goroutine", originFaultline},
 		{"select", originFaultline},
+		{"maprange", originFaultline},
+		{"unordered", originFaultline},
+		{"mapiter", originFaultline},
 		{"env", originFaultline},
+		{"blocking", originLockstep},
 	}
 	if !slices.Equal(ls100SubRules, want) {
 		t.Errorf("ls100SubRules = %v, want %v", ls100SubRules, want)

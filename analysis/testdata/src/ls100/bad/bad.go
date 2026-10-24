@@ -1,5 +1,6 @@
-// Package bad holds the LS100 findings of the wall clock, randomness, goroutine, select and
-// environment sub-rules (ANL-130, AT-ANL-09), each line with the diagnostic it gets.
+// Package bad holds the LS100 findings (ANL-130, ANL-140, AT-ANL-09), each line with the
+// diagnostic it gets: this file has the wall clock, randomness, goroutine, select and environment
+// sub-rules, order.go the map order sub-rules and blocking.go the blocking sub-rule.
 package bad
 
 import (
@@ -20,7 +21,9 @@ import (
 type Msg int
 
 // Account is an actor type with all four roots.
-type Account struct{}
+type Account struct {
+	m map[string]int
+}
 
 // Started is declared first, so the search reaches stamp from Started; Receive calls stamp too,
 // and stamp's finding is reported once (AT-ANL-08).
@@ -50,6 +53,11 @@ func (a *Account) Receive(ctx *lockstep.Context[Msg], msg Msg) {
 	go func() { _ = time.Now() }()                         // want `^LS100: go statement starts a goroutine; use lockstep\.Do for work outside the turn \(actor code: \(\*Account\)\.Receive\)$`
 	stamp()
 	more()
+	_ = a.sum()
+	orders(a.m, nil)
+	channels(nil)
+	rangeChan(make(chan int))
+	calls(context.Background(), nil, nil, nil, nil, nil, nil)
 }
 
 // Stopped uses the crypto/rand variable Reader.
