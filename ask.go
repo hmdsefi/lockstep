@@ -35,10 +35,10 @@ func WithTimeout(d time.Duration) AskOption {
 // Ask sends the message build returns to the actor to and returns the future of its answer.
 // build receives the ask's ReplyTo and is called once, synchronously, before Ask returns, unless
 // the ask fails before sending (MSG-300). With a *System sender outside any actor's turn, a full
-// BlockSender mailbox on a blocking engine makes Ask wait until the request is enqueued or the ask
-// resolves, at its timeout at the latest (MSG-330). An invalid option value resolves the reply with an error wrapping
-// ErrInvalidOption. Ask panics if from or build is nil, an option is nil, or from is a
-// Context outside its turn.
+// BlockSender mailbox on a blocking engine makes Ask wait until the request is enqueued or the
+// ask resolves, at its timeout at the latest (MSG-330). An invalid option value resolves the
+// reply with an error wrapping ErrInvalidOption. Ask panics if from or build is nil, an option
+// is nil, or from is a Context outside its turn.
 func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...AskOption) *Reply[R] {
 	// 1. Misuse panics.
 	s := mustSender(from)
