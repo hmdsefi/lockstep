@@ -22,8 +22,8 @@ func (a *Account) Started(ctx *lockstep.Context[Msg]) { // want `^actor code: \(
 }
 
 // Receive reaches apply and audit by calls, less and flush as function values, its first
-// literal, and generic by an instantiated call. The go statements and the interface call are not
-// edges.
+// literal, generic by an instantiated call, and viaArg as an argument of a go call. The functions
+// the go statements call and the interface call are not edges.
 func (a *Account) Receive(ctx *lockstep.Context[Msg], msg Msg) { // want `^actor code: \(\*Account\)\.Receive$`
 	a.balance = apply(a.balance, msg)
 	sort.Slice(a.log, less)
@@ -35,6 +35,7 @@ func (a *Account) Receive(ctx *lockstep.Context[Msg], msg Msg) { // want `^actor
 	record(a.balance)
 	go func() { tick() }()
 	go spin()
+	go run(viaArg)
 	_ = generic[int](1)
 	var s Runner = impl{}
 	s.Run()
@@ -49,7 +50,12 @@ func (a *Account) Stopped(ctx *lockstep.Context[Msg], r lockstep.StopReason) { /
 	go func() { a.balance = 0 }()
 }
 
-func (a *Account) Signal(ctx *lockstep.Context[Msg], s lockstep.Signal) {} // want `^actor code: \(\*Account\)\.Signal$`
+// Signal calls early, declared at the top of others.go, before late, declared at the end of this
+// file: successors are searched in file-name order first, so late comes before early.
+func (a *Account) Signal(ctx *lockstep.Context[Msg], s lockstep.Signal) { // want `^actor code: \(\*Account\)\.Signal$`
+	early()
+	late()
+}
 
 // Stopped2 is not a root name.
 func (a *Account) Stopped2(ctx *lockstep.Context[Msg]) {}
@@ -70,6 +76,11 @@ func less(i, j int) bool { return i < j } // want `^actor code: \(\*Account\)\.R
 
 func generic[T any](v T) T { return v } // want `^actor code: \(\*Account\)\.Receive -> generic$`
 
+func viaArg() {} // want `^actor code: \(\*Account\)\.Receive -> viaArg$`
+
+// run is the called function of a go statement, so it is not actor code.
+func run(f func()) { f() }
+
 func shared() {} // want `^actor code: \(\*Account\)\.Started -> shared$`
 
 func tick() {}
@@ -87,3 +98,5 @@ type Runner interface{ Run() }
 type impl struct{}
 
 func (impl) Run() {}
+
+func late() {} // want `^actor code: \(\*Account\)\.Signal -> late$`

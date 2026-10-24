@@ -2,6 +2,8 @@ package actorcode
 
 import "github.com/hmdsefi/lockstep"
 
+func early() {} // want `^actor code: \(\*Account\)\.Signal -> early$`
+
 // Value is an actor type with a value receiver.
 type Value struct{}
 
