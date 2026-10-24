@@ -105,6 +105,15 @@ func TestCompareRules(t *testing.T) {
 			want:     "analysis: snapshot has 9 faultline rules, rules.go has 8",
 		},
 		{
+			name: "errors 1 and 3: the first failing check wins",
+			snapshot: func(t *testing.T) []byte {
+				changed := edit(t, `faultline `+faultlineVersion+` AGENTS.md`, `faultline v0.1.3 AGENTS.md`)
+				return append(changed, "- a ninth rule.\n"...)
+			},
+			root: rootMatching,
+			want: "analysis: snapshot is faultline v0.1.3, rules.go pins " + faultlineVersion,
+		},
+		{
 			name: "error 4: one word of bullet 4 changed",
 			snapshot: func(t *testing.T) []byte {
 				return edit(t, "never ranges over a map", "never iterates over a map")
