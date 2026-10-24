@@ -21,6 +21,7 @@ func TestToyArguments(t *testing.T) {
 		{"producers before items", func() error { return SpawnFanIn(nil, 0, 0, &FanInProbe{}) }, "toys: invalid producers 0"},
 		{"ticks", func() error { return SpawnTicker(nil, 0, &TickerProbe{}) }, "toys: invalid ticks 0"},
 		{"negative ticks", func() error { return SpawnTicker(nil, -7, &TickerProbe{}) }, "toys: invalid ticks -7"},
+		{"group size", func() error { _, err := SpawnGroup(nil, 2, &GroupProbe{}); return err }, "toys: invalid size 2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.call()
@@ -52,6 +53,14 @@ func TestDescribe(t *testing.T) {
 		{result{N: 8}, "result 8"},
 		{beat{}, "beat"},
 		{idle{}, "idle"},
+		{StopFirst{}, "stop-first"},
+		{Report{Worker: 3}, "report 3"},
+		{work{}, "work"},
+		{Request{N: 11}, "request 11"},
+		{respond{N: 12}, "respond 12"},
+		{StartRound{Count: 50}, "start-round 50"},
+		{nextAsk{}, "next-ask"},
+		{outcome{N: 13}, "outcome 13"},
 	} {
 		if got := tc.msg.Describe(); got != tc.want {
 			t.Errorf("%T describes as %q, want %q", tc.msg, got, tc.want)

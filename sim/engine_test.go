@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hmdsefi/faultline/artifact"
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -253,11 +254,23 @@ var _ = scenario("await-in-receive", func(t *testing.T) {
 	})
 })
 
-// AT-SIM-19, SIM-190, SIM-210: Await on a pending reply fails the seed from body and from Receive;
-// Await on a resolved reply returns its value.
+// misuseRecords returns the lockstep.misuse records of the failing seed that a.Trace holds.
+func misuseRecords(t *testing.T, a *artifact.Artifact) []kernel.Record {
+	t.Helper()
+	if a.Trace == nil {
+		t.Fatal("the failing seed left no trace")
+	}
+	return ofKind(a.Trace.Records, "lockstep.misuse")
+}
+
+// AT-SIM-19, AT-MSG-23 (sim clause), SIM-190, SIM-210, MSG-460, MSG-470: Await on a pending reply
+// fails the seed from body and from Receive, with check lockstep/misuse and exactly one misuse
+// entry for the call; Await on a resolved reply returns its value.
 func TestATSIM19AwaitMisuse(t *testing.T) {
 	t.Run("body", func(t *testing.T) {
-		got := failingSeed(t, "await-from-body")
+		a, _ := failingSeedArtifact(t, "await-from-body")
+		f := a.Report.Failure
+		got := failure{Kind: f.Kind, Check: f.Check, Signature: f.Signature, Message: f.Message}
 		want := failure{
 			Kind:      "invariant",
 			Check:     "lockstep/misuse",
@@ -267,16 +280,21 @@ func TestATSIM19AwaitMisuse(t *testing.T) {
 		if got != want {
 			t.Errorf("failure %+v, want %+v", got, want)
 		}
+		if n := len(misuseRecords(t, a)); n != 1 {
+			t.Errorf("%d lockstep.misuse records, want 1", n)
+		}
 	})
 	t.Run("receive", func(t *testing.T) {
-		out, code := runScenario(t, "await-in-receive")
-		if code == 0 {
-			t.Fatalf("child exited 0, want a failing seed\n%s", out)
+		a, out := failingSeedArtifact(t, "await-in-receive")
+		f := a.Report.Failure
+		if f.Kind != "invariant" || f.Check != "lockstep/misuse" || !strings.Contains(f.Message, lockstep.ErrAwaitInActor.Error()) {
+			t.Errorf("failure %+v, want kind invariant, check lockstep/misuse and a message with %q", f, lockstep.ErrAwaitInActor)
 		}
-		for _, want := range []string{awaitedInReceive, "lockstep/misuse", lockstep.ErrAwaitInActor.Error()} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output lacks %q:\n%s", want, out)
-			}
+		if !strings.Contains(out, awaitedInReceive) {
+			t.Errorf("output lacks %q:\n%s", awaitedInReceive, out)
+		}
+		if n := len(misuseRecords(t, a)); n != 1 {
+			t.Errorf("%d lockstep.misuse records, want 1", n)
 		}
 	})
 	t.Run("resolved", func(t *testing.T) {

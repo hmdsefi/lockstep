@@ -4,6 +4,7 @@
 package dettest
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -61,6 +62,8 @@ var toyRows = []toyRow{
 	{name: "ask", baseSeed: 0x1004, body: askBody, after: askAfter},
 	{name: "beacon-crash", baseSeed: 0x1005, body: beaconCrashBody},
 	{name: "pingpong-faults", baseSeed: 0x1006, body: pingpongFaultsBody}, // AT-SIM-28
+	{name: "act-lifecycle", baseSeed: 0x1007, body: actLifecycleBody},     // AT-ACT-33
+	{name: "msg-asks", baseSeed: 0x1008, body: msgAsksBody},               // AT-MSG-33
 }
 
 // toyScenarios returns toyRows as golden scenarios, in table order.
@@ -208,6 +211,53 @@ func pingpongFaultsBody(s *sim.Sim, _ *toyObs) {
 	s.World().Final("pingpong-faults", func() error {
 		if p1.Rounds > 50 || p3.Rounds > 50 {
 			return fmt.Errorf("pingers received pongs %d and %d, want at most 50", p1.Rounds, p3.Rounds)
+		}
+		return nil
+	})
+}
+
+// actLifecycleBody is the scenario of AT-ACT-33: a group of 10 actors on each of two nodes, spawned
+// with explicit and generated names, two watches per group, one stop and the shutdown of one node's
+// system. n1's group stops its first worker, so one watch fires (the group of n2 is stopping with
+// its system when its workers stop, so none of its watches does); n2's system shuts down with its
+// 10 actors, and n1's other 9 stay alive.
+func actLifecycleBody(s *sim.Sim, _ *toyObs) {
+	p := &toys.GroupProbe{}
+	var group lockstep.PID[toys.GroupMsg]
+	s.Node("n1", func(sys *lockstep.System) { group = must(toys.SpawnGroup(sys, 10, p)) })
+	s.Node("n2", func(sys *lockstep.System) { must(toys.SpawnGroup(sys, 10, p)) })
+	boot(s)
+	s.World().RunFor(100 * time.Millisecond)
+	send(s, "n1", group, toys.GroupMsg(toys.StopFirst{}))
+	s.World().RunFor(50 * time.Millisecond)
+	check(s.System("n2").Shutdown(context.Background()))
+	s.World().Final("act-lifecycle", func() error {
+		if p.Started != 20 || p.Stopped != 11 || p.Terminated != 1 || p.Reports != 18 {
+			return fmt.Errorf("%d actors started, %d stopped, %d terminated signals and %d reports, want 20, 11, 1 and 18",
+				p.Started, p.Stopped, p.Terminated, p.Reports)
+		}
+		return nil
+	})
+}
+
+// msgAsksBody is the scenario of AT-MSG-33: a requester on n1 asks 50 questions across n2 and n3
+// with timeouts, one of them forwarded from n2 to n3, while random partitions cut the links.
+func msgAsksBody(s *sim.Sim, _ *toyObs) {
+	p := &toys.RequestsProbe{}
+	var requester lockstep.PID[toys.RequesterMsg]
+	var a, b lockstep.PID[toys.ResponderMsg]
+	s.Node("n1", func(sys *lockstep.System) { requester = must(toys.SpawnRequester(sys, p)) })
+	s.Node("n2", func(sys *lockstep.System) { a = must(toys.SpawnResponder(sys)) })
+	s.Node("n3", func(sys *lockstep.System) { b = must(toys.SpawnResponder(sys)) })
+	s.World().Plan(&fault.Random{Rules: []fault.Rule{
+		{Kind: fault.KindPartition, Every: 150 * time.Millisecond, MaxFor: 60 * time.Millisecond},
+	}})
+	boot(s)
+	send(s, "n1", requester, toys.RequesterMsg(toys.StartRound{A: a, B: b, Count: 50}))
+	s.World().Final("msg-asks", func() error {
+		if p.Answered+p.TimedOut+p.Other != 50 || p.Wrong != 0 {
+			return fmt.Errorf("%d answered, %d timed out, %d failed otherwise and %d wrong, want 50 asks resolved and none wrong",
+				p.Answered, p.TimedOut, p.Other, p.Wrong)
 		}
 		return nil
 	})
