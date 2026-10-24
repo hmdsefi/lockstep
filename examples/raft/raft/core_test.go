@@ -256,6 +256,9 @@ func TestHigherTermStepsDown(t *testing.T) {
 
 func TestPersistPipeline(t *testing.T) {
 	h := newHarness("n1", peers3, Durable{HardState: HardState{Term: 4}, Log: terms(1, 4)}, 0)
+	if h.c.durableLast != 2 {
+		t.Errorf("durable last index %d after loading 2 entries, want 2", h.c.durableLast)
+	}
 	h.c.start()
 	h.obs.take()
 	chain2 := h.c.log.Chain(2)
@@ -341,6 +344,28 @@ func TestPersistPipeline(t *testing.T) {
 	}
 	if _, ok := h.c.endTurn(); ok {
 		t.Error("endTurn issued a persist for a clean state")
+	}
+}
+
+func TestNilObserver(t *testing.T) {
+	cfg := Config{
+		ID:          "n1",
+		Peers:       []string{"n1"},
+		ElectionMin: DefaultElectionMin, ElectionMax: DefaultElectionMax, Heartbeat: DefaultHeartbeat,
+		MaxBatch: DefaultMaxBatch, MaxPending: DefaultMaxPending,
+		NewStateMachine: func() StateMachine { return nopMachine{} },
+	}
+	env := &fakeEnv{}
+	c := newCore(cfg, Durable{HardState: HardState{Term: 1}, Log: terms(1)}, nopMachine{}, env)
+	c.start()
+	c.onElectionTimeout(env.lastGen(t))
+	c.step(Propose{Client: 1, Seq: 1, Cmd: "x"})
+	if _, ok := c.endTurn(); !ok {
+		t.Fatal("endTurn issued no persist")
+	}
+	c.persisted()
+	if c.role != leader || c.commit != 3 || len(c.takeReplies()) != 1 {
+		t.Errorf("role %v, commit %d; want leader, 3 and one reply", c.role, c.commit)
 	}
 }
 

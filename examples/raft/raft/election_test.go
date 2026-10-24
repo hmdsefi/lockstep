@@ -67,6 +67,18 @@ func TestStartElection(t *testing.T) {
 	if got := h.sends(); !reflect.DeepEqual(got, want) {
 		t.Errorf("after a tick queued %+v, want %+v", got, want)
 	}
+
+	// A second timeout starts a new election: term 4, and every peer is asked again.
+	h.c.onElectionTimeout(h.env.lastGen(t))
+	if h.c.term != 4 || h.c.vote != "n3" || h.c.role != candidate {
+		t.Fatalf("term %d, vote %q, role %v; want 4, n3, candidate", h.c.term, h.c.vote, h.c.role)
+	}
+	rv.Term = 4
+	want = append(want, queued{peer: 0, msg: rv}, queued{peer: 1, msg: rv}, queued{peer: 3, msg: rv},
+		queued{peer: 4, msg: rv})
+	if got := h.sends(); !reflect.DeepEqual(got, want) {
+		t.Errorf("after a second timeout queued %+v, want %+v", got, want)
+	}
 }
 
 func TestWinElection(t *testing.T) {
