@@ -20,7 +20,7 @@ var blockingCalls = map[string]blockingPackage{
 	"net": {
 		funcPrefixes: []string{"Dial", "Listen", "Lookup", "Resolve"},
 		// Every type declared in net, the interfaces Conn, Listener and PacketConn included.
-		methods: []blockingMethods{{prefixes: []string{"Read", "Write", "Accept"}}},
+		methods: []blockingMethods{{prefixes: []string{"Read", "Write", "Accept", "Dial", "Listen", "Lookup"}}},
 	},
 	"net/http": {
 		funcs: []string{"Get", "Head", "Post", "PostForm", "ListenAndServe", "ListenAndServeTLS", "Serve", "ServeTLS"},
