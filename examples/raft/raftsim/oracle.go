@@ -35,7 +35,7 @@ const (
 type Oracle struct {
 	clients int                 // workload clients; client ID clients+1 is the probe
 	now     func() kernel.Time  // virtual time, for violation texts
-	emit    func(kernel.Record) // record sink
+	emit    func(kernel.Record) // record sink; Node is already the server's NodeID (see newOracle)
 
 	servers []*server          // in the order newOracle got them
 	byName  map[string]*server // servers by node name
@@ -117,7 +117,10 @@ var _ raft.Observer = (*Oracle)(nil)
 
 // newOracle returns an oracle for the named servers and clients workload clients (process names
 // c1..c<clients>, then probe). now reads virtual time and emit receives the oracle's records.
-// Setup adds the servers first and in this order, so servers[i] is node i+1.
+//
+// A record's Node is the NodeID of the server it is about, taken as its position in servers plus
+// one: Setup adds the servers first, in this order, and lockstep/sim adds no nodes of its own, so
+// servers[i] is node i+1.
 func newOracle(servers []string, clients int, now func() kernel.Time, emit func(kernel.Record)) *Oracle {
 	o := &Oracle{
 		clients:  clients,
@@ -378,11 +381,15 @@ func (o *Oracle) Applied(node string, index uint64, e raft.Entry, stateHash uint
 
 // Replied checks that an OK reply names a canonical index (RFT-490) and records that index for
 // the final checks.
+//
+// Index 0 is not canonical for a write (output "", the only command with an empty output) but is
+// for a read: a leader that answers reads from local state before applying anything replies with
+// its applied index 0, which the linearizable final judges as a read of the empty state.
 func (o *Oracle) Replied(node string, client uint32, seq uint64, r raft.Result) {
 	if o.observe(node, "Replied") == nil || r.Status != raft.OK {
 		return
 	}
-	if r.Index > uint64(len(o.canon)) {
+	if r.Index > uint64(len(o.canon)) || (r.Index == 0 && r.Output == "") {
 		o.fail(CheckHarness, "%s: replied ok for %s at index %d, but index %d is not canonical",
 			node, o.commandText(client, seq), r.Index, r.Index)
 	}

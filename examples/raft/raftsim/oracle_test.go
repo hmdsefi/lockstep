@@ -384,6 +384,51 @@ func TestATRFT41Harness(t *testing.T) {
 		r.o.Replied("n1", 1, 5, raft.Result{Status: raft.OK, Index: 5})
 		wantOnly(t, r.o, CheckHarness, "n1: replied ok for c1#5 at index 5, but index 5 is not canonical")
 	})
+	t.Run("ok write at index 0", func(t *testing.T) {
+		r := newRig()
+		r.start("n1")
+		r.o.Replied("n1", 1, 6, raft.Result{Status: raft.OK, Output: "", Index: 0})
+		wantOnly(t, r.o, CheckHarness, "n1: replied ok for c1#6 at index 0, but index 0 is not canonical")
+	})
+	t.Run("ok read at index 0", func(t *testing.T) {
+		r := newRig()
+		r.start("n1")
+		r.o.Replied("n1", 1, 6, raft.Result{Status: raft.OK, Output: "0", Index: 0})
+		r.o.Replied("n1", 2, 1, raft.Result{Status: raft.OK, Output: "1v", Index: 0})
+		r.o.Replied("n1", 2, 2, raft.Result{Status: raft.OK, Output: "!", Index: 0})
+		wantOnly(t, r.o, CheckHarness, "")
+	})
+	t.Run("committed beyond the log", func(t *testing.T) {
+		r := newRig()
+		r.start("n1")
+		r.o.Committed("n1", 1, 0, 3, newLog(noop(1)))
+		wantOnly(t, r.o, CheckHarness, "n1: committed index 3 beyond its log (ends at 1)")
+		if len(r.o.canon) != 1 {
+			t.Errorf("canonical length = %d, want 1", len(r.o.canon))
+		}
+	})
+	t.Run("committed after a gap", func(t *testing.T) {
+		r := newRig()
+		r.start("n1")
+		log := newLog(noop(1), put(1, 1, 1, "k0", "c1-1"), noop(1), put(1, 2, 1, "k1", "c2-1"))
+		r.o.Committed("n1", 1, 0, 1, log)
+		// from 3 lies past the canonical end (1): indexes 2 and 3 are taken from log too.
+		r.o.Committed("n1", 1, 3, 4, log)
+		for _, c := range allChecks {
+			wantErr(t, r.o, c, "")
+		}
+		if len(r.o.canon) != 4 {
+			t.Fatalf("canonical length = %d, want 4", len(r.o.canon))
+		}
+		for i := uint64(1); i <= 4; i++ {
+			if c := r.o.canon[i-1]; c.entry != log.Entry(i) || c.chain != log.Chain(i) || c.term != 1 || c.by != "n1" {
+				t.Errorf("canonical %d = %+v, want entry %+v chain %s term 1 by n1", i, c, log.Entry(i), hex(log.Chain(i)))
+			}
+		}
+		if got := r.o.commands[command{client: 2, seq: 1}]; got != 4 {
+			t.Errorf("commands[c2#1] = %d, want 4", got)
+		}
+	})
 	t.Run("unknown server", func(t *testing.T) {
 		r := newRig()
 		r.o.Durable("n9", raft.HardState{}, 0, raft.ChainSeed)
