@@ -172,6 +172,8 @@ jobs:
             go -C "$mod" vet -vettool="$RUNNER_TEMP/lockstep-vet" ./...
             echo "::endgroup::"
           done
+      - name: lockstep-vet on sim
+        run: go vet -vettool="$RUNNER_TEMP/lockstep-vet" ./sim/...
 
   golden-trailer:
     if: github.event_name == 'pull_request'
