@@ -31,6 +31,9 @@ func scopes() {
 	//lockstep:allow LS110 other check
 	_ = probe // want `^visible$`
 
+	//lockstep:maporder the names of the determinism checks suppress nothing here
+	_ = probe // want `^visible$`
+
 	//lockstep:allow LS110,LS100 two checks
 	_ = probe // want `^suppressed$`
 

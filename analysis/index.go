@@ -27,6 +27,10 @@ var indexAnalyzer = &analysis.Analyzer{
 // directivePrefix starts every directive comment (ANL-070).
 const directivePrefix = "//lockstep:"
 
+// otherDirectives are the directive names that lockstep's own determinism checks use. They are
+// ignored: no LS002, no suppression, no marker (ANL-070).
+var otherDirectives = []string{"maporder", "blocking"}
+
 // idListPattern is the syntax of the ID list of //lockstep:allow (ANL-070).
 var idListPattern = regexp.MustCompile(`^LS[0-9]{3}(,LS[0-9]{3})*$`)
 
@@ -194,6 +198,9 @@ func (x *directiveIndex) addFile(pass *analysis.Pass, file *ast.File) {
 				continue
 			}
 			d := parseDirective(c, rest)
+			if slices.Contains(otherDirectives, d.name) {
+				continue
+			}
 			d.generated = generated
 			x.directives = append(x.directives, d)
 			switch d.name {
