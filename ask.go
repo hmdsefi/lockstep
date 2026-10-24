@@ -34,9 +34,9 @@ func WithTimeout(d time.Duration) AskOption {
 
 // Ask sends the message build returns to the actor to and returns the future of its answer.
 // build receives the ask's ReplyTo and is called once, synchronously, before Ask returns, unless
-// the ask fails before sending (MSG-300). With a *System sender, a full BlockSender mailbox on a
-// blocking engine makes Ask wait until the request is enqueued or the ask resolves, at its timeout
-// at the latest (MSG-330). An invalid option value resolves the reply with an error wrapping
+// the ask fails before sending (MSG-300). With a *System sender outside any actor's turn, a full
+// BlockSender mailbox on a blocking engine makes Ask wait until the request is enqueued or the ask
+// resolves, at its timeout at the latest (MSG-330). An invalid option value resolves the reply with an error wrapping
 // ErrInvalidOption. Ask panics if from or build is nil, an option is nil, or from is a
 // Context outside its turn.
 func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...AskOption) *Reply[R] {
@@ -92,7 +92,8 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	}
 	if _, outside := from.(*System); outside {
 		// A wait for room in a BlockSender mailbox starts after the timer and ends when the ask
-		// resolves, at its timeout at the latest (MSG-115, MSG-330); an actor never waits.
+		// resolves, at its timeout at the latest (MSG-115, MSG-330); an actor never waits, and
+		// neither does a call in engine context (offer).
 		req.wait = askWait{done: r.done, resolved: &r.resolved}
 	}
 	o := sys.route(req)
@@ -114,7 +115,9 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 // context.Canceled once the ask has resolved; the wait then leaves the line without enqueueing the
 // request and Ask returns the resolved reply. A slot handed to the waiter after the ask resolved but
 // before the waiter saw it still enqueues the request (MBX-070): the hand-off came first in the
-// queue's order, and the target's answer is then recorded as late.
+// queue's order, and the target's answer is then recorded as late. The request is tracked by its
+// target for the whole wait, so a target that completes its final stop while a timed-out waiter
+// has not yet left the line fails the ask once more, recorded as late.
 type askWait struct {
 	done     <-chan struct{} // the reply's done channel, closed at resolution
 	resolved *atomic.Bool    // the reply's resolved mark, set before done is closed

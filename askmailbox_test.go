@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -24,12 +25,12 @@ type gated struct {
 	release func()
 }
 
-// spawnGated spawns a gated actor named name with WithMailbox(1, policy), sends it "block" and
+// spawnGated spawns a gated actor named "t" with WithMailbox(1, policy), sends it "block" and
 // returns once its turn is blocked on it, so its mailbox is empty and a later message is queued.
 // The actor is released when the test ends, before the system shuts down.
-func spawnGated(t *testing.T, sys *System, name string, policy MailboxPolicy) *gated {
+func spawnGated(t *testing.T, sys *System, policy MailboxPolicy) *gated {
 	t.Helper()
-	g := newGated(t, sys, name, policy)
+	g := newGated(t, sys, policy)
 	var once sync.Once
 	g.release = func() { once.Do(func() { close(g.gate) }) }
 	t.Cleanup(g.release)
@@ -40,12 +41,12 @@ func spawnGated(t *testing.T, sys *System, name string, policy MailboxPolicy) *g
 	return g
 }
 
-// spawnHeld spawns a gated actor named name with WithMailbox(1, policy) and holds its cell (MBX
+// spawnHeld spawns a gated actor named "t" with WithMailbox(1, BlockSender) and holds its cell (MBX
 // §10), so its mailbox fills while the local engine's loop goroutine stays free to run other turns
 // and timers. The actor is released when the test ends, before the system shuts down.
-func spawnHeld(t *testing.T, sys *System, name string, policy MailboxPolicy) *gated {
+func spawnHeld(t *testing.T, sys *System) *gated {
 	t.Helper()
-	g := newGated(t, sys, name, policy)
+	g := newGated(t, sys, BlockSender)
 	var once sync.Once
 	unhold := hold(t, sys, g.pid.Address())
 	g.release = func() { once.Do(unhold) }
@@ -53,11 +54,12 @@ func spawnHeld(t *testing.T, sys *System, name string, policy MailboxPolicy) *ga
 	return g
 }
 
-// newGated spawns the actor of a gated value with WithMailbox(1, policy); the caller sets release.
-func newGated(t *testing.T, sys *System, name string, policy MailboxPolicy) *gated {
+// newGated spawns the actor of a gated value, named "t", with WithMailbox(1, policy); the
+// caller sets release.
+func newGated(t *testing.T, sys *System, policy MailboxPolicy) *gated {
 	t.Helper()
 	g := &gated{got: make(chan any, 16), gate: make(chan struct{})}
-	pid, err := Spawn(sys, name, actorOf[any](&fnActor[any]{receive: func(ctx *Context[any], m any) {
+	pid, err := Spawn(sys, "t", actorOf[any](&fnActor[any]{receive: func(ctx *Context[any], m any) {
 		g.got <- m
 		switch m := m.(type) {
 		case string:
@@ -118,7 +120,7 @@ func TestATMSG12AskToFullMailbox(t *testing.T) {
 	for _, policy := range []MailboxPolicy{FailSend, DropNewest} {
 		t.Run(policy.String(), func(t *testing.T) {
 			sys, rec := newRecordingSystem(t)
-			g := spawnGated(t, sys, "t", policy)
+			g := spawnGated(t, sys, policy)
 			send(t, sys, g.pid, any("queued"))
 			resolvedWith(t, rec, askTo(sys, g.pid), g.pid.Address())
 			sameMessages(t, g.rest(t, sys, "queued"), "queued", "end")
@@ -127,7 +129,7 @@ func TestATMSG12AskToFullMailbox(t *testing.T) {
 
 	t.Run(DropOldest.String(), func(t *testing.T) {
 		sys, rec := newRecordingSystem(t)
-		g := spawnGated(t, sys, "t", DropOldest)
+		g := spawnGated(t, sys, DropOldest)
 		queued := askTo(sys, g.pid)
 		if queued.resolved.Load() {
 			t.Fatal("the queued ask resolved before it was evicted")
@@ -172,7 +174,7 @@ func mailboxActions(recs []engine.Record, from int, to Address) []string {
 func TestATMSG34AskBlockSender(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		sys, rec := newRecordingSystem(t)
-		g := spawnHeld(t, sys, "t", BlockSender)
+		g := spawnHeld(t, sys)
 		send(t, sys, g.pid, any("queued"))
 		to := g.pid.Address()
 		before := len(rec.Records())
@@ -197,7 +199,7 @@ func TestATMSG34AskBlockSender(t *testing.T) {
 
 	t.Run("enqueued", func(t *testing.T) {
 		sys, rec := newRecordingSystem(t)
-		g := spawnHeld(t, sys, "t", BlockSender)
+		g := spawnHeld(t, sys)
 		send(t, sys, g.pid, any("queued"))
 		to := g.pid.Address()
 		before := len(rec.Records())
@@ -213,7 +215,7 @@ func TestATMSG34AskBlockSender(t *testing.T) {
 
 	t.Run("actor sender", func(t *testing.T) {
 		sys, rec := newRecordingSystem(t)
-		g := spawnHeld(t, sys, "t", BlockSender)
+		g := spawnHeld(t, sys)
 		send(t, sys, g.pid, any("queued"))
 		w, _ := spawnProbe[any](t, sys, "w", nil)
 		r, _ := inProbe(t, sys, w, func(ctx *Context[any]) any {
@@ -273,4 +275,34 @@ func TestATMSG40NewReplyPolicies(t *testing.T) {
 			t.Errorf("lockstep.reply records of the ask = %q, want none", got)
 		}
 	})
+}
+
+// MBX-070, MSG-115, MSG-330: a *System sender waits for room in a BlockSender mailbox only outside
+// engine context. Called from a turn on the local engine, whose one goroutine also runs the ask's
+// timer and the target's turns, Ask(sys, ...) and Send(sys, ...) to a full BlockSender mailbox get
+// FailSend's outcome at once: the ask resolves with ErrMailboxFull and Send returns it. The system
+// then shuts down.
+func TestBlockSenderInEngineContext(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	g := spawnHeld(t, sys)
+	send(t, sys, g.pid, any("queued"))
+	w, _ := spawnProbe[any](t, sys, "w", nil)
+	type result struct {
+		r   *Reply[int]
+		err error
+	}
+	res, _ := inProbe(t, sys, w, func(*Context[any]) any {
+		r := Ask(sys, g.pid, func(rt ReplyTo[int]) any { return rt }, WithTimeout(50*time.Millisecond))
+		return result{r: r, err: Send(sys, g.pid, any("sent"))}
+	}).(result)
+	resolvedWith(t, rec, res.r, g.pid.Address())
+	if !errors.Is(res.err, ErrMailboxFull) || res.err.Error() != wantFull(g.pid.Address()) {
+		t.Errorf("Send from a turn = %v, want ErrMailboxFull with text %q", res.err, wantFull(g.pid.Address()))
+	}
+	g.release()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sys.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown = %v, want nil", err)
+	}
 }
