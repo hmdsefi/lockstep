@@ -209,6 +209,9 @@ func TestATRFT08BootBeforeLoad(t *testing.T) {
 		if err != nil || res.Status != raft.NotLeader || res.Leader != "" {
 			t.Errorf("Propose before the load ended: %+v, %v; want NotLeader with Leader %q", res, err, "")
 		}
+		if now := w.Sim.Now(); now >= kernel.Time(loadTime) {
+			t.Errorf("the Propose was answered at %s, want before the load ended at %v", now, loadTime)
+		}
 		if err := sim.Send[raft.Msg](s, "n2", n1, raft.AppendEntries{Term: 1, Leader: "n2"}); err != nil {
 			t.Fatalf("send AppendEntries: %v", err)
 		}
@@ -224,14 +227,11 @@ func TestATRFT08BootBeforeLoad(t *testing.T) {
 		if got := sends(recs, "raft.AppendEntries", "n2", "n1"); len(got) == 0 || got[0].At >= kernel.Time(loadTime) {
 			t.Errorf("AppendEntries from n2 to n1: %d records, want one before %v", len(got), loadTime)
 		}
-		for _, r := range sends(recs, "raft.AppendReply", "n1", "n2") {
-			if r.At < kernel.Time(loadTime) {
-				t.Errorf("n1 sent an AppendReply at %s, before its load ended at %v", r.At, loadTime)
-			}
-		}
-		for _, r := range sends(recs, "raft.AppendReply", "n1", "n3") {
-			if r.At < kernel.Time(loadTime) {
-				t.Errorf("n1 sent an AppendReply at %s, before its load ended at %v", r.At, loadTime)
+		for _, to := range []string{"n2", "n3"} {
+			for _, r := range sends(recs, "raft.AppendReply", "n1", to) {
+				if r.At < kernel.Time(loadTime) {
+					t.Errorf("n1 sent an AppendReply to %s at %s, before its load ended at %v", to, r.At, loadTime)
+				}
 			}
 		}
 	})

@@ -259,3 +259,21 @@ func TestWrongEffectIsHarness(t *testing.T) {
 		t.Error("wrongEffect returned no error; want the effect to fail")
 	}
 }
+
+// TestPersistErrorIsHarness checks RFT-400 and RFT-490: a persist the store rejects (here one whose
+// From leaves a hole after the stored log) is a harness violation and fails the effect.
+func TestPersistErrorIsHarness(t *testing.T) {
+	r := newRig()
+	store := raft.NewMemStore()
+	ok := raft.Persist{Node: "n2", HardState: raft.HardState{Term: 1}, From: 1, Entries: []raft.Entry{{Term: 1}}}
+	if err := save(r.o, store, ok); err != nil {
+		t.Fatalf("save from 1: %v", err)
+	}
+	wantErr(t, r.o, CheckHarness, "")
+
+	hole := raft.Persist{Node: "n2", HardState: raft.HardState{Term: 1}, From: 3, Entries: []raft.Entry{{Term: 1}}}
+	if err := save(r.o, store, hole); err == nil {
+		t.Error("save from 3 returned no error; want the effect to fail")
+	}
+	wantOnly(t, r.o, CheckHarness, "n2: raft.persist: raft: Save from 3 leaves a hole after log index 1")
+}
