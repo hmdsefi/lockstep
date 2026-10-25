@@ -498,13 +498,16 @@ func TestEffectStopSuppressesDoneOfCancelledContext(t *testing.T) {
 }
 
 // TestEffectGoexitKeepsPoolSize checks that a Run that ends its goroutine with runtime.Goexit
-// neither leaks a pool slot nor strands the queue.
+// neither leaks a pool slot nor strands the queue, and that its context is cancelled, so it does
+// not stay registered under the engine's context until Stop.
 func TestEffectGoexitKeepsPoolSize(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 2, EffectWorkers: 1, EffectQueue: 1})
 	fx := e.effects()
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	fx.Start(engine.EffectRequest{Name: "exits", Run: func(context.Context) (any, error) {
+	var runCtx context.Context
+	fx.Start(engine.EffectRequest{Name: "exits", Run: func(ctx context.Context) (any, error) {
+		runCtx = ctx
 		close(entered)
 		<-release
 		runtime.Goexit()
@@ -517,6 +520,11 @@ func TestEffectGoexitKeepsPoolSize(t *testing.T) {
 	close(release)
 	if v := recv(t, got, "done of the queued effect"); v != "queued" {
 		t.Errorf("done of the queued effect got %v, want %q", v, "queued")
+	}
+	select {
+	case <-runCtx.Done():
+	case <-time.After(time.Second):
+		t.Error("the context of the Run that called Goexit was not cancelled")
 	}
 	waitFor(t, time.Second, "effect goroutines to exit", func() bool { return effectGoroutines() == 0 })
 	fx.Start(engine.EffectRequest{Name: "later", Run: func(context.Context) (any, error) { return "later", nil }},

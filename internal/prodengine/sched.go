@@ -40,6 +40,11 @@ type worker struct {
 	local localRing
 	wake  chan struct{} // capacity 1 (SCH-090)
 
+	// pushing is set while one goroutine writes local's tail end: a push, or the worker's own
+	// pop, steal or drop. The ring allows one producer at a time, and ReadyFrom may run on a
+	// goroutine other than the worker (see ReadyFrom).
+	pushing atomic.Bool
+
 	busy atomic.Bool   // running a turn or a callback (SCH-115); set and cleared by the worker
 	turn publishedTurn // the turn in progress, for RunningTurns (SCH-270)
 
@@ -106,9 +111,11 @@ func (s *scheduler) Ready(a engine.ActorRef) {
 // it, the worker whose index plus 1 from's Slot.Hint holds; otherwise it goes to the global queue
 // as with Ready.
 //
-// The runtime passes from only while from's own turn runs on the calling goroutine, so that
-// worker is the caller and stays the only goroutine that pushes to its local queue. ReadyFrom
-// never asks which goroutine calls it: that would cost a stack trace per call (SCH-110).
+// A call from any goroutine is safe. The runtime normally calls it on the worker that runs
+// from's turn, but a handler that uses its Context from a helper goroutine makes the runtime call
+// it from there (ACT-120). ReadyFrom never asks which goroutine calls it, since that would cost a
+// stack trace per call (SCH-110); instead pushLocal lets one goroutine at a time push to a local
+// queue, and a push that finds another one in progress goes to the global queue.
 func (s *scheduler) ReadyFrom(a, from engine.ActorRef) {
 	if s.closing.Load() {
 		return
@@ -166,10 +173,40 @@ func (s *scheduler) pushCallback(fn func()) {
 }
 
 // pushLocal appends a turn of a to w's local queue, which spills half of itself to the global
-// queue when full (SCH-060), and wakes a parked worker (SCH-090). Only w's goroutine calls it.
+// queue when full (SCH-060), and wakes a parked worker (SCH-090). Any goroutine may call it: if
+// another goroutine is writing w's local queue, a goes to the global queue instead, so the queue
+// keeps a single producer. One uncontended CAS guards the push; it allocates nothing (SCH-110).
 func (w *worker) pushLocal(a engine.ActorRef) {
+	if !w.pushing.CompareAndSwap(false, true) {
+		w.s.pushGlobal(a)
+		return
+	}
 	w.local.push(a, &w.s.global)
+	w.pushing.Store(false)
 	w.s.park.wakeOne()
+}
+
+// lockLocal makes w's goroutine the only writer of w's local queue until unlockLocal. Only w's
+// goroutine calls it. Another goroutine holds the flag only for one push, so w waits briefly at
+// most, and only when a handler pushes from a helper goroutine.
+func (w *worker) lockLocal() {
+	for !w.pushing.CompareAndSwap(false, true) {
+		runtime.Gosched()
+	}
+}
+
+// unlockLocal ends lockLocal.
+func (w *worker) unlockLocal() {
+	w.pushing.Store(false)
+}
+
+// popLocal pops w's local queue under lockLocal. The ring's owner-side operations assume one
+// writer of its slots, so a pop must not overlap a push from another goroutine.
+func (w *worker) popLocal() (engine.ActorRef, bool) {
+	w.lockLocal()
+	a, ok := w.local.pop()
+	w.unlockLocal()
+	return a, ok
 }
 
 // loop is the worker goroutine: it records its goroutine ID, then runs entries until the engine
@@ -182,7 +219,9 @@ func (w *worker) loop(started *sync.WaitGroup) {
 	for {
 		ent, ok := w.next()
 		if !ok {
+			w.lockLocal()
 			w.local.drop()
+			w.unlockLocal()
 			return
 		}
 		w.run(ent)
@@ -217,7 +256,7 @@ func (w *worker) find(globalFirst bool) (globalEntry, bool) {
 			return ent, true
 		}
 	}
-	if a, ok := w.local.pop(); ok {
+	if a, ok := w.popLocal(); ok {
 		return globalEntry{actor: a}, true
 	}
 	if ent, ok := w.s.global.pop(); ok {
@@ -229,10 +268,12 @@ func (w *worker) find(globalFirst bool) (globalEntry, bool) {
 	return globalEntry{}, false
 }
 
-// steal runs SCH-070 step 4: starting at a victim drawn uniformly from 0 … Workers-1, it visits every other worker once in
-// increasing index order modulo Workers, moves the oldest half of the first non-empty local
-// queue to w's own and takes the first of them. w's local queue is empty when steal runs (step
-// 2 found nothing and only w pushes to it).
+// steal runs SCH-070 step 4: starting at a victim drawn uniformly from 0 … Workers-1, it visits
+// every other worker once in increasing index order modulo Workers, moves the oldest half of the
+// first non-empty local queue to w's own and takes the first of them. w's local queue is usually
+// empty when steal runs (step 2 found nothing); a push from another goroutine may have refilled
+// it since, and then grabHalf moves fewer entries or none. The grab writes w's tail, so it runs
+// under lockLocal.
 func (w *worker) steal() (engine.ActorRef, bool) {
 	ws := w.s.workers
 	n := len(ws)
@@ -241,10 +282,15 @@ func (w *worker) steal() (engine.ActorRef, bool) {
 	}
 	v := w.victims.IntN(n)
 	for range n {
-		if v != w.index && ws[v].local.grabHalf(&w.local) > 0 {
+		if v != w.index {
+			w.lockLocal()
+			moved := ws[v].local.grabHalf(&w.local)
+			w.unlockLocal()
 			// Another thief may empty w's queue first; then try the next victim.
-			if a, ok := w.local.pop(); ok {
-				return a, true
+			if moved > 0 {
+				if a, ok := w.popLocal(); ok {
+					return a, true
+				}
 			}
 		}
 		if v++; v == n {
