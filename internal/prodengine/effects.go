@@ -43,19 +43,22 @@ type job struct {
 }
 
 // pool is the effect pool (SCH §5.4). One mutex guards the queue, the running count and the
-// closing flag, so SCH-150's decision is atomic.
+// closing flag, so SCH-150's decision is atomic. closing is written under mu and read without
+// it by finish and runDone.
 type pool struct {
 	mu      sync.Mutex
 	running int    // live effect goroutines; at most Config.EffectWorkers
 	queue   []*job // FIFO; at most Config.EffectQueue
-	closing bool
+	closing atomic.Bool
 }
 
 // stop marks the pool closing and drops the queued jobs: their Run and done never run. Running
 // jobs are not touched here; Stop cancels engineCtx, which ends their contexts (SCH-200 step 2).
+// stop must happen before that cancellation, so a Run that returns because of it already sees
+// the pool closing and its done never runs.
 func (p *pool) stop() {
 	p.mu.Lock()
-	p.closing = true
+	p.closing.Store(true)
 	clear(p.queue)
 	p.queue = nil
 	p.mu.Unlock()
@@ -77,7 +80,7 @@ func (x effects) Start(req engine.EffectRequest, done func(v any, err error)) en
 	j := &job{req: req, done: done}
 	p.mu.Lock()
 	switch {
-	case p.closing:
+	case p.closing.Load():
 		p.mu.Unlock()
 		return cancelNothing
 	case p.running < e.cfg.EffectWorkers:
@@ -103,14 +106,18 @@ func (e *Engine) begin(j *job) context.Context {
 }
 
 // cancelJob returns j's Cancel (SCH-180): it wins only while done has not started, and then
-// cancels the context of Run or removes j from the queue.
+// cancels the context of Run or removes j from the queue. The state change happens under the
+// pool mutex, like nextJob's check and dequeue, so Cancel either removes a queued job before
+// it can start, or finds it running and cancels its context. A job that Stop dropped from the
+// queue still reports true; its done could not have run anyway.
 func (e *Engine) cancelJob(j *job) engine.Cancel {
 	return func() bool {
-		if !j.state.CompareAndSwap(jobPending, jobCancelled) {
-			return false
-		}
 		p := &e.fx
 		p.mu.Lock()
+		if !j.state.CompareAndSwap(jobPending, jobCancelled) {
+			p.mu.Unlock()
+			return false
+		}
 		cancel := j.cancel
 		if cancel == nil {
 			if i := slices.Index(p.queue, j); i >= 0 {
@@ -128,19 +135,39 @@ func (e *Engine) cancelJob(j *job) engine.Cancel {
 // effectLoop is the effect goroutine (SCH-160): it runs j, then the head of the queue, and exits
 // when the queue is empty or the engine is closing. After each Run it pushes the callback that
 // calls done, unless Cancel won (SCH-170).
+//
+// A Run that ends its goroutine with runtime.Goexit has no result: its done never runs, and the
+// deferred handoff gives the rest of the queue to a new effect goroutine, so the pool keeps its
+// size.
 func (e *Engine) effectLoop(j *job, ctx context.Context) {
+	retired := false
+	defer func() {
+		if !retired {
+			e.handoff()
+		}
+	}()
 	for j != nil {
 		v, err := callRun(j, ctx)
 		j.cancel()
 		e.finish(j, v, err)
 		j, ctx = e.nextJob()
 	}
+	retired = true
 }
 
-// finish pushes the callback that calls j's done with Run's result, unless Cancel won. It is a
-// function of its own so that the callback captures this j, not the loop's variable.
+// handoff replaces an effect goroutine that is ending without having retired: it starts a
+// goroutine for the next queued job, or retires the slot when none is left.
+func (e *Engine) handoff() {
+	if j, ctx := e.nextJob(); j != nil {
+		go e.effectLoop(j, ctx)
+	}
+}
+
+// finish pushes the callback that calls j's done with Run's result, unless Cancel won or the
+// pool is closing. It is a function of its own so that the callback captures this j, not the
+// loop's variable.
 func (e *Engine) finish(j *job, v any, err error) {
-	if j.state.Load() == jobPending {
+	if j.state.Load() == jobPending && !e.fx.closing.Load() {
 		e.s.pushCallback(func() { e.runDone(j, v, err) })
 	}
 }
@@ -151,7 +178,7 @@ func (e *Engine) nextJob() (*job, context.Context) {
 	p := &e.fx
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for !p.closing && len(p.queue) > 0 {
+	for !p.closing.Load() && len(p.queue) > 0 {
 		j := p.queue[0]
 		p.queue[0] = nil
 		p.queue = p.queue[1:]
@@ -174,12 +201,12 @@ func callRun(j *job, ctx context.Context) (v any, err error) {
 }
 
 // runDone is the callback of j, run by a worker. It calls done unless Cancel won, or unless the
-// engine is closing (SCH-190).
+// engine or the pool is closing (SCH-190).
 func (e *Engine) runDone(j *job, v any, err error) {
 	if !j.state.CompareAndSwap(jobPending, jobStarted) {
 		return
 	}
-	if e.s.closing.Load() {
+	if e.fx.closing.Load() || e.s.closing.Load() {
 		return
 	}
 	j.done(v, err)

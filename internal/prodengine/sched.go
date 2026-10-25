@@ -282,12 +282,21 @@ func (w *worker) park() (globalEntry, bool) {
 	// A push that happened before the registration was missed by its wakeOne (the count was
 	// 0); this second look finds it. A later push sees the count and wakes a worker.
 	if ent, ok := w.find(false); ok {
-		p.unregister(w)
+		w.leavePark()
 		return ent, true
 	}
 	<-w.wake
 	p.unregister(w) // in case a stale token woke w while it was still registered
 	return globalEntry{}, false
+}
+
+// leavePark unregisters w after its second look in park found work. If a pusher unregistered w
+// first, it chose w to wake for its own entry, which w may not be about to run; w passes that
+// wakeup on to another parked worker, so the entry is not left with every other worker parked.
+func (w *worker) leavePark() {
+	if p := &w.s.park; !p.unregister(w) {
+		p.wakeOne()
+	}
 }
 
 // run runs one entry as engine context: a callback (SCH-115) or a turn (SCH-080).
@@ -333,10 +342,12 @@ func (e *Engine) globalLen() int {
 // parkList is the park registry of SCH §11: a mutex-protected stack of parked workers, plus a
 // count that pushes read without the mutex.
 //
-// No wakeup is lost: a pusher publishes its entry and then reads n; a parking worker increments
+// No wakeup is lost. A pusher publishes its entry and then reads n; a parking worker increments
 // n and then looks at every queue again (park). Both orders are sequentially consistent, so
-// either the pusher sees the registration and wakes a worker, or the worker's second look sees
-// the entry.
+// either the pusher sees the registration and wakes a registered worker, or the worker's second
+// look sees the entry. A woken worker either was blocked, and restarts its choice, or was still
+// looking and found other work; then it passes the wakeup on (leavePark). Either way, after a
+// push some worker that is not parked will look at the queues again.
 type parkList struct {
 	n     atomic.Int32 // len(stack); changed only with mu held
 	mu    sync.Mutex
@@ -352,17 +363,20 @@ func (p *parkList) register(w *worker) {
 	p.mu.Unlock()
 }
 
-// unregister removes w from the parked workers if it is still there.
-func (p *parkList) unregister(w *worker) {
+// unregister removes w from the parked workers if it is still there, and reports whether it
+// was. It reports false when a waker already unregistered w.
+func (p *parkList) unregister(w *worker) bool {
 	p.mu.Lock()
-	if w.parked {
-		w.parked = false
-		if i := slices.Index(p.stack, w); i >= 0 {
-			p.stack = slices.Delete(p.stack, i, i+1)
-		}
-		p.n.Add(-1)
+	defer p.mu.Unlock()
+	if !w.parked {
+		return false
 	}
-	p.mu.Unlock()
+	w.parked = false
+	if i := slices.Index(p.stack, w); i >= 0 {
+		p.stack = slices.Delete(p.stack, i, i+1)
+	}
+	p.n.Add(-1)
+	return true
 }
 
 // wakeOne unregisters the most recently parked worker, if any, and sends on its wake channel
