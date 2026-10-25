@@ -19,14 +19,15 @@ const childTimeout = 10 * time.Minute
 // runChild runs this test binary again as a child process that runs only the test named test,
 // and returns the child's combined output and exit code. The child gets the parent's environment
 // without the FAULTLINE_*, RAFTDEMO_* and LOCKSTEP_CHECK_DETERMINISM settings, plus
-// FAULTLINE_ARTIFACTS=off and env. Its -test.timeout is a fifth of the parent's time left, and it
-// is killed at nine tenths of it, so a hung child fails the parent before go test kills it.
+// FAULTLINE_ARTIFACTS=off and env. Its -test.timeout is a fifth of the parent's time left (at
+// least a second), and it is killed at nine tenths of it, so a hung child fails the parent before
+// go test kills it.
 func runChild(t *testing.T, test string, env ...string) (output string, code int) {
 	t.Helper()
 	limit, kill := childTimeout, childTimeout+time.Minute
 	if deadline, ok := t.Deadline(); ok {
 		left := time.Until(deadline)
-		limit, kill = left/5, left-left/10
+		limit, kill = max(left/5, time.Second), left-left/10
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), kill)
 	defer cancel()
