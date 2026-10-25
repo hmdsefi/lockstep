@@ -11,7 +11,8 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// SpawnOption configures one Spawn. WithMailbox and WithStrategy are SpawnOptions.
+// SpawnOption configures one Spawn. WithMailbox, WithStrategy and WithActorThroughput are
+// SpawnOptions.
 type SpawnOption func(*spawnConfig)
 
 // spawnConfig is what the SpawnOptions of one Spawn configure. Option appliers only set fields and
@@ -21,7 +22,10 @@ type spawnConfig struct {
 	mbx      mailboxConfig // WithMailbox's value, meaningful when mbxSet
 	mbxSet   bool
 	strategy Strategy // the strategy for the children of the spawned actor (SUP-370)
-	err      error    // the first invalid option's error, in argument order
+	// throughput is WithActorThroughput's value, the most user messages one turn of the actor
+	// processes (SCH-040); 0 when the option is absent.
+	throughput int
+	err        error // the first invalid option's error, in argument order
 }
 
 // fail records err, which wraps ErrInvalidOption, for the option being applied. Only the first
@@ -42,6 +46,21 @@ func newSpawnConfig(opts []SpawnOption) *spawnConfig {
 		o(c)
 	}
 	return c
+}
+
+// WithActorThroughput overrides WithThroughput for one actor: the actor processes at most n
+// user messages per turn. Use a small n for an actor whose messages are expensive, a large
+// one for a router that must drain quickly. Spawn returns an error wrapping ErrInvalidOption
+// if n < 1. It has no effect in simulation, where every turn processes one message.
+func WithActorThroughput(n int) SpawnOption {
+	return func(c *spawnConfig) {
+		// Of several valid WithActorThroughput options the last one counts.
+		if n < 1 {
+			c.fail(&invalidOptionError{fmt.Sprintf("lockstep: WithActorThroughput(%d): n must be at least 1", n)})
+			return
+		}
+		c.throughput = n
+	}
 }
 
 // mailbox returns the capacity and policy of the new actor's mailbox: its WithMailbox if given
@@ -136,6 +155,7 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping, r
 		return refuse(cfg.err)
 	}
 	c := newCell(sys, parent, factory, cfg.mailbox(sys.mbx), cfg.strategy)
+	c.throughput = cfg.throughput
 	c.rebuildSpawn = rebuild
 	reserve := rebuild || spawnsSystemActor(parent.path)
 	if err := register(sys, c, parent, stopping, reserve, name); err != nil {
