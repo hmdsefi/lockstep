@@ -16,8 +16,8 @@ import (
 type SpawnOption func(*spawnConfig)
 
 // spawnConfig is what the SpawnOptions of one Spawn configure. Option appliers only set fields and
-// report a bad value through fail; Spawn validates (ACT-300 step 3a). The mailbox (MBX) and the
-// children's strategy (SUP) are set here, and the actor's turn throughput (SCH).
+// report a bad value through fail; Spawn validates (ACT-300 step 3a). The mailbox (MBX), the
+// children's strategy (SUP) and the actor's turn throughput (SCH) are set here.
 type spawnConfig struct {
 	mbx      mailboxConfig // WithMailbox's value, meaningful when mbxSet
 	mbxSet   bool
