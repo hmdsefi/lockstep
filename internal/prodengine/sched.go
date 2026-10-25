@@ -32,7 +32,7 @@ type scheduler struct {
 	exited     sync.WaitGroup // one count per running worker
 }
 
-var _ engine.Scheduler = (*scheduler)(nil)
+var _ engine.LocalScheduler = (*scheduler)(nil)
 
 // worker is one worker goroutine's state (SCH §3).
 type worker struct {
@@ -42,7 +42,8 @@ type worker struct {
 	local localRing
 	wake  chan struct{} // capacity 1 (SCH-090)
 
-	busy atomic.Bool // running a turn or a callback (SCH-115); set and cleared by the worker
+	busy atomic.Bool   // running a turn or a callback (SCH-115); set and cleared by the worker
+	turn publishedTurn // the turn in progress, for RunningTurns (SCH-270)
 
 	// Owned by the worker goroutine: written and read only by it.
 	schedtick uint32     // successful choices so far (SCH-070)
@@ -107,6 +108,45 @@ func (s *scheduler) Ready(a engine.ActorRef) {
 	if a.Slot().Ready() {
 		s.pushGlobal(a)
 	}
+}
+
+// ReadyFrom is Ready for an actor made ready during the turn of from (SCH-050, SCH-060). If
+// from's turn is running, a's turn is queued at the tail of the local queue of the worker running
+// it, the worker whose index plus 1 from's Slot.Hint holds; otherwise it goes to the global queue
+// as with Ready.
+//
+// The runtime passes from only while from's own turn runs on the calling goroutine, so that
+// worker is the caller and stays the only goroutine that pushes to its local queue. ReadyFrom
+// never asks which goroutine calls it: that would cost a stack trace per call (SCH-110).
+func (s *scheduler) ReadyFrom(a, from engine.ActorRef) {
+	if s.closing.Load() {
+		return
+	}
+	if !a.Slot().Ready() {
+		return
+	}
+	if w := s.turnWorker(from); w != nil {
+		w.pushLocal(a)
+		return
+	}
+	s.pushGlobal(a)
+}
+
+// turnWorker returns the worker running from's turn, or nil if from's turn is not running
+// (SCH-060). Hint is the worker's index plus 1, stored before RunTurn (SCH-080).
+func (s *scheduler) turnWorker(from engine.ActorRef) *worker {
+	if from == nil {
+		return nil
+	}
+	slot := from.Slot()
+	if st := slot.State(); st != engine.SlotRunning && st != engine.SlotRunningReady {
+		return nil
+	}
+	h := slot.Hint.Load()
+	if h == 0 || int(h) > len(s.workers) {
+		return nil
+	}
+	return &s.workers[h-1]
 }
 
 // InTurn reports whether the caller is one of this engine's workers running a turn or a
@@ -260,7 +300,9 @@ func (w *worker) runTurn(a engine.ActorRef) {
 	slot := a.Slot()
 	slot.Begin()
 	slot.Hint.Store(w.hint)
+	w.turn.set(a)
 	more := a.RunTurn(w.s.throughput)
+	w.turn.clear()
 	if slot.End(more) {
 		if more {
 			w.s.pushGlobal(a)
@@ -268,6 +310,16 @@ func (w *worker) runTurn(a engine.ActorRef) {
 			w.pushLocal(a)
 		}
 	}
+}
+
+// localLen returns the number of entries in worker w's local queue. Tests use it.
+func (e *Engine) localLen(w int) int { //nolint:unparam // the one-worker tests read worker 0; the index keeps the helper general
+	return e.s.workers[w].local.len()
+}
+
+// globalLen returns the number of entries in the global queue. Tests use it.
+func (e *Engine) globalLen() int {
+	return e.s.global.len()
 }
 
 // parkList is the park registry of SCH §11: a mutex-protected stack of parked workers, plus a
