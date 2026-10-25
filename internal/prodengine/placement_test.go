@@ -13,13 +13,25 @@ import (
 	"time"
 )
 
+// localLen returns the number of entries in worker w's local queue.
+func (e *Engine) localLen(w int) int {
+	return e.s.workers[w].local.len()
+}
+
+// globalLen returns the number of entries in the global queue.
+func (e *Engine) globalLen() int {
+	return e.s.global.len()
+}
+
 // pingPong is the actor pair of AT-SCH-10 and AT-SCH-13: x and y each process one message per
 // turn and, while turns are left, give the other one message and ReadyFrom it, so the pair keeps
-// readying each other through the local queue of the worker that runs them.
+// readying each other through the local queue of the worker that runs them. The tests run the
+// pair on one worker, so after each ReadyFrom the partner is the only local entry.
 type pingPong struct {
-	x, y  *fakeActor
-	turns atomic.Int64 // turns of x and y together, counted at turn start
-	left  atomic.Int64 // turns left; the turn that takes the last one readies nobody
+	x, y     *fakeActor
+	turns    atomic.Int64 // turns of x and y together, counted at turn start
+	left     atomic.Int64 // turns left; the turn that takes the last one readies nobody
+	notLocal atomic.Bool  // set when a ReadyFrom left localLen(0) != 1
 }
 
 // newPingPong returns a stopped pair on e; start sets the turns left and readies x.
@@ -31,6 +43,9 @@ func newPingPong(t testing.TB, e *Engine) *pingPong {
 			if p.left.Add(-1) > 0 {
 				partner.add()
 				e.s.ReadyFrom(partner, self)
+				if e.localLen(0) != 1 {
+					p.notLocal.Store(true)
+				}
 			}
 		}
 	}
@@ -51,6 +66,7 @@ func (p *pingPong) start(e *Engine, n int64) {
 func TestATSCH07LocalPlacement(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 1}) // one worker, so no thief moves entries
 	from, to, x, u, v, y := newFake(t, 0), newFake(t, 1), newFake(t, 2), newFake(t, 3), newFake(t, 4), newFake(t, 5)
+	w := newFake(t, 6)
 
 	var local1, global1 atomic.Int64
 	from.onTurn = func(f *fakeActor, _ int) {
@@ -65,27 +81,38 @@ func TestATSCH07LocalPlacement(t *testing.T) {
 		t.Errorf("after ReadyFrom(to, from) in from's turn: localLen(0) = %d, globalLen() = %d, want 1, 0", l, g)
 	}
 
-	var local0, global0, local2, global2 atomic.Int64
+	var local0, global0, local2, global2, local3, global3 atomic.Int64
 	y.onTurn = func(*fakeActor, int) {
 		local0.Store(int64(e.localLen(0)))
 		global0.Store(int64(e.globalLen()))
-		e.s.ReadyFrom(u, x) // x is idle
+		e.s.ReadyFrom(u, x) // x is idle and has never run: Hint 0
 		e.s.Ready(v)
 		local2.Store(int64(e.localLen(0)))
 		global2.Store(int64(e.globalLen()))
+		e.s.ReadyFrom(w, from) // from is idle now, but its Hint still names worker 0
+		local3.Store(int64(e.localLen(0)))
+		global3.Store(int64(e.globalLen()))
 	}
 	y.add()
 	e.s.Ready(y)
-	waitFor(t, time.Second, "the turns of u and v", func() bool { return u.turns.Load() == 1 && v.turns.Load() == 1 })
+	waitFor(t, time.Second, "the turns of u, v and w", func() bool {
+		return u.turns.Load() == 1 && v.turns.Load() == 1 && w.turns.Load() == 1
+	})
 	if l0, l2 := local0.Load(), local2.Load(); l2 != l0 {
 		t.Errorf("ReadyFrom with an idle from and Ready changed localLen(0) from %d to %d", l0, l2)
 	}
 	if g0, g2 := global0.Load(), global2.Load(); g2 != g0+2 {
 		t.Errorf("ReadyFrom with an idle from and Ready changed globalLen() from %d to %d, want +2", g0, g2)
 	}
+	if l2, l3 := local2.Load(), local3.Load(); l3 != l2 {
+		t.Errorf("ReadyFrom(w, from) with from idle after its turn changed localLen(0) from %d to %d", l2, l3)
+	}
+	if g2, g3 := global2.Load(), global3.Load(); g3 != g2+1 {
+		t.Errorf("ReadyFrom(w, from) with from idle after its turn changed globalLen() from %d to %d, want +1", g2, g3)
+	}
 
 	time.Sleep(10 * time.Millisecond) // let a wrong extra turn show
-	for _, a := range []*fakeActor{from, to, u, v, y} {
+	for _, a := range []*fakeActor{from, to, u, v, w, y} {
 		if n := a.turns.Load(); n != 1 {
 			t.Errorf("fake %d ran %d turns, want 1", a.id, n)
 		}
@@ -172,6 +199,9 @@ func TestATSCH10GlobalCheckInterval(t *testing.T) {
 	if d := t1.Load() - t0; d > GlobalCheckInterval {
 		t.Errorf("c's turn started %d ping-pong turns after Ready(c), want at most %d", d, GlobalCheckInterval)
 	}
+	if p.notLocal.Load() {
+		t.Error("a ping-pong ReadyFrom did not queue its partner on the local queue")
+	}
 }
 
 // TestATSCH11Stealing covers SCH-070 step 4 (AT-SCH-11): idle workers steal from a worker whose
@@ -217,6 +247,14 @@ func TestATSCH11Stealing(t *testing.T) {
 	if g := global.Load(); g != 0 {
 		t.Errorf("globalLen() = %d after 200 ReadyFrom in p's turn, want 0 (all local)", g)
 	}
+	for w := range 4 { // every entry was taken once, so no queue keeps one
+		if n := e.localLen(w); n != 0 {
+			t.Errorf("localLen(%d) = %d after every turn ran, want 0", w, n)
+		}
+	}
+	if n := e.globalLen(); n != 0 {
+		t.Errorf("globalLen() = %d after every turn ran, want 0", n)
+	}
 	if len(workers) < 2 {
 		t.Errorf("200 slow turns ran on workers %v, want at least two", workers)
 	}
@@ -251,6 +289,9 @@ func TestATSCH13NoAllocation(t *testing.T) {
 	if got, want := p.turns.Load(), int64(12*turns); got != want {
 		t.Errorf("ping-pong ran %d turns, want %d", got, want)
 	}
+	if p.notLocal.Load() {
+		t.Error("a ping-pong ReadyFrom did not queue its partner on the local queue")
+	}
 
 	c := newFake(t, 2)
 	readyRun := func() {
@@ -272,5 +313,41 @@ func TestATSCH13NoAllocation(t *testing.T) {
 	}
 	if got, want := c.processed.Load(), int64(12*turns); got != want {
 		t.Errorf("external Ready rounds processed %d messages, want %d", got, want)
+	}
+}
+
+// TestTurnWorker covers SCH-060's condition for local placement: only a from whose turn is
+// running or running-ready names a worker through its Hint; an idle or queued from with a Hint
+// does not.
+func TestTurnWorker(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 2})
+	f := newFake(t, 0) // never handed to the engine; the test drives its Slot
+	slot := f.Slot()
+	slot.Hint.Store(2)
+	if w := e.s.turnWorker(f); w != nil {
+		t.Errorf("idle from with Hint 2: turnWorker = worker %d, want none", w.index)
+	}
+	slot.Ready() // queued
+	if w := e.s.turnWorker(f); w != nil {
+		t.Errorf("queued from with Hint 2: turnWorker = worker %d, want none", w.index)
+	}
+	slot.Begin() // running
+	if w := e.s.turnWorker(f); w != &e.s.workers[1] {
+		t.Errorf("running from with Hint 2: turnWorker = %p, want worker 1", w)
+	}
+	slot.Ready() // running-ready
+	if w := e.s.turnWorker(f); w != &e.s.workers[1] {
+		t.Errorf("running-ready from with Hint 2: turnWorker = %p, want worker 1", w)
+	}
+	slot.Hint.Store(0)
+	if w := e.s.turnWorker(f); w != nil {
+		t.Errorf("running from with Hint 0: turnWorker = worker %d, want none", w.index)
+	}
+	slot.Hint.Store(3)
+	if w := e.s.turnWorker(f); w != nil {
+		t.Errorf("running from with Hint 3 on 2 workers: turnWorker = worker %d, want none", w.index)
+	}
+	if w := e.s.turnWorker(nil); w != nil {
+		t.Errorf("nil from: turnWorker = worker %d, want none", w.index)
 	}
 }

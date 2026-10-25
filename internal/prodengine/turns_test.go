@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,8 @@ func TestATSCH24RunningTurns(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 2})
 	a := newFake(t, 0)
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock) // runs before the engine's Stop, which waits for the turn
 	var entered atomic.Bool
 	a.onTurn = func(*fakeActor, int) {
 		entered.Store(true)
@@ -29,7 +32,6 @@ func TestATSCH24RunningTurns(t *testing.T) {
 
 	rts := e.RunningTurns(nil)
 	if len(rts) != 1 {
-		close(release)
 		t.Fatalf("RunningTurns(nil) = %v while one turn blocks, want one entry", rts)
 	}
 	rt := rts[0]
@@ -46,7 +48,7 @@ func TestATSCH24RunningTurns(t *testing.T) {
 		t.Errorf("RunningTurns: Start is %v ago, want within the last second", d)
 	}
 
-	close(release)
+	unblock()
 	waitFor(t, time.Second, "an empty RunningTurns after the turn", func() bool {
 		return len(e.RunningTurns(nil)) == 0
 	})
@@ -56,6 +58,8 @@ func TestATSCH24RunningTurns(t *testing.T) {
 func TestRunningTurnsSkipsCallbacks(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 2})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock) // runs before the engine's Stop, which waits for the callback
 	var entered atomic.Bool
 	e.s.pushCallback(func() {
 		entered.Store(true)
@@ -63,7 +67,7 @@ func TestRunningTurnsSkipsCallbacks(t *testing.T) {
 	})
 	waitFor(t, time.Second, "the blocking callback", entered.Load)
 	rts := e.RunningTurns(nil)
-	close(release)
+	unblock()
 	if len(rts) != 0 {
 		t.Errorf("RunningTurns(nil) = %v while only a callback runs, want empty", rts)
 	}
