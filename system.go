@@ -238,8 +238,8 @@ func (s *System) completeShutdown() {
 	close(s.shut.done)
 
 	// ENG-140: on a non-blocking engine directly, at the end of this engine callback; on a
-	// blocking engine never from inside RunTurn (the local engine's Stop panics there, ENG-460),
-	// so from a goroutine of its own.
+	// blocking engine never from inside RunTurn (the engine's Stop panics in engine context,
+	// ENG-460, SCH-200), so from a goroutine of its own.
 	if !s.eng.Blocking {
 		s.stopEngine()
 		return

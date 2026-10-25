@@ -316,6 +316,64 @@ func TestATSCH13NoAllocation(t *testing.T) {
 	}
 }
 
+// TestReadyFromOtherGoroutines covers SCH-060 when ReadyFrom comes from goroutines other than the
+// worker while from's turn runs, as it does when a handler uses its Context from helper
+// goroutines: inside a turn on one worker, 32 goroutines each ReadyFrom a distinct idle fake with
+// from = the running fake, and every fake must run exactly once. Without the guard on the local
+// queue, concurrent pushes overwrite each other's slot and a turn is lost.
+func TestReadyFromOtherGoroutines(t *testing.T) {
+	const rounds, helpers = 100, 32
+	e := newEngine(t, Config{Node: "n", Workers: 1})
+	for r := range rounds {
+		from := newFake(t, helpers)
+		as := fakes(t, helpers)
+		from.onTurn = func(f *fakeActor, _ int) {
+			var start, done sync.WaitGroup
+			start.Add(1)
+			for _, a := range as {
+				done.Add(1)
+				go func() {
+					defer done.Done()
+					a.add()
+					start.Wait()
+					e.s.ReadyFrom(a, f)
+				}()
+			}
+			start.Done()
+			done.Wait()
+		}
+		from.add()
+		e.s.Ready(from)
+		deadline := time.Now().Add(5 * time.Second)
+		for !allRan(as) {
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: %d of %d readied fakes ran within 5s", r, ranCount(as), helpers)
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+		time.Sleep(time.Millisecond) // let a wrong extra turn show
+		for _, a := range as {
+			if n := a.turns.Load(); n != 1 {
+				t.Fatalf("round %d: fake %d ran %d turns, want 1", r, a.id, n)
+			}
+		}
+	}
+}
+
+// ranCount returns how many of as have run at least one turn.
+func ranCount(as []*fakeActor) int {
+	n := 0
+	for _, a := range as {
+		if a.turns.Load() > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// allRan reports whether every one of as has run at least one turn.
+func allRan(as []*fakeActor) bool { return ranCount(as) == len(as) }
+
 // TestTurnWorker covers SCH-060's condition for local placement: only a from whose turn is
 // running or running-ready names a worker through its Hint; an idle or queued from with a Hint
 // does not.
