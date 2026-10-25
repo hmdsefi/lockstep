@@ -7,4 +7,6 @@ require (
 	github.com/hmdsefi/lockstep v0.0.0-00010101000000-000000000000
 )
 
+require github.com/hmdsefi/gograph v0.8.2 // indirect
+
 replace github.com/hmdsefi/lockstep => ../..
