@@ -196,6 +196,8 @@ func (c *cell[M]) begin() {
 	c.actor = a
 	c.ctx = &Context[M]{cell: c, inc: c.inc}
 	c.rng = nil // the stream of an earlier incarnation is never reused (TMR-120)
+	// A live incarnation judges its signals by its own watched set (deliverSignal).
+	c.endedWatched = watchedSet{}
 	c.starter, _ = a.(Starter[M])
 	c.stopper, _ = a.(Stopper[M])
 	c.signals, _ = a.(SignalReceiver[M])

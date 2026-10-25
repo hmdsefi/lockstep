@@ -4,8 +4,11 @@
 package sim_test
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel"
@@ -108,4 +111,87 @@ func attr(r kernel.Record, key string) string {
 		return ""
 	}
 	return r.Attrs[i].Value
+}
+
+// AT-ACT-05, ACT-040, ACT-045, ACT-420: kv, the first actor spawned in n1's setup, has uid number 3
+// in every incarnation of the node (after the two guardians), and the incarnation number in the
+// high 32 bits. A message to the old PID after the restart is a dead letter on n1 and reaches no
+// actor.
+func TestATACT05UidEpochInSimulation(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var kv lockstep.PID[Deposit]
+		received := 0
+		n1 := s.Node("n1", func(sys *lockstep.System) {
+			kv = spawn(sys, "kv", &actor[Deposit]{receive: func(*lockstep.Context[Deposit], Deposit) { received++ }})
+		})
+		s.Node("n2", noSetup)
+		w.RunFor(time.Millisecond)
+		first, inc1 := kv, s.System("n1").Incarnation()
+
+		n1.Crash()
+		w.RunFor(time.Millisecond)
+		n1.Restart()
+		w.RunFor(time.Millisecond)
+		second, inc2 := kv, s.System("n1").Incarnation()
+
+		u1, u2 := first.Address().UID(), second.Address().UID()
+		if u1>>32 != 1 || inc1 != 1 || u2>>32 != 2 || inc2 != 2 {
+			tt.Errorf("uids %#x and %#x with incarnations %d and %d; want high 32 bits and incarnation 1, then 2", u1, u2, inc1, inc2)
+		}
+		if u1&0xffffffff != 3 || u2&0xffffffff != 3 {
+			tt.Errorf("uids %#x and %#x, want the low 32 bits to be 3 in both", u1, u2)
+		}
+
+		if err := sim.Send(s, "n2", first, Deposit{1}); err != nil {
+			tt.Fatalf("Send to the old PID: %v", err)
+		}
+		w.RunFor(time.Second)
+		dead := 0
+		for _, r := range ofKind(w.Sim.Records(), "lockstep.deadletter") {
+			if r.Node == n1.ID() && attr(r, "to") == first.String() {
+				dead++
+			}
+		}
+		if dead != 1 || received != 0 {
+			tt.Errorf("%d dead letters on n1 for the old PID and %d deliveries to kv, want 1 and 0", dead, received)
+		}
+	})
+}
+
+// AT-ACT-12 (sim clause), ACT-130: ctx.Logf in a simulated actor adds a lockstep.log record and
+// writes nothing to slog.Default().
+func TestATACT12LogfInSimulation(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(old) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	slog.Info("control") // the handler writes
+	if buf.Len() == 0 {
+		t.Fatal("the buffer handler wrote nothing for a control entry")
+	}
+	buf.Reset()
+
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var a lockstep.PID[Deposit]
+		s.Node("n1", func(sys *lockstep.System) {
+			a = spawn(sys, "a", &actor[Deposit]{receive: func(ctx *lockstep.Context[Deposit], m Deposit) {
+				ctx.Logf("n=%d", m.N)
+			}})
+		})
+		w.RunFor(time.Millisecond)
+		if err := sim.Send(s, "n1", a, Deposit{3}); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(time.Millisecond)
+
+		logs := ofKind(w.Sim.Records(), "lockstep.log")
+		if len(logs) != 1 || attr(logs[0], "addr") != a.Address().String() || attr(logs[0], "text") != "n=3" {
+			tt.Errorf("lockstep.log records %v, want one with addr %s and text n=3", logs, a.Address())
+		}
+	})
+	if buf.Len() != 0 {
+		t.Errorf("slog.Default() received %q, want nothing in simulation", buf.String())
+	}
 }

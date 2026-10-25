@@ -93,7 +93,9 @@ func (c *cell[M]) startStop(reason StopReason) {
 
 // endIncarnationWork is step 1 of SUP-060 and SUP-190 for a live incarnation: its timers are
 // cancelled (TMR-080), its watches leave every watcher list and its watched set (SUP-340,
-// ACT-640), and its Overloaded subscription ends (OVL-170). Its pending effects are cancelled in
+// ACT-640), and its Overloaded subscription ends (OVL-170). The cell keeps the emptied set as
+// endedWatched, so a Terminated that arrives while the incarnation ends is judged against the
+// watches the incarnation had (watchedSet.skips). Its pending effects are cancelled in
 // ID order after the timers and before the watches, the order of SUP-060 and SUP-190 step 1
 // (EFF-100); the effects' records come before anything the Stopped hook or the stop records.
 //
@@ -108,7 +110,7 @@ func (c *cell[M]) endIncarnationWork(cancelEffects bool) {
 		c.cancelEffects()
 	}
 	c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
-	c.ctx.watched = watchedSet{}
+	c.endedWatched, c.ctx.watched = c.ctx.watched, watchedSet{}
 	if c.ctx.overloadSub {
 		c.ctx.overloadSub = false
 		c.sys.unsubscribeOverload(c, c.ctx.inc)
@@ -233,7 +235,9 @@ func (c *cell[M]) finishStop() {
 // stopped actor's address (MBX §8); each Self entry, piped replies and effect results included, as
 // lockstep.drop reason incarnation-ended, a piped reply or an effect result described by its error
 // or its value (MBX §8); each signal and each inject command (SFT-040) left in the system queue as
-// lockstep.drop reason not-running. The other system messages are discarded without a record.
+// lockstep.drop reason not-running, except a Terminated that a delivery to the ended incarnation
+// would skip (ACT-630), which is discarded without a record. The other system messages are
+// discarded without a record.
 func (c *cell[M]) drain() {
 	sent, self, notRunning := c.closeQueues()
 	for _, e := range sent {
@@ -250,7 +254,14 @@ func (c *cell[M]) drain() {
 		c.sys.recordDropEnded(c.addr, e.inc, msg)
 	}
 	for _, m := range notRunning {
-		c.sys.recordDropNotRunning(c.addr, m)
+		switch m := m.(type) {
+		case signalMsg:
+			if !c.endedWatched.skips(m) {
+				c.sys.recordDropNotRunning(c.addr, m.sig)
+			}
+		default:
+			c.sys.recordDropNotRunning(c.addr, m)
+		}
 	}
 }
 
