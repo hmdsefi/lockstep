@@ -65,9 +65,19 @@ func (entropy) Rand(label string) *rand.Rand {
 	if !strings.HasPrefix(label, "lockstep/") {
 		panic(fmt.Sprintf("prodengine: Entropy label %q does not start with \"lockstep/\"", label))
 	}
-	var b [16]byte
-	_, _ = crand.Read(b[:])                                                                            // never fails (crypto/rand.Read, Go 1.24+)
-	return rand.New(rand.NewPCG(binary.LittleEndian.Uint64(b[:8]), binary.LittleEndian.Uint64(b[8:]))) //nolint:gosec // G404: seeded from crypto/rand; callers need a *rand.Rand
+	return newPCG()
+}
+
+// newPCG returns a new math/rand/v2 stream with a PCG source seeded from 16 bytes of
+// crypto/rand, read as two little-endian uint64 values (ENG-440). Entropy hands one out per
+// call, and each worker owns one for its steal victims (SCH-070 step 4): the determinism lint
+// forbids the package-level functions of math/rand/v2 in class engine (DL002), so every stream
+// is explicit.
+func newPCG() *rand.Rand {
+	var seed [16]byte
+	_, _ = crand.Read(seed[:]) // never fails (crypto/rand.Read, Go 1.24+)
+	s1, s2 := binary.LittleEndian.Uint64(seed[:8]), binary.LittleEndian.Uint64(seed[8:])
+	return rand.New(rand.NewPCG(s1, s2)) //nolint:gosec // G404: seeded from crypto/rand; callers need a *rand.Rand, not cryptographic output
 }
 
 // noTracer is the bundle's Tracer: disabled (SCH-250). Production observability is logs and

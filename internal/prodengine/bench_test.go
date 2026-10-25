@@ -12,21 +12,16 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// The engine microbenchmarks of SCH §9. Each builds its engine with newEngine, which stops it in
-// the benchmark's cleanup, so TestMain's leak check passes after a -bench run.
+// The engine microbenchmarks of SCH §9. They use the fake actor of SCH §10 (fakeActor) with an
+// onTurn hook and no messages, so every turn reports no more work. Each builds its engine with
+// newEngine, which stops it in the benchmark's cleanup, so TestMain's leak check passes after a
+// -bench run.
 
-// benchActor is a fake actor for benchmarks: its turn calls fn and reports no more work.
-type benchActor struct {
-	slot engine.Slot
-	fn   func(self *benchActor)
-}
-
-func (a *benchActor) Address() engine.Address { return engine.Address{Node: "n", Path: "/bench"} }
-func (a *benchActor) Slot() *engine.Slot      { return &a.slot }
-
-func (a *benchActor) RunTurn(int) bool {
-	a.fn(a)
-	return false
+// benchFake returns a fake actor whose turns call fn.
+func benchFake(b *testing.B, id int, fn func(self *fakeActor)) *fakeActor {
+	a := newFake(b, id)
+	a.onTurn = func(self *fakeActor, _ int) { fn(self) }
+	return a
 }
 
 // waitCount spins until c reaches n, yielding the processor between reads.
@@ -41,7 +36,7 @@ func waitCount(c *atomic.Int64, n int64) {
 func BenchmarkReadyGlobal(b *testing.B) {
 	e := newEngine(b, Config{Node: "n"})
 	var turns atomic.Int64
-	a := &benchActor{fn: func(*benchActor) { turns.Add(1) }}
+	a := benchFake(b, 0, func(*fakeActor) { turns.Add(1) })
 	b.ReportAllocs()
 	var n int64
 	for b.Loop() {
@@ -59,16 +54,16 @@ func BenchmarkReadyLocal(b *testing.B) {
 	e := newEngine(b, Config{Node: "n", Workers: 1})
 	const batch = LocalQueueSize / 2
 	var turns atomic.Int64
-	leaves := make([]*benchActor, batch)
+	leaves := make([]*fakeActor, batch)
 	for i := range leaves {
-		leaves[i] = &benchActor{fn: func(*benchActor) { turns.Add(1) }}
+		leaves[i] = benchFake(b, i, func(*fakeActor) { turns.Add(1) })
 	}
 	var size int
-	hub := &benchActor{fn: func(self *benchActor) {
+	hub := benchFake(b, batch, func(self *fakeActor) {
 		for _, l := range leaves[:size] {
 			e.s.ReadyFrom(l, self)
 		}
-	}}
+	})
 	b.ReportAllocs()
 	b.ResetTimer()
 	var n int64
@@ -94,14 +89,14 @@ func BenchmarkPingPong(b *testing.B) {
 			e := newEngine(b, Config{Node: "n", Workers: bc.workers})
 			var turns atomic.Int64
 			var target int64
-			var x, y *benchActor
-			pass := func(self, other *benchActor) {
+			var x, y *fakeActor
+			pass := func(self, other *fakeActor) {
 				if turns.Add(1) < target {
 					e.s.ReadyFrom(other, self)
 				}
 			}
-			x = &benchActor{fn: func(self *benchActor) { pass(self, y) }}
-			y = &benchActor{fn: func(self *benchActor) { pass(self, x) }}
+			x = benchFake(b, 0, func(self *fakeActor) { pass(self, y) })
+			y = benchFake(b, 1, func(self *fakeActor) { pass(self, x) })
 			b.ReportAllocs()
 			b.ResetTimer()
 			target = int64(b.N)
@@ -117,16 +112,16 @@ func BenchmarkSteal(b *testing.B) {
 	e := newEngine(b, Config{Node: "n", Workers: max(2, runtime.GOMAXPROCS(0))})
 	const batch = LocalQueueSize
 	var turns atomic.Int64
-	leaves := make([]*benchActor, batch)
+	leaves := make([]*fakeActor, batch)
 	for i := range leaves {
-		leaves[i] = &benchActor{fn: func(*benchActor) { turns.Add(1) }}
+		leaves[i] = benchFake(b, i, func(*fakeActor) { turns.Add(1) })
 	}
 	var size int
-	producer := &benchActor{fn: func(self *benchActor) {
+	producer := benchFake(b, batch, func(self *fakeActor) {
 		for _, l := range leaves[:size] {
 			e.s.ReadyFrom(l, self)
 		}
-	}}
+	})
 	b.ReportAllocs()
 	b.ResetTimer()
 	var n int64

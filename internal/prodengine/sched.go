@@ -4,8 +4,6 @@
 package prodengine
 
 import (
-	crand "crypto/rand"
-	"encoding/binary"
 	"math/rand/v2"
 	"runtime"
 	"slices"
@@ -70,7 +68,7 @@ func (s *scheduler) start(workers, throughput int) {
 		w.index = i
 		w.hint = uint32(i + 1) //nolint:gosec // G115: i < Workers, a goroutine count
 		w.wake = make(chan struct{}, 1)
-		w.victims = newVictimRand()
+		w.victims = newPCG() // only its worker draws from it: no lock, no allocation
 		go w.loop(&started)
 	}
 	started.Wait()
@@ -78,17 +76,6 @@ func (s *scheduler) start(workers, throughput int) {
 		s.stop()
 		panic("lockstep: prodengine: cannot parse a worker goroutine's ID from runtime.Stack")
 	}
-}
-
-// newVictimRand returns a worker's own random stream for victim choice: a PCG generator seeded
-// from 16 bytes of crypto/rand. Only its worker draws from it, so it needs no lock and draws
-// allocate nothing. The determinism lint forbids the package-level functions of math/rand/v2 in
-// every class (DL002), so the stream is explicit.
-func newVictimRand() *rand.Rand {
-	var seed [16]byte
-	_, _ = crand.Read(seed[:]) // never fails (crypto/rand.Read, Go 1.24+)
-	s1, s2 := binary.LittleEndian.Uint64(seed[:8]), binary.LittleEndian.Uint64(seed[8:])
-	return rand.New(rand.NewPCG(s1, s2)) //nolint:gosec // G404: victim choice needs no cryptographic randomness
 }
 
 // stop is the scheduler's part of SCH-200: mark closing (step 1), discard every queued global

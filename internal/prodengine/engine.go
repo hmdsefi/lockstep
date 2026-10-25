@@ -102,13 +102,14 @@ func (e *Engine) Config() Config {
 
 // Stop stops the engine (SCH-200). It panics when called from engine context.
 //
-// The first call marks the engine closing, so Ready, ReadyFrom, AfterFunc and Start do nothing
-// from then on; stops every pending timer; drops the queued effects and cancels the contexts of
-// the running ones; discards every queued turn and callback; wakes every parked worker; and
-// waits until every worker has exited. A worker exits at its next choice (SCH-070), so a turn or
-// callback in progress finishes first, and no callback runs after Stop returns (ENG-140). Stop
-// does not wait for an effect whose Run ignores its cancelled context; its done never runs.
-// Later calls return once the first has finished.
+// The first call marks the engine closing, so from then on Ready and ReadyFrom do nothing, and
+// AfterFunc and Start run nothing and return a Cancel that reports false. It then stops every
+// pending timer, drops the queued effects and cancels the contexts of the running ones, discards
+// every queued turn and callback, wakes every parked worker and waits until every worker has
+// exited. A worker exits at its next choice (SCH-070), so a turn or callback in progress
+// finishes first, and no callback runs after Stop returns (ENG-140). Stop does not wait for an
+// effect whose Run ignores its cancelled context; its done never runs. Later calls return once
+// the first has finished.
 func (e *Engine) Stop() {
 	if e.s.InTurn() {
 		panic("lockstep: prodengine: Stop called from engine context")
