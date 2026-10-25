@@ -266,3 +266,29 @@ func TestStopRacesEngineCalls(t *testing.T) {
 	waitFor(t, time.Second, "effect goroutines to exit", func() bool { return effectGoroutines() == 0 })
 	waitFor(t, time.Second, "workers to exit", func() bool { return workerGoroutines() == 0 })
 }
+
+// TestStartAfterClosingMark covers SCH-200 step 1 for Start: once Stop has marked the engine
+// closing, even before it marks the effect pool, Start runs nothing and its Cancel reports false.
+func TestStartAfterClosingMark(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 1, EffectWorkers: 1, EffectQueue: 1})
+	e.s.closing.Store(true) // the first statement of Stop, before the pool's own mark
+	var ran atomic.Int32
+	run := func(context.Context) (any, error) {
+		ran.Add(1)
+		return nil, nil
+	}
+	// Without the check, the first Start would run, the second queue and the third be refused.
+	for i := range 3 {
+		c := e.effects().Start(engine.EffectRequest{Name: "late", Run: run}, noDone(t, "an effect started after the closing mark"))
+		if c() {
+			t.Errorf("Cancel of effect %d started after the closing mark = true, want false", i)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := ran.Load(); n != 0 {
+		t.Errorf("Run of an effect started after the closing mark was called %d times, want 0", n)
+	}
+	if n := e.globalLen(); n != 0 {
+		t.Errorf("globalLen() = %d, want 0 (no refusal callback queued)", n)
+	}
+}

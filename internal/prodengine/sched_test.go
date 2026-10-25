@@ -263,7 +263,7 @@ func idleScheduler(n int) *scheduler {
 		w := &s.workers[i]
 		w.s, w.index, w.hint = s, i, uint32(i+1) //nolint:gosec // G115: a small index
 		w.wake = make(chan struct{}, 1)
-		w.victims = newVictimRand()
+		w.victims = newPCG()
 	}
 	return s
 }
