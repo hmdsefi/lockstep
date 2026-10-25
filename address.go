@@ -57,9 +57,8 @@ func (p PID[M]) IsZero() bool { return p.addr.IsZero() }
 func (p PID[M]) String() string { return p.addr.String() }
 
 // PIDAt returns a PID with uid 0 that addresses whichever actor is registered at path on node
-// when the PID is used, locally and through remoting (Phase 3). A message to it when no actor of
-// type M is registered at path goes to dead letters on that node. path has the form Lookup
-// accepts. PIDAt panics if node is not a valid node name or path is malformed.
+// when the PID is used. A message to it when no actor of type M is registered at path goes to
+// dead letters on that node. path has the form Lookup accepts. PIDAt panics if node is not a valid node name or path is malformed.
 func PIDAt[M any](node, path string) PID[M] {
 	if !validNode(node) {
 		panic(fmt.Sprintf("lockstep: PIDAt with invalid node %q", node))

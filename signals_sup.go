@@ -4,8 +4,7 @@
 package lockstep
 
 // Terminated reports that a watched actor stopped for good, or that the watched address was not
-// alive (Reason NoActor). Reason is the actor's final stop reason, NoActor, or a Failed reason
-// set by REM or CLU for an actor lost with its node or connection.
+// alive (Reason NoActor). Reason is the actor's final stop reason, or NoActor.
 type Terminated struct {
 	Addr   Address
 	Reason StopReason

@@ -92,9 +92,9 @@ type Sender interface {
 func (*System) spawner() {}
 func (*System) sender()  {}
 
-// New builds a system on the local engine (Phase 1) or the production engine (Phase 2, SCH),
-// creates its two guardians and returns it. It panics with an error wrapping ErrInvalidOption if
-// an option is nil or invalid.
+// New builds a system on the local engine, where one goroutine runs every actor turn, creates its
+// two guardians and returns it. It panics with an error wrapping ErrInvalidOption if an option is
+// nil or invalid.
 func New(opts ...Option) *System {
 	// The local engine needs the node name before it starts, so validate the options first: an
 	// invalid option panics before any goroutine exists.
@@ -119,7 +119,7 @@ func (s *System) Node() string { return s.node }
 
 // Incarnation returns the epoch the system started with: the faultline node incarnation in
 // simulation, a random value otherwise. It is never 0 and does not change for the system's life,
-// even when uid allocation moves to a new epoch (ACT-040).
+// even when uid allocation moves to a new epoch.
 func (s *System) Incarnation() uint32 { return s.incarnation }
 
 // newSystem builds a system on eng, which must be valid (engine.Engine.Validate), exactly as New
@@ -169,7 +169,7 @@ type shutdownState struct {
 // Stopped hook has returned. It returns nil when the system is stopped, or ctx.Err() if ctx ends
 // first; shutdown then continues and a later call waits again. Called during a turn (an actor
 // may shut down its own system) or on an engine that cannot block, such as the simulation
-// engine, it starts the shutdown and returns nil at once without waiting (ACT-060).
+// engine, it starts the shutdown and returns nil at once without waiting.
 func (s *System) Shutdown(ctx context.Context) error {
 	if s.discarded.Load() { // SUP-360: no Stopped hook runs, so there is no shutdown to start or wait for
 		return nil

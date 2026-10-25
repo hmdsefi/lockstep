@@ -43,7 +43,7 @@ func (c *systemConfig) fail(err error) {
 
 // Option configures New. Options are applied in argument order; a later option overrides an
 // earlier one for the same setting. Option values are validated by New, not by the option
-// constructors: no option constructor panics (R44).
+// constructors: no option constructor panics.
 type Option func(*systemConfig)
 
 // WithNodeName sets the system's node name. The name must be 1-64 bytes from [A-Za-z0-9._-],

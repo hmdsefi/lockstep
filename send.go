@@ -16,7 +16,7 @@ import (
 	"github.com/hmdsefi/lockstep/internal/mailbox"
 )
 
-// ErrMailboxFull is the error of a message that a full mailbox refuses (MBX-090). A refusal
+// ErrMailboxFull is the error of a message that a full mailbox refuses. A refusal
 // returns fmt.Errorf("%w: %s", ErrMailboxFull, address), so errors.Is matches it and the text
 // names the target.
 var ErrMailboxFull = errors.New("lockstep: mailbox full")
@@ -24,8 +24,8 @@ var ErrMailboxFull = errors.New("lockstep: mailbox full")
 // Send delivers msg to the actor to. It returns nil when msg was enqueued, became a dead letter,
 // or was accepted by the transport for another node. Errors: ErrNotFound for the zero PID,
 // ErrStopped when the sender's system is stopped, the target mailbox's policy error
-// (ErrMailboxFull, MBX), the admission error (ErrOverloaded, OVL), and a synchronous transport
-// error, wrapped (MSG-110). Send panics if from is nil or is a Context outside its turn.
+// (ErrMailboxFull), the admission error (ErrOverloaded), and a synchronous transport error,
+// wrapped. Send panics if from is nil or is a Context outside its turn.
 func Send[M any](from Sender, to PID[M], msg M) error {
 	return SendContext(context.Background(), from, to, msg)
 }

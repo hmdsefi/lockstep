@@ -57,9 +57,7 @@ var (
 )
 
 // Failed returns a StopFailed reason carrying err: the reason of an actor stopped by its
-// supervisor after failing with err, and of a Terminated whose watched actor was lost for a reason
-// another package reports, such as cluster.ErrNodeDown or REM's ErrPeerRestarted. It
-// panics if err is nil.
+// supervisor after failing with err. It panics if err is nil.
 func Failed(err error) StopReason {
 	if err == nil {
 		panic("lockstep: Failed with nil error")
@@ -91,7 +89,10 @@ type PanicError struct {
 	Stack []byte // runtime/debug.Stack() at recovery; never recorded in traces
 }
 
-// Error returns "lockstep: panic: " followed by a description of Value (SUP-145).
+// Error returns "lockstep: panic: " followed by a description of Value: Value.Error() for an
+// error, Value.String() for a fmt.Stringer, the value itself for a string, integer or bool kind,
+// and otherwise the type name ("nil" for a nil Value). The text never depends on a %v verb, so it
+// is the same on every run.
 func (e *PanicError) Error() string {
 	return "lockstep: panic: " + describePanic(e.Value)
 }

@@ -6,15 +6,13 @@ package lockstep
 import "github.com/hmdsefi/lockstep/internal/supervise"
 
 // Signal is a notification from lockstep itself, delivered through SignalReceiver[M].Signal and
-// never as an M. It is implemented only by Terminated and ChildFailed (SUP), Overloaded (OVL) and,
-// from Phase 3, NodeDown and NodeUp (CLU).
+// never as an M. It is implemented only by Terminated, ChildFailed and Overloaded.
 type Signal interface {
 	signal() // unexported: no other implementations
 }
 
-// SignalReceiver is implemented by actors that receive lockstep's notifications (MSG-810). An actor
-// without it ignores signals; its supervisor strategy still handles its children's failures
-// (SUP-150 to SUP-230).
+// SignalReceiver is implemented by actors that receive lockstep's notifications. An actor without
+// it ignores signals; its supervisor strategy still handles its children's failures.
 type SignalReceiver[M any] interface {
 	Signal(ctx *Context[M], sig Signal)
 }

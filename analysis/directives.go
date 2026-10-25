@@ -10,7 +10,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// Directives reports malformed (LS001) and unknown (LS002) //lockstep: directives. Phase 1.
+// Directives reports malformed (LS001) and unknown (LS002) //lockstep: directives.
 var Directives = &analysis.Analyzer{
 	Name:     "directives",
 	Doc:      "report malformed and unknown //lockstep: directives (LS001, LS002)",

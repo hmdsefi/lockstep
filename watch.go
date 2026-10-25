@@ -11,13 +11,11 @@ import (
 	"github.com/hmdsefi/lockstep/internal/registry"
 )
 
-// Watch asks for a Terminated signal (SUP) when the actor at addr stops for good. If addr is not
-// alive, the signal is delivered with reason NoActor (SUP). A path address (PIDAt) watches the
-// actor registered at its path at the time of the call. From Phase 3 an address on another node
-// is watched through remoting (ACT-602). Errors: ErrNotFound for the zero address and guardian
-// addresses; ErrNotLocal for another node's address in Phase 1 and 2, and from Phase 3 on a
-// system without a transport; ErrStopped when the calling actor is stopping or restarting (inside
-// a restart's Stopped too); a wrapped transport error (Phase 3).
+// Watch asks for a Terminated signal when the actor at addr stops for good. If addr is not alive,
+// the signal is delivered with reason NoActor. A path address (PIDAt) watches the actor
+// registered at its path at the time of the call. Errors: ErrNotFound for the zero address and
+// guardian addresses; ErrNotLocal for an address on another node; ErrStopped when the calling
+// actor is stopping or restarting (inside a restart's Stopped too).
 func Watch[M any](ctx *Context[M], addr Address) error {
 	// ACT-600's checks, in its order.
 	ctx.mustInTurn()

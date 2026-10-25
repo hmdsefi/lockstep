@@ -15,8 +15,7 @@ import (
 // Stop asks the actor at addr to stop with reason Normal and returns without waiting. A parent
 // may stop its child this way; any Sender may stop any local actor. A path address stops the actor
 // registered at its path. Errors: ErrNotFound if addr is not alive or names a guardian,
-// ErrNotLocal for another node's address in every phase (there is no remote stop). Stop panics if
-// from is nil.
+// ErrNotLocal for another node's address (there is no remote stop). Stop panics if from is nil.
 func Stop(from Sender, addr Address) error {
 	// ACT-700's checks, in its order: from nil and a Context outside its turn panic.
 	sys, _, ref := mustSender(from).sendOrigin()
