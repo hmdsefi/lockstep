@@ -198,10 +198,10 @@ lockstep asks you to write the system as actors. That trade does not pay off eve
 - Existing goroutine code you do not want to restructure: lockstep simulates actors, not
   arbitrary goroutines. [faultline](https://github.com/hmdsefi/faultline), which lockstep runs on,
   tests code written as callbacks against its node API, and ships a harness for etcd/raft.
-- CPU-bound work that must use every core: the v0.1.0 local engine runs every actor turn on
-  one goroutine. Effects run on separate goroutines, so I/O overlaps, but actor code does not run
-  in parallel.
-- Actors on several machines in production: v0.1.0 has no remoting or clustering; actors on
+- One piece of state that many cores must update at once: an actor handles one message at a time,
+  so its work runs on one worker at a time. Parallelism comes from having many actors, not from
+  one.
+- Actors on several machines in production: lockstep has no remoting or clustering; actors on
   different nodes talk only in simulation.
 - Erlang/OTP compatibility: lockstep borrows OTP's supervision model, not its protocols.
 
