@@ -157,17 +157,22 @@ configure the engine:
   run at once, and at most `queue` more wait for a free slot. The defaults are 64 and 1024. A `Do`
   call that finds both full resolves with `ErrOverloaded`.
 
+The quick start's `main` can begin like this instead:
+
 ```go
 sys := lockstep.New(
 	lockstep.WithWorkers(4),
 	lockstep.WithThroughput(64),
 	lockstep.WithEffectPool(16, 256),
 )
-router, err := lockstep.Spawn(sys, "router", newRouter, lockstep.WithActorThroughput(256))
+counter, err := lockstep.Spawn(sys, "counter", newCounter, lockstep.WithActorThroughput(256))
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
-The options apply only to `lockstep.New()`. Simulation ignores them: every turn there processes
-one message, in an order the seed decides.
+The options apply only to `lockstep.New()`. Simulation checks the values and then ignores them:
+every turn there processes one message, in an order the seed decides.
 
 ## Deterministic simulation testing: the same actor under faults
 

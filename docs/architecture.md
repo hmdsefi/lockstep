@@ -6,17 +6,17 @@ lockstep, read the [README](../README.md) first.
 
 ## The parts
 
-lockstep has a runtime, two engines that run it, and an analyzer. The runtime in package
+lockstep has a runtime, the engines that run it, and an analyzer. The runtime in package
 `lockstep` holds everything an actor sees: systems, PIDs, mailboxes, supervision, timers, asks and
-effects. It is written against a small internal interface, the engine seam. Two engines implement
-the seam: the production engine behind `lockstep.New()`, and the simulation engine in
+effects. It is written against a small internal interface, the engine seam. Two engines run your
+code: the production engine behind `lockstep.New()`, and the simulation engine in
 `lockstep/sim`, which runs on [faultline](https://github.com/hmdsefi/faultline). A third engine,
 which runs every turn on one goroutine, exists only for the project's own tests.
 
 ```mermaid
 flowchart LR
     accTitle: lockstep's parts and how they depend on each other
-    accDescr: Your actors use the lockstep runtime. The runtime runs on the engine seam, which two engines implement: the production engine used by lockstep.New and the simulation engine in lockstep/sim. The simulation engine runs on faultline. lockstep-vet checks your actor code.
+    accDescr: Your actors use the lockstep runtime. The runtime runs on the engine seam, which two engines implement for your code: the production engine used by lockstep.New and the simulation engine in lockstep/sim. The simulation engine runs on faultline. lockstep-vet checks your actor code.
     actors["Your actors"]
     runtime["Runtime: package lockstep"]
     seam["Engine seam"]
