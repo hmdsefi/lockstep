@@ -31,6 +31,70 @@ jobs:
         with:
           version: v2.14.0
           working-directory: analysis
+      - name: golangci-lint (examples/raft)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          working-directory: examples/raft
+      - name: golangci-lint module plugin (AT-ANL-31)
+        run: |
+          set -euo pipefail
+          for mod in $(git ls-files 'examples/*/go.mod' | xargs -r -n 1 dirname | sort); do
+            echo "::group::$mod"
+            work="$RUNNER_TEMP/gcl/$mod"
+            mkdir -p "$(dirname "$work")"
+            cp -R "$mod" "$work"
+            cd "$work"
+            go mod edit -replace "github.com/hmdsefi/lockstep=$GITHUB_WORKSPACE"
+            cat > .custom-gcl.yml <<EOF
+          version: v2.14.0
+          name: custom-gcl
+          destination: .
+          plugins:
+            - module: github.com/hmdsefi/lockstep/analysis
+              import: github.com/hmdsefi/lockstep/analysis/golangci
+              path: $GITHUB_WORKSPACE/analysis
+          EOF
+            cat > .golangci.yml <<'EOF'
+          version: "2"
+          linters:
+            default: none
+            enable:
+              - lockstep
+            settings:
+              custom:
+                lockstep:
+                  type: module
+          EOF
+            go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 custom
+            ./custom-gcl run ./...
+            mkdir lsprobe
+            cat > lsprobe/probe.go <<'EOF'
+          package lsprobe
+
+          import (
+            "time"
+
+            "github.com/hmdsefi/lockstep"
+          )
+
+          type Msg struct{}
+
+          type Clock struct{ last time.Time }
+
+          func (c *Clock) Receive(ctx *lockstep.Context[Msg], msg Msg) { c.last = time.Now() }
+          EOF
+            status=0
+            ./custom-gcl run ./... > probe.out 2>&1 || status=$?
+            cat probe.out
+            if [ "$status" -eq 0 ]; then
+              echo "custom-gcl accepted the probe that calls time.Now in Receive"
+              exit 1
+            fi
+            grep -F 'LS100: time.Now uses the wall clock' probe.out | grep -F '(lockstep)'
+            cd "$GITHUB_WORKSPACE"
+            echo "::endgroup::"
+          done
 
   build:
     name: Go build
@@ -149,6 +213,31 @@ jobs:
             go -C "$mod" test -race -count=1 ./...
             echo "::endgroup::"
           done
+
+  vet:
+    name: lockstep-vet (examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: workspace with the root and all nested modules
+        run: |
+          go work init
+          go work use -r .
+      - name: build lockstep-vet
+        run: go -C analysis build -o "$RUNNER_TEMP/lockstep-vet" ./cmd/lockstep-vet
+      - name: lockstep-vet on the examples
+        run: |
+          set -e
+          for mod in $(git ls-files 'examples/*/go.mod' | xargs -r -n 1 dirname | sort); do
+            echo "::group::$mod"
+            go -C "$mod" vet -vettool="$RUNNER_TEMP/lockstep-vet" ./...
+            echo "::endgroup::"
+          done
+      - name: lockstep-vet on sim
+        run: go vet -vettool="$RUNNER_TEMP/lockstep-vet" ./sim/...
 
   golden-trailer:
     if: github.event_name == 'pull_request'
