@@ -17,7 +17,7 @@ type SpawnOption func(*spawnConfig)
 
 // spawnConfig is what the SpawnOptions of one Spawn configure. Option appliers only set fields and
 // report a bad value through fail; Spawn validates (ACT-300 step 3a). The mailbox (MBX) and the
-// children's strategy (SUP) are set here; the other settings arrive with their owner plans (SCH).
+// children's strategy (SUP) are set here, and the actor's turn throughput (SCH).
 type spawnConfig struct {
 	mbx      mailboxConfig // WithMailbox's value, meaningful when mbxSet
 	mbxSet   bool
@@ -56,7 +56,7 @@ func WithActorThroughput(n int) SpawnOption {
 	return func(c *spawnConfig) {
 		// Of several valid WithActorThroughput options the last one counts.
 		if n < 1 {
-			c.fail(&invalidOptionError{fmt.Sprintf("lockstep: WithActorThroughput(%d): n must be at least 1", n)})
+			c.fail(fmt.Errorf("%w: WithActorThroughput(%d): n must be at least 1", ErrInvalidOption, n))
 			return
 		}
 		c.throughput = n

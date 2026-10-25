@@ -39,7 +39,7 @@ func TestATSCH27OptionConstructorsNeverPanic(t *testing.T) {
 	if !errors.Is(err, ErrInvalidOption) {
 		t.Fatalf("hooks.NewSystem(WithWorkers(0)): err = %v, want ErrInvalidOption", err)
 	}
-	if want := "lockstep: WithWorkers(0): n must be at least 1"; err.Error() != want {
+	if want := "lockstep: invalid option: WithWorkers(0): n must be at least 1"; err.Error() != want {
 		t.Errorf("hooks.NewSystem(WithWorkers(0)): err = %q, want %q", err, want)
 	}
 
@@ -48,7 +48,7 @@ func TestATSCH27OptionConstructorsNeverPanic(t *testing.T) {
 	if !errors.Is(err, ErrInvalidOption) {
 		t.Fatalf("Spawn(WithActorThroughput(0)): err = %v, want ErrInvalidOption", err)
 	}
-	if want := "lockstep: WithActorThroughput(0): n must be at least 1"; err.Error() != want {
+	if want := "lockstep: invalid option: WithActorThroughput(0): n must be at least 1"; err.Error() != want {
 		t.Errorf("Spawn(WithActorThroughput(0)): err = %q, want %q", err, want)
 	}
 	if _, err := Spawn(sys, "a", idle[int](), WithActorThroughput(1)); err != nil {
@@ -64,13 +64,13 @@ func TestNewRejectsSchedulerOptions(t *testing.T) {
 		opt  Option
 		want string
 	}{
-		{"workers 0", WithWorkers(0), "lockstep: WithWorkers(0): n must be at least 1"},
-		{"workers -2", WithWorkers(-2), "lockstep: WithWorkers(-2): n must be at least 1"},
-		{"throughput 0", WithThroughput(0), "lockstep: WithThroughput(0): n must be at least 1"},
+		{"workers 0", WithWorkers(0), "lockstep: invalid option: WithWorkers(0): n must be at least 1"},
+		{"workers -2", WithWorkers(-2), "lockstep: invalid option: WithWorkers(-2): n must be at least 1"},
+		{"throughput 0", WithThroughput(0), "lockstep: invalid option: WithThroughput(0): n must be at least 1"},
 		{"effect workers 0", WithEffectPool(0, 1),
-			"lockstep: WithEffectPool(0, 1): workers must be at least 1 and queue at least 0"},
+			"lockstep: invalid option: WithEffectPool(0, 1): workers must be at least 1 and queue at least 0"},
 		{"effect queue -1", WithEffectPool(1, -1),
-			"lockstep: WithEffectPool(1, -1): workers must be at least 1 and queue at least 0"},
+			"lockstep: invalid option: WithEffectPool(1, -1): workers must be at least 1 and queue at least 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -89,8 +89,9 @@ func TestNewRejectsSchedulerOptions(t *testing.T) {
 	}
 }
 
-// SCH-030, SCH-035: a later option overrides an earlier one for the same setting, and the checks
-// run in the order of the section 7 table.
+// SCH-030, SCH-035: defaults apply without options, of several valid options for a setting the
+// last counts, and an invalid value is reported even when a later option is valid. The first
+// invalid option in argument order is the error.
 func TestSchedulerOptionValues(t *testing.T) {
 	c, err := newConfig(nil, "")
 	if err != nil {
@@ -100,20 +101,20 @@ func TestSchedulerOptionValues(t *testing.T) {
 		t.Errorf("defaults = %d, %d, %d, %d; want GOMAXPROCS, 32, 64, 1024",
 			c.workers, c.throughput, c.effectWorkers, c.effectQueue)
 	}
-	c, err = newConfig([]Option{WithWorkers(0), WithWorkers(2), WithThroughput(7), WithEffectPool(3, 0)}, "")
+	c, err = newConfig([]Option{WithWorkers(1), WithWorkers(2), WithThroughput(7), WithEffectPool(3, 0)}, "")
 	if err != nil {
-		t.Fatalf("a valid last value after an invalid one: %v", err)
+		t.Fatalf("valid options: %v", err)
 	}
 	if c.workers != 2 || c.throughput != 7 || c.effectWorkers != 3 || c.effectQueue != 0 {
 		t.Errorf("values = %d, %d, %d, %d; want 2, 7, 3, 0", c.workers, c.throughput, c.effectWorkers, c.effectQueue)
 	}
-	_, err = newConfig([]Option{WithEffectPool(0, 0), WithThroughput(0), WithWorkers(0)}, "")
-	if want := "lockstep: WithWorkers(0): n must be at least 1"; err == nil || err.Error() != want {
-		t.Errorf("all three invalid: err = %v, want %q", err, want)
+	_, err = newConfig([]Option{WithWorkers(0), WithWorkers(2)}, "")
+	if want := "lockstep: invalid option: WithWorkers(0): n must be at least 1"; err == nil || err.Error() != want {
+		t.Errorf("invalid then valid: err = %v, want %q", err, want)
 	}
-	_, err = newConfig([]Option{WithEffectPool(0, 0), WithThroughput(0)}, "")
-	if want := "lockstep: WithThroughput(0): n must be at least 1"; err == nil || err.Error() != want {
-		t.Errorf("throughput and effect pool invalid: err = %v, want %q", err, want)
+	_, err = newConfig([]Option{WithEffectPool(0, 0), WithThroughput(0), WithWorkers(0)}, "")
+	if want := "lockstep: invalid option: WithEffectPool(0, 0): workers must be at least 1 and queue at least 0"; err == nil || err.Error() != want {
+		t.Errorf("all three invalid: err = %v, want %q", err, want)
 	}
 }
 
