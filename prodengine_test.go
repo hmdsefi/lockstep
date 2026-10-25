@@ -78,29 +78,41 @@ func prodOf(t *testing.T, sys *System) *prodengine.Engine {
 
 // AT-SCH-02 (lockstep half): SCH-020. The number of goroutines does not depend on the number of
 // actors or of asks: 10,000 more actors, each answering one Ask, leave it where 10 left it.
+//
+// The children are spread over ten parents per batch: Shutdown's cost grows faster than linearly
+// with the number of children of one parent, and 10,000 under one parent took most of the
+// cleanup's 30 s bound on a slow runner.
 func TestATSCH02SystemGoroutines(t *testing.T) {
+	const parents = 10
 	sys := newLocalSystem(t, WithWorkers(2))
-	parent := spawnQuiet(t, sys, "p")
-	spawnAndAsk := func(from, n int) {
+	// spawnAndAsk spawns parents new parents named prefix0 … prefix9, n/parents children under
+	// each, asks every child at once and awaits the answers. It returns the parents.
+	spawnAndAsk := func(prefix string, n int) []PID[any] {
 		t.Helper()
-		v := inProbe(t, sys, parent, func(ctx *Context[any]) any {
-			pids := make([]PID[ReplyTo[int]], 0, n)
-			for i := from; i < from+n; i++ {
-				pid, err := Spawn(ctx, fmt.Sprintf("c%d", i), func() Actor[ReplyTo[int]] {
-					return &fnActor[ReplyTo[int]]{receive: func(ctx *Context[ReplyTo[int]], rt ReplyTo[int]) {
-						rt.Send(ctx, i)
-					}}
-				})
-				if err != nil {
-					return err
+		ps := make([]PID[any], parents)
+		var pids []PID[ReplyTo[int]]
+		for j := range ps {
+			ps[j] = spawnQuiet(t, sys, fmt.Sprintf("%s%d", prefix, j))
+			v := inProbe(t, sys, ps[j], func(ctx *Context[any]) any {
+				out := make([]PID[ReplyTo[int]], 0, n/parents)
+				for i := range n / parents {
+					pid, err := Spawn(ctx, fmt.Sprintf("c%d", i), func() Actor[ReplyTo[int]] {
+						return &fnActor[ReplyTo[int]]{receive: func(ctx *Context[ReplyTo[int]], rt ReplyTo[int]) {
+							rt.Send(ctx, i)
+						}}
+					})
+					if err != nil {
+						return err
+					}
+					out = append(out, pid)
 				}
-				pids = append(pids, pid)
+				return out
+			})
+			batch, ok := v.([]PID[ReplyTo[int]])
+			if !ok {
+				t.Fatalf("spawning %d children under %s: %v", n/parents, ps[j], v)
 			}
-			return pids
-		})
-		pids, ok := v.([]PID[ReplyTo[int]])
-		if !ok {
-			t.Fatalf("spawning %d children: %v", n, v)
+			pids = append(pids, batch...)
 		}
 		// Every ask is pending at once before the first answer is awaited.
 		replies := make([]*Reply[int], len(pids))
@@ -110,25 +122,49 @@ func TestATSCH02SystemGoroutines(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		for i, r := range replies {
-			if v, err := r.Await(ctx); err != nil || v != from+i {
-				t.Fatalf("Ask to child %d = %d, %v; want %d, nil", from+i, v, err, from+i)
+			if v, err := r.Await(ctx); err != nil || v != i%(n/parents) {
+				t.Fatalf("Ask to child %d = %d, %v; want %d, nil", i, v, err, i%(n/parents))
 			}
 		}
+		return ps
 	}
 
-	spawnAndAsk(0, 10)
+	spawnAndAsk("w", 10)
 	g1 := settledGoroutines()
-	spawnAndAsk(10, 10_000)
+	big := spawnAndAsk("a", 10_000)
 	g2 := waitGoroutines(g1, 5*time.Second)
 	if g2 < g1 {
 		// Goroutines that earlier tests left behind exited during the run, so g1 counted them.
-		// Take the baseline again once the count has settled, and repeat with 10,000 more actors.
+		// Stop the 10,000 actors first, so the repeat does not double Shutdown's work, then take
+		// the baseline again once the count has settled and repeat with 10,000 new actors.
+		stopParents(t, sys, big)
 		g1 = settledGoroutines()
-		spawnAndAsk(10_010, 10_000)
+		spawnAndAsk("b", 10_000)
 		g2 = waitGoroutines(g1, 5*time.Second)
 	}
 	if g2 != g1 {
 		t.Errorf("runtime.NumGoroutine() = %d after 10,000 more actors answered an Ask, want %d", g2, g1)
+	}
+}
+
+// stopParents stops each of pids and waits up to 30 s until none of them is alive.
+func stopParents(t *testing.T, sys *System, pids []PID[any]) {
+	t.Helper()
+	for _, pid := range pids {
+		if err := Stop(sys, pid.Address()); err != nil {
+			t.Fatalf("Stop(%s): %v", pid, err)
+		}
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for _, pid := range pids {
+		// Stop on an actor whose stop has started keeps the first request; once the actor is
+		// gone it reports ErrNotFound.
+		for !errors.Is(Stop(sys, pid.Address()), ErrNotFound) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s still alive 30 s after Stop", pid)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 }
 
