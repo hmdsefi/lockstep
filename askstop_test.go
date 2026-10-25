@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // terminatedText is MSG §7's ErrTerminated message for the target addr.
@@ -309,5 +311,146 @@ func TestAskRacingStop(t *testing.T) {
 	sys.asks.mu.Unlock()
 	if tracked != 0 || lists != 0 {
 		t.Errorf("%d tracked asks and %d per-actor lists left after every ask resolved", tracked, lists)
+	}
+}
+
+// AT-MSG-05: MSG-110. A Send to the PID of an actor that has completed its stop returns nil, and
+// its records are lockstep.send, then lockstep.deadletter reason stopped.
+func TestATMSG05DeadLetter(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	probe, pp := spawnProbe[any](t, sys, "probe", nil)
+	acct := spawnAcct(t, sys, nil)
+	stopAndWait(t, sys, probe, pp, acct.Address())
+	before := len(rec.Records())
+	msg := acctMsg(Deposit{5})
+	if err := Send(sys, acct, msg); err != nil {
+		t.Errorf("Send to a stopped actor = %v, want nil", err)
+	}
+	head := " from=" + sys.user.String() + " to=" + acct.String()
+	desc := " msg=" + rec.Describe(msg)
+	sameLines(t, "records", rendered(rec.Records(), before, acct.Address(), "lockstep.send", "lockstep.deadletter"), []string{
+		"lockstep.send" + head + desc,
+		"lockstep.deadletter" + head + " reason=stopped" + desc,
+	})
+}
+
+// AT-MSG-16 (b): MSG-340, MSG-430. The target panics on the ask's request and its supervisor
+// restarts it: the restart fails no tracked ask, so the ask stays pending, still tracked by the
+// target, and resolves at its timeout with ErrTimeout, not ErrTerminated.
+func TestATMSG16TerminatedRestart(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	a, err := Spawn(sys, "a", actorOf[any](&fnActor[any]{receive: func(_ *Context[any], m any) {
+		if _, ok := m.(ReplyTo[int]); ok {
+			panic("ask")
+		}
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	c := cellOf(t, sys, a)
+	r := askSilent(sys, a, WithTimeout(100*time.Millisecond))
+	eng.RunUntilIdle()             // a panics on the request; its restart waits for its delay
+	eng.Advance(defaultMinBackoff) // the default strategy's first delay
+	eng.RunUntilIdle()             // incarnation 2 begins
+	if st, inc := c.lifecycle(); st != supervise.Running || inc != 2 {
+		t.Fatalf("a is %v in incarnation %d, want running in 2", st, inc)
+	}
+	if r.isResolved() {
+		t.Fatal("the restart resolved the ask")
+	}
+	if got := sys.asks.trackedBy(c); !slices.Equal(got, []Address{r.ask}) {
+		t.Errorf("after the restart a tracks %v, want [%v]", got, r.ask)
+	}
+	eng.Advance(100*time.Millisecond - defaultMinBackoff)
+	v, err := r.Await(context.Background())
+	want := "lockstep: timeout: ask " + r.ask.String() + " to " + a.String() + " after 100ms"
+	if v != 0 || !errors.Is(err, ErrTimeout) || err.Error() != want {
+		t.Errorf("Await = %d, %v, want 0 and ErrTimeout with text %q", v, err, want)
+	}
+	if got := askRecords(eng.Records(), "lockstep.reply", r.ask); len(got) != 0 {
+		t.Errorf("lockstep.reply records of the ask = %q, want none", got)
+	}
+}
+
+// pipeRestarter returns an any actor that, on "ask", asks silent and pipes the reply, and on
+// "resolved", pipes a reply that is already resolved (enqueued at once) and then fails with errX
+// in the same turn; "fail" fails it. log records every other message Receive gets, and the
+// continuation records "to" when it runs. Each call of the returned factory returns the same
+// actor; asks receives the ask address of each Pipe.
+func pipeRestarter(silent PID[any], log *[]string, asks *[]Address) func() Actor[any] {
+	return actorOf[any](&fnActor[any]{receive: func(ctx *Context[any], m any) {
+		to := func(v int, err error) any {
+			*log = append(*log, "to")
+			return v
+		}
+		switch m {
+		case "ask":
+			r := askSilent(ctx, silent, WithTimeout(time.Hour))
+			*asks = append(*asks, r.ask)
+			Pipe(ctx, r, to)
+		case "resolved":
+			rt, r := NewReply[int](ctx, WithTimeout(time.Hour))
+			rt.Send(ctx, 1)
+			*asks = append(*asks, r.ask)
+			Pipe(ctx, r, to)
+			ctx.Fail(errX)
+		case "fail":
+			ctx.Fail(errX)
+		default:
+			*log = append(*log, fmt.Sprint(m))
+		}
+	}})
+}
+
+// AT-MSG-26: MSG-610, MSG-620. (a) A asks silent and pipes the reply; A fails and restarts; silent
+// then answers: the continuation of the ended incarnation enqueues nothing. (b) In one turn A pipes
+// a resolved reply, which is enqueued at once, and fails: incarnation 2 dequeues it and discards
+// it. In both cases neither to nor Receive is called and one lockstep.pipe.drop addr=<A>
+// ask=<ask> reason=incarnation is recorded.
+func TestATMSG26PipeAcrossRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msgs []string // the messages of incarnation 1, in order
+	}{
+		{"answer after the restart", []string{"ask", "fail"}},
+		{"queued before the restart", []string{"resolved"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys, eng := newManualSystem(t)
+			silent, stored := spawnSilent(t, sys)
+			var log []string
+			var asks []Address
+			a, err := Spawn(sys, "a", pipeRestarter(silent, &log, &asks))
+			if err != nil {
+				t.Fatal(err)
+			}
+			eng.RunUntilIdle()
+			c := cellOf(t, sys, a)
+			for _, m := range tc.msgs {
+				send(t, sys, a, any(m))
+			}
+			eng.RunUntilIdle()
+			eng.Advance(defaultMinBackoff) // the restart's delay
+			eng.RunUntilIdle()
+			if st, inc := c.lifecycle(); st != supervise.Running || inc != 2 {
+				t.Fatalf("a is %v in incarnation %d, want running in 2", st, inc)
+			}
+			if tc.msgs[0] == "ask" {
+				recv(t, stored)
+				send(t, sys, silent, any(answer{5}))
+				eng.RunUntilIdle()
+			}
+			if len(log) != 0 {
+				t.Errorf("to and Receive got %q, want nothing", log)
+			}
+			want := []string{"addr=" + a.String(), "ask=" + asks[0].String(), "reason=incarnation"}
+			if got := recordsOf(eng.Records(), "lockstep.pipe.drop"); len(got) != 1 || !slices.Equal(got[0], want) {
+				t.Errorf("lockstep.pipe.drop records = %q, want [%q]", got, want)
+			}
+			if n := queued(c); n != 0 {
+				t.Errorf("a's mailbox holds %d entries", n)
+			}
+		})
 	}
 }

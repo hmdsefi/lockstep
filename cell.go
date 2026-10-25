@@ -120,6 +120,10 @@ type cell[M any] struct {
 	stopReason StopReason // the reason of the one stop request
 	endErr     error      // the error of the restart that ends the incarnation (SUP-190)
 	waitChild  Address    // the child whose stopped notice the stop or restart waits for, or zero
+	// endedWatched is the watched set of the incarnation that ended last, as it was when its watches
+	// were removed (endIncarnationWork). A Terminated that reaches the cell outside Running, or is
+	// left in its system queue at the final stop, is judged against it (watchedSet.skips).
+	endedWatched watchedSet
 
 	// tmu is the cell's timer lock (TMR §11): timers run on the engine's callbacks, which on the
 	// local engine are other goroutines than the turn. It is taken before mu and the queue's lock
@@ -278,11 +282,11 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 
 // closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160):
 // it returns the Sent entries and the Self entries of the user mailbox, each in queue order, and
-// the system messages left that the actor discards as not running, in queue order: each signal, a
-// cleanup failure's ChildFailed among them (SUP-110), and each inject command (SFT-040). The other
-// system messages are discarded. Later enqueues are refused. The caller records what it returns,
-// holding no lock.
-func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []any) {
+// the system messages left that the actor discards as not running, in queue order: each signal
+// message with its Watch sequence number (ACT-630), a cleanup failure's ChildFailed among them
+// (SUP-110), and each inject command (SFT-040). The other system messages are discarded. Later
+// enqueues are refused. The caller records what it returns, holding no lock.
+func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []sysMsg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
@@ -297,9 +301,9 @@ func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []any) {
 	for _, m := range c.sysq.Close() {
 		switch m := m.(type) {
 		case signalMsg:
-			notRunning = append(notRunning, m.sig)
+			notRunning = append(notRunning, m)
 		case cleanupFailed:
-			notRunning = append(notRunning, m.asSignal().sig)
+			notRunning = append(notRunning, m.asSignal())
 		case inject:
 			notRunning = append(notRunning, m)
 		}
