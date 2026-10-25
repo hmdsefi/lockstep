@@ -1,9 +1,12 @@
-// Package good holds code that LS100's wall clock, randomness, goroutine, select and environment
-// sub-rules accept (AT-ANL-10).
+// Package good holds code that LS100 accepts (AT-ANL-10): this file has the clock, randomness and
+// Close calls, order.go the sorted map iteration and the calls of ANL-140's packages that do not
+// block.
 package good
 
 import (
 	"math/rand/v2"
+	"net"
+	"os"
 	"time"
 
 	"github.com/hmdsefi/lockstep"
@@ -13,7 +16,11 @@ import (
 type Msg int
 
 // Account is an actor type.
-type Account struct{}
+type Account struct {
+	m    map[string]int
+	conn net.Conn
+	f    *os.File
+}
 
 // Receive uses the context's clock and random source, a seeded generator and duration arithmetic.
 func (a *Account) Receive(ctx *lockstep.Context[Msg], msg Msg) {
@@ -23,6 +30,15 @@ func (a *Account) Receive(ctx *lockstep.Context[Msg], msg Msg) {
 	_ = r.IntN(3)
 	_ = time.Duration(3) * time.Second
 	stampGenerated()
+	_ = a.sum()
+	sorted(a.m, []int{1})
+	nonBlocking(nil, nil, nil, nil, nil)
+}
+
+// Stopped closes the connection and the file: methods named Close are not blocking calls.
+func (a *Account) Stopped(ctx *lockstep.Context[Msg], r lockstep.StopReason) {
+	_ = a.conn.Close()
+	_ = a.f.Close()
 }
 
 // unreached is reachable from no root.
