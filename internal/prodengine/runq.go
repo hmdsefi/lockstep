@@ -40,8 +40,11 @@ func (s *ringSlot) load() (r engine.ActorRef) {
 // (they wrap at 2^32); the entries are slots head..tail-1 modulo LocalQueueSize. The zero value
 // is an empty ring.
 //
-// A slot keeps its last value after the entry is taken; the stale reference is overwritten by a
-// later push, so a ring retains at most LocalQueueSize references.
+// The owner clears a slot when it takes the entry, by pop or by an overflow, so a finished actor
+// is not kept reachable from its old slot. A slot whose entry a thief took keeps its value until
+// a later push overwrites it: the owner may be reusing that slot already, so the thief must not
+// write it. A ring therefore retains at most LocalQueueSize stale references, and only to actors
+// that a thief moved to another ring.
 type localRing struct {
 	head atomic.Uint32 // next entry to take; advanced by CAS (owner or thief)
 	tail atomic.Uint32 // next slot to fill; written only by the owner
@@ -75,6 +78,9 @@ func (q *localRing) push(a engine.ActorRef, g *globalQueue) (overflowed bool) {
 		if !q.head.CompareAndSwap(h, h+LocalQueueSize/2) {
 			continue
 		}
+		for i := range uint32(LocalQueueSize / 2) {
+			q.buf[(h+i)%LocalQueueSize].store(nil)
+		}
 		batch[LocalQueueSize/2] = a
 		g.pushBatch(batch[:])
 		return true
@@ -91,6 +97,9 @@ func (q *localRing) pop() (engine.ActorRef, bool) {
 		}
 		a := q.buf[h%LocalQueueSize].load()
 		if q.head.CompareAndSwap(h, h+1) {
+			// The slot is free now and only the owner fills slots, so clearing it races with no
+			// push; a thief that still reads it holds a stale head and discards the copy.
+			q.buf[h%LocalQueueSize].store(nil)
 			return a, true
 		}
 	}
