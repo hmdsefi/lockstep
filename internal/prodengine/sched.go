@@ -229,10 +229,10 @@ func (w *worker) find(globalFirst bool) (globalEntry, bool) {
 	return globalEntry{}, false
 }
 
-// steal runs SCH-070 step 4: starting at a victim drawn uniformly from 0 … Workers-1, it visits every other worker once in
-// increasing index order modulo Workers, moves the oldest half of the first non-empty local
-// queue to w's own and takes the first of them. w's local queue is empty when steal runs (step
-// 2 found nothing and only w pushes to it).
+// steal runs SCH-070 step 4: starting at a victim drawn uniformly from 0 … Workers-1, it visits
+// every other worker once in increasing index order modulo Workers, moves the oldest half of the
+// first non-empty local queue to w's own and takes the first of them. w's local queue is empty
+// when steal runs (step 2 found nothing and only w pushes to it).
 func (w *worker) steal() (engine.ActorRef, bool) {
 	ws := w.s.workers
 	n := len(ws)

@@ -56,7 +56,9 @@ func TestATSCH01DefaultsAndValidation(t *testing.T) {
 func TestATSCH02GoroutineCount(t *testing.T) {
 	// Workers of engines stopped by earlier tests may still be returning.
 	waitFor(t, time.Second, "earlier workers to exit", func() bool { return workerGoroutines() == 0 })
-	g0 := runtime.NumGoroutine()
+	// Other goroutines of earlier tests, such as timer and effect goroutines, may still be
+	// exiting too; read the baseline once the count has settled.
+	g0 := settledGoroutines()
 	e := newEngine(t, Config{Node: "n", Workers: 3})
 	deadline := time.Now().Add(time.Second)
 	for runtime.NumGoroutine() != g0+3 && time.Now().Before(deadline) {
