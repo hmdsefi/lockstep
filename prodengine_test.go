@@ -21,7 +21,8 @@ import (
 
 // AT-SCH-03 (engine half): SCH-030. New builds the system on a production engine configured from
 // the node name, WithWorkers, WithThroughput and WithEffectPool, with the overload Gate as its
-// admission; a queue of 0 means no queue, not the default.
+// admission; a queue of 0 means no queue, not the default. TestNewRejectsSchedulerOptions is the
+// panic half.
 func TestATSCH03NewUsesProductionEngine(t *testing.T) {
 	t.Run("configured", func(t *testing.T) {
 		sys := newLocalSystem(t, WithWorkers(2), WithThroughput(7), WithEffectPool(3, 5))
@@ -118,8 +119,72 @@ func TestATSCH02SystemGoroutines(t *testing.T) {
 	spawnAndAsk(0, 10)
 	g1 := settledGoroutines()
 	spawnAndAsk(10, 10_000)
-	if g2 := waitGoroutines(g1, 5*time.Second); g2 != g1 {
+	g2 := waitGoroutines(g1, 5*time.Second)
+	if g2 < g1 {
+		// Goroutines that earlier tests left behind exited during the run, so g1 counted them.
+		// Take the baseline again once the count has settled, and repeat with 10,000 more actors.
+		g1 = settledGoroutines()
+		spawnAndAsk(10_010, 10_000)
+		g2 = waitGoroutines(g1, 5*time.Second)
+	}
+	if g2 != g1 {
 		t.Errorf("runtime.NumGoroutine() = %d after 10,000 more actors answered an Ask, want %d", g2, g1)
+	}
+}
+
+// TestContextFromHelperGoroutines checks that the engine stays correct when a Context is misused:
+// a handler starts 64 goroutines that each Send through its Context to a distinct receiver and
+// waits for them, which breaks the actor rules on purpose (LS100 reports both). On one worker,
+// for 200 rounds, every one of the 12,800 messages arrives and Shutdown returns nil.
+func TestContextFromHelperGoroutines(t *testing.T) {
+	const rounds, helpers = 200, 64
+	sys := newLocalSystem(t, WithWorkers(1))
+	var received, failed atomic.Int64
+	recv := make([]PID[int], helpers)
+	for i := range recv {
+		pid, err := Spawn(sys, fmt.Sprintf("r%d", i), func() Actor[int] {
+			return &fnActor[int]{receive: func(*Context[int], int) { received.Add(1) }}
+		}, WithMailbox(rounds, FailSend))
+		if err != nil {
+			t.Fatalf("Spawn r%d: %v", i, err)
+		}
+		recv[i] = pid
+	}
+	fan, err := Spawn(sys, "fan", func() Actor[int] {
+		return &fnActor[int]{receive: func(ctx *Context[int], _ int) {
+			var wg sync.WaitGroup
+			for _, to := range recv {
+				wg.Add(1)
+				//lockstep:allow LS100 the test uses the Context from helper goroutines on purpose
+				go func() {
+					defer wg.Done()
+					if err := Send(ctx, to, 1); err != nil {
+						failed.Add(1)
+					}
+				}()
+			}
+			//lockstep:allow LS100 the handler waits for its helper goroutines on purpose
+			wg.Wait()
+		}}
+	}, WithMailbox(rounds, FailSend))
+	if err != nil {
+		t.Fatalf("Spawn fan: %v", err)
+	}
+	for r := range rounds {
+		send(t, sys, fan, r)
+	}
+	const want = rounds * helpers
+	deadline := time.Now().Add(10 * time.Second)
+	for received.Load()+failed.Load() < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got, f := received.Load(), failed.Load(); got != want || f != 0 {
+		t.Errorf("received %d of %d messages, %d sends failed: turns were lost", got, want, f)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sys.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown: %v", err)
 	}
 }
 

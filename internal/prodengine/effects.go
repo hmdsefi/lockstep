@@ -138,13 +138,15 @@ func (e *Engine) cancelJob(j *job) engine.Cancel {
 // when the queue is empty or the engine is closing. After each Run it pushes the callback that
 // calls done, unless Cancel won (SCH-170).
 //
-// A Run that ends its goroutine with runtime.Goexit has no result: its done never runs, and the
-// deferred handoff gives the rest of the queue to a new effect goroutine, so the pool keeps its
-// size.
+// A Run that ends its goroutine with runtime.Goexit has no result: its done never runs, its
+// context is cancelled so it does not stay registered under the engine's context until Stop, and
+// the deferred handoff gives the rest of the queue to a new effect goroutine, so the pool keeps
+// its size.
 func (e *Engine) effectLoop(j *job, ctx context.Context) {
 	retired := false
 	defer func() {
 		if !retired {
+			j.cancel()
 			e.handoff()
 		}
 	}()

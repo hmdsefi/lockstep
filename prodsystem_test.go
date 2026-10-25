@@ -137,9 +137,8 @@ func meetUp(t *testing.T, workers int) []meetResult {
 				}
 				first = false
 				met.Add(1)
-				start := time.Now()
 				//lockstep:allow LS100 test needs two concurrent turns
-				for met.Load() < 2 && time.Since(start) < 5*time.Second {
+				for start := time.Now(); met.Load() < 2 && time.Since(start) < 5*time.Second; {
 					runtime.Gosched()
 				}
 				results <- meetResult{name: name, reached: met.Load() == 2}
@@ -425,8 +424,8 @@ const (
 const asksPerActor = 100
 
 // TestParallelAsks: ENG-060, MSG-600, MSG-620. On four workers, 64 actors under one parent each
-// ask 100 others at once and pipe the replies back to themselves; every reply arrives exactly once,
-// with the right value.
+// make 100 asks at once, round-robin over the 63 other actors, and pipe the replies back to
+// themselves; every reply arrives exactly once, with the right value.
 func TestParallelAsks(t *testing.T) {
 	const actors = 64
 	sys, _ := newProdSystem(t, prodengine.Config{Node: "local", Workers: 4})
