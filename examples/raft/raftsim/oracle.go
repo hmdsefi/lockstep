@@ -42,6 +42,7 @@ type Oracle struct {
 	errs    map[string]error   // first violation per check
 
 	leaders  map[uint64][]leader    // per term, the servers that became its leader, first first
+	highest  uint64                 // the highest term any server became leader of
 	prefixes map[logPoint]logPrefix // RFT-450: first chain hash seen per (index, term)
 
 	// The canonical log: canon[i-1] is index i.
@@ -284,6 +285,7 @@ func (o *Oracle) BecameLeader(node string, term uint64, log raft.LogView) {
 	if !known {
 		o.leaders[term] = append(seen, leader{node: node, at: now})
 	}
+	o.highest = max(o.highest, term)
 
 	m := uint64(0) // the largest canonical index committed in a term below term
 	for i := len(o.canon); i >= 1; i-- {
@@ -301,6 +303,16 @@ func (o *Oracle) BecameLeader(node string, term uint64, log raft.LogView) {
 		o.fail(CheckLeaderCompleteness, "%s became leader of term %d with a different entry at committed index %d",
 			node, term, m)
 	}
+}
+
+// latestLeaders returns the servers that became leader of the highest term seen, first first;
+// none before the first BecameLeader.
+func (o *Oracle) latestLeaders() []string {
+	var names []string
+	for _, l := range o.leaders[o.highest] {
+		names = append(names, l.node)
+	}
+	return names
 }
 
 // Committed checks the newly committed indexes against the canonical log and extends it

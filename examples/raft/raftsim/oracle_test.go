@@ -481,3 +481,25 @@ func TestOracleReference(t *testing.T) {
 		t.Errorf("Err(unknown) = %v, want nil", err)
 	}
 }
+
+func TestOracleLatestLeaders(t *testing.T) {
+	r := newRig()
+	r.start("n1", "n2", "n3")
+	if got := r.o.latestLeaders(); got != nil {
+		t.Errorf("latestLeaders() = %q before any leader, want none", got)
+	}
+	r.o.BecameLeader("n2", 3, newLog())
+	r.o.BecameLeader("n1", 2, newLog()) // an older term changes nothing
+	if got := r.o.latestLeaders(); !slices.Equal(got, []string{"n2"}) {
+		t.Errorf("latestLeaders() = %q, want [n2]", got)
+	}
+	r.o.BecameLeader("n3", 3, newLog()) // a second leader of term 3: an election safety violation
+	r.o.BecameLeader("n3", 3, newLog())
+	if got := r.o.latestLeaders(); !slices.Equal(got, []string{"n2", "n3"}) {
+		t.Errorf("latestLeaders() = %q, want [n2 n3]", got)
+	}
+	r.o.BecameLeader("n1", 4, newLog())
+	if got := r.o.latestLeaders(); !slices.Equal(got, []string{"n1"}) {
+		t.Errorf("latestLeaders() = %q, want [n1]", got)
+	}
+}
