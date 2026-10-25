@@ -96,7 +96,11 @@ func TestATSCH14Timers(t *testing.T) {
 		e := newEngine(t, Config{Node: "n", Workers: 2})
 		ran := make(chan struct{})
 		c := e.clock().AfterFunc(0, "lockstep/timer", func() { close(ran) })
-		<-ran
+		select {
+		case <-ran:
+		case <-time.After(time.Second):
+			t.Fatal("the timer did not run within 1 s")
+		}
 		if c() {
 			t.Error("Cancel() after the timer ran = true, want false")
 		}
@@ -146,6 +150,11 @@ func TestATSCH14Timers(t *testing.T) {
 func TestCancelBeforeCallbackStarts(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 1})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+	// Cleanups run last-in first-out: the worker is released before Stop waits for it, even
+	// when an assertion below fails.
+	t.Cleanup(releaseWorker)
 	entered := make(chan struct{})
 	a := newFake(t, 0)
 	a.onTurn = func(*fakeActor, int) {
@@ -154,7 +163,11 @@ func TestCancelBeforeCallbackStarts(t *testing.T) {
 	}
 	a.add()
 	e.s.Ready(a)
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("the turn did not start within 1 s")
+	}
 
 	var ran atomic.Bool
 	c := e.clock().AfterFunc(0, "lockstep/timer", func() { ran.Store(true) })
@@ -167,7 +180,7 @@ func TestCancelBeforeCallbackStarts(t *testing.T) {
 	}
 	marker := make(chan struct{})
 	e.s.pushCallback(func() { close(marker) }) // queued behind the timer's callback
-	close(release)
+	releaseWorker()
 	select {
 	case <-marker:
 	case <-time.After(time.Second):
@@ -185,14 +198,24 @@ func TestCancelRacesFiring(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 4})
 	runs := make([]atomic.Int32, n)
 	cancels := make([]atomic.Bool, n)
+	var settled atomic.Int32 // timers that ran, plus timers whose Cancel returned true
 	var wg sync.WaitGroup
 	for i := range n {
-		c := e.clock().AfterFunc(time.Duration(i%3)*time.Microsecond, "lockstep/timer", func() { runs[i].Add(1) })
-		wg.Go(func() { cancels[i].Store(c()) })
+		c := e.clock().AfterFunc(time.Duration(i%3)*time.Microsecond, "lockstep/timer", func() {
+			runs[i].Add(1)
+			settled.Add(1)
+		})
+		wg.Go(func() {
+			if c() {
+				cancels[i].Store(true)
+				settled.Add(1)
+			}
+		})
 	}
 	wg.Wait()
-	waitFor(t, 5*time.Second, "pending timers to drain", func() bool { return e.pendingTimers() == 0 })
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, 5*time.Second, "every timer to run or be cancelled", func() bool { return settled.Load() >= n })
+	waitFor(t, time.Second, "pending timers to drain", func() bool { return e.pendingTimers() == 0 })
+	time.Sleep(20 * time.Millisecond) // a timer that wrongly ran after Cancel would show below
 	for i := range n {
 		want := int32(1)
 		if cancels[i].Load() {
