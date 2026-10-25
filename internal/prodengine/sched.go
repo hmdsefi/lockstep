@@ -312,16 +312,6 @@ func (w *worker) runTurn(a engine.ActorRef) {
 	}
 }
 
-// localLen returns the number of entries in worker w's local queue. Tests use it.
-func (e *Engine) localLen(w int) int { //nolint:unparam // the one-worker tests read worker 0; the index keeps the helper general
-	return e.s.workers[w].local.len()
-}
-
-// globalLen returns the number of entries in the global queue. Tests use it.
-func (e *Engine) globalLen() int {
-	return e.s.global.len()
-}
-
 // parkList is the park registry of SCH §11: a mutex-protected stack of parked workers, plus a
 // count that pushes read without the mutex.
 //
