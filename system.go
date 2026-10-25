@@ -10,15 +10,18 @@ import (
 	"sync/atomic"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
-	"github.com/hmdsefi/lockstep/internal/engine/local"
 	"github.com/hmdsefi/lockstep/internal/overload"
+	"github.com/hmdsefi/lockstep/internal/prodengine"
 	"github.com/hmdsefi/lockstep/internal/registry"
 )
 
 // System is one runtime instance. All of its exported functions and methods are safe for
 // concurrent use when *System is the Spawner or Sender.
 type System struct {
-	eng         engine.Engine
+	eng engine.Engine
+	// prod is the production engine whose bundle eng is, when New built the system (SCH-030);
+	// nil for a system built on a given bundle (ACT-015). Only tests read it.
+	prod        *prodengine.Engine
 	node        string
 	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
 	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
@@ -69,6 +72,10 @@ type System struct {
 	// afterRegister, when set, is called by Spawn with the new cell between its registration and
 	// the push of its begin. It is a test hook; production code never sets it.
 	afterRegister func(c actorCell)
+	// afterTurn, when set, is called at the end of every turn with the actor's address and the
+	// numbers of system and user messages the turn processed (ENG-340). It is a test hook set
+	// before the first Spawn; production code never sets it.
+	afterTurn func(a Address, system, user int)
 
 	uidMu   sync.Mutex
 	epoch   uint32 // the epoch of the next uid
@@ -92,26 +99,41 @@ type Sender interface {
 func (*System) spawner() {}
 func (*System) sender()  {}
 
-// New builds a system on the local engine, where one goroutine runs every actor turn, creates its
-// two guardians and returns it. It panics with an error wrapping ErrInvalidOption if an option is
-// nil or invalid.
+// New builds a system on a pool of worker goroutines that run actor turns, creates its two
+// guardians and returns it. Turns of different actors can run in parallel on different workers;
+// the turns of one actor never overlap. WithWorkers, WithThroughput and WithEffectPool configure
+// the pools. New panics with an error wrapping ErrInvalidOption if an option is nil or invalid.
 func New(opts ...Option) *System {
-	// The local engine needs the node name before it starts, so validate the options first: an
-	// invalid option panics before any goroutine exists.
+	// The engine needs the node name and the pool settings before it starts its workers, so
+	// validate the options first: an invalid option panics before any goroutine exists.
 	cfg, err := newConfig(opts, "")
 	if err != nil {
 		panic(err)
 	}
-	le, err := local.New(local.Config{Node: cfg.node})
+	pe := prodengine.New(prodengine.Config{
+		Node:          cfg.node,
+		Workers:       cfg.workers,
+		Throughput:    cfg.throughput,
+		EffectWorkers: cfg.effectWorkers,
+		EffectQueue:   effectQueue(cfg.effectQueue),
+		Admission:     overload.NewGate(), // OVL §4.2; newSystem binds it once
+	})
+	sys, err := newSystem(pe.Engine(), opts)
 	if err != nil {
-		panic(err) // unreachable: the node name is valid and the throughput is the default
-	}
-	sys, err := newSystem(le.Engine(), opts)
-	if err != nil {
-		le.Stop()
+		pe.Stop()
 		panic(err) // unreachable: the options passed newConfig above
 	}
+	sys.prod = pe
 	return sys
+}
+
+// effectQueue maps WithEffectPool's queue to prodengine.Config.EffectQueue, where 0 means the
+// default and -1 means no queue (SCH-030).
+func effectQueue(q int) int {
+	if q == 0 {
+		return -1
+	}
+	return q
 }
 
 // Node returns the system's node name: the node part of every address it allocates.

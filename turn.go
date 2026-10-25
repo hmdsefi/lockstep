@@ -56,6 +56,9 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if system+u > 0 {
 		c.recordTurn(system, firstShown, u, first)
 	}
+	if h := c.sys.afterTurn; h != nil {
+		h(c.addr, system, u) // a test hook (AT-SCH-25); nil in production
+	}
 	return c.hasWork()
 }
 
