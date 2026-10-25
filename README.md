@@ -1,55 +1,52 @@
+[![build](https://github.com/hmdsefi/lockstep/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/hmdsefi/lockstep/actions/workflows/build.yml?query=branch%3Amain)
+[![Go Reference](https://pkg.go.dev/badge/github.com/hmdsefi/lockstep.svg)](https://pkg.go.dev/github.com/hmdsefi/lockstep)
+[![release](https://img.shields.io/github/v/release/hmdsefi/lockstep)](https://github.com/hmdsefi/lockstep/releases/latest)
+[![license](https://img.shields.io/badge/license-MPL--2.0-blue)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/hmdsefi/lockstep?style=social)](https://github.com/hmdsefi/lockstep)
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme-dark.svg">
-    <img alt="lockstep: deterministic actors for Go" src=".github/assets/readme-light.svg" width="640">
+    <img alt="lockstep: an actor framework for Go with deterministic simulation testing" src=".github/assets/readme-light.svg" width="640">
   </picture>
 </p>
 
 <p align="center"><strong>Write actors. Get exact replay.</strong></p>
 
-lockstep is an actor runtime for Go where every message delivery, timer, and I/O event goes
-through the runtime. The same actor code runs in your program on `lockstep.New()`, and in
-`go test` on a seeded simulation with partitions, dropped and delayed messages, and crashes. Any
-failure in the simulation replays exactly from its seed.
+lockstep is an actor framework for Go with deterministic simulation testing (DST) built in. You
+write typed actors with mailboxes, supervision, timers, and request and reply. The same actor code
+runs in your program on `lockstep.New()`, and in `go test` on a seeded simulation that partitions
+the network, drops and delays messages, and crashes and restarts nodes. Any failure in the
+simulation replays exactly from its seed, so a bug that depends on timing becomes one command you
+can rerun.
 
-## What "lockstep" means here
+The actor model here is the one Erlang/OTP and Akka made familiar, and that Go libraries such as
+protoactor-go, Hollywood, Ergo, and GoAkt also use. lockstep's runtime owns every message
+delivery, timer, and I/O event, and that is what makes the simulation exact.
 
-**Marching in lockstep** means moving in exact unison, every step identical.
-That's the promise: every run with the same seed is identical.
+## Features
 
-The name also comes from **deterministic lockstep**, a game-networking technique
-used by real-time strategy games such as *Age of Empires* and *StarCraft*. Instead
-of sending game state over the network, every machine starts from the same state,
-applies the same inputs in the same order, and runs a deterministic simulation,
-so every machine computes the same game.
+lockstep v0.1.0 includes:
 
-lockstep's simulation mode has the same properties:
-
-| Deterministic lockstep (games) | lockstep (this project) |
-|---|---|
-| Same inputs, same order → same game state | Same seed → same message order → same system state |
-| A replay file is tiny: only the inputs | A failing test comes down to a single seed |
-| A *desync* means nondeterminism leaked in (floats, random numbers) | A divergence means nondeterminism leaked into an actor (`time.Now`, `math/rand`, a raw goroutine) |
-| The engine must own every source of randomness | The runtime must own every scheduling, time, and I/O decision |
-
-**What it doesn't mean:** in games, lockstep peers wait for each other every tick.
-lockstep is **not** a game-sync library, and outside simulation it does not run in
-lockstep: no actor waits for another, and turns follow the order in which messages
-arrive. The lockstep behavior applies to **simulation mode**, where a single seeded
-scheduler steps every actor in a fixed, replayable order.
-
-## Relationship with faultline
-
-lockstep's simulation mode, the `lockstep/sim` package, runs on
-[faultline](https://github.com/hmdsefi/faultline), deterministic simulation testing for Go.
-lockstep **imports** faultline; it isn't part of the faultline repo. Only `lockstep/sim` imports
-it, so a program that uses lockstep without `sim` never links faultline.
-
-```text
-github.com/hmdsefi/lockstep          actor runtime
-├── lockstep.New()                   local engine for your program
-└── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
-```
+- **Typed actors and PIDs.** `Actor[M]` receives one message type and `PID[M]` accepts only that
+  type, so a message of the wrong type does not compile.
+- **Request and reply.** `Ask` with a typed `ReplyTo`, timeouts, and `Pipe`, which delivers the
+  reply as a message instead of blocking the actor.
+- **Bounded mailboxes** with an explicit policy when full: fail the send, drop the newest or
+  oldest message, or block the sender.
+- **Supervision trees** in the Erlang style: one-for-one and all-for-one strategies, restart
+  limits with backoff, death watch, an actor cap, and a `Stopped` hook on every stop and restart.
+- **Timers and effects** on the runtime's clock: `ctx.After`, `ctx.Every`, and I/O as named
+  effects with `lockstep.Do`.
+- **Deterministic simulation testing** in `lockstep/sim`, built on
+  [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
+  drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
+- **Deadlock and leak detection** in simulation. A cycle of pending asks fails the seed with
+  `lockstep: deadlock: A → B → A`.
+- **A static analyzer**, `lockstep-vet`, also available as a golangci-lint plugin. It reports
+  `time.Now`, global randomness, goroutines, `select`, map ranges, and blocking calls in actor
+  code.
+- **A Raft example** with three planted bugs that a seeded partition or crash exposes.
 
 ## Install
 
@@ -60,7 +57,7 @@ go version
 go get github.com/hmdsefi/lockstep@v0.1.0
 ```
 
-## A first actor
+## Quick start: a first actor
 
 An actor is a type with a `Receive` method for one message type. The following program is a
 counter: `Add` messages change its total, and a `Get` message asks for it.
@@ -140,7 +137,7 @@ total: 6
 `Get` message and returns a `*Reply[int]`. `Await` blocks, so call it outside actors; inside an
 actor, `lockstep.Pipe` delivers the reply as a message instead.
 
-## The same actor in a simulation test
+## Deterministic simulation testing: the same actor under faults
 
 `sim.Simulate` runs a test body once per seed. Each run is a simulated world with virtual time
 and a simulated network. The following test runs the counter on server node `n1`, sends 20 `Add`
@@ -251,7 +248,7 @@ Besides the checks you register, `sim` fails a seed when actors deadlock on each
 (`lockstep: deadlock: A → B → A`), when an effect has no handler, and when an actor stops or
 restarts with an effect still pending or a resource it owns fails to close.
 
-## Check actor code with lockstep-vet
+## Static analysis: lockstep-vet and golangci-lint
 
 A replay is exact only if actor code takes time, randomness, and I/O from the runtime.
 `lockstep-vet` reports actor code that doesn't:
@@ -307,12 +304,51 @@ linters:
 Then run `golangci-lint custom` and `./custom-gcl run ./...`. golangci-lint's
 [module plugin guide](https://golangci-lint.run/docs/plugins/module-plugins/) describes both files.
 
-## The Raft demo
+## Example: Raft under partitions and crashes
 
 [`examples/raft`](examples/raft/README.md) is a Raft cluster written as lockstep actors. It runs
 three or five servers and their clients through partitions, crashes, paused servers, and lossy
 links, checks Raft's safety properties after every event, and replays any failing seed exactly.
 Three planted bugs show what a failing seed looks like.
+
+## Why the name "lockstep"
+
+**Marching in lockstep** means moving in exact unison, every step identical.
+That's the promise: every run with the same seed is identical.
+
+The name also comes from **deterministic lockstep**, a game-networking technique
+used by real-time strategy games such as *Age of Empires* and *StarCraft*. Instead
+of sending game state over the network, every machine starts from the same state,
+applies the same inputs in the same order, and runs a deterministic simulation,
+so every machine computes the same game.
+
+lockstep's simulation mode has the same properties:
+
+| Deterministic lockstep (games) | lockstep (this project) |
+|---|---|
+| Same inputs, same order → same game state | Same seed → same message order → same system state |
+| A replay file is tiny: only the inputs | A failing test comes down to a single seed |
+| A *desync* means nondeterminism leaked in (floats, random numbers) | A divergence means nondeterminism leaked into an actor (`time.Now`, `math/rand`, a raw goroutine) |
+| The engine must own every source of randomness | The runtime must own every scheduling, time, and I/O decision |
+
+**What it doesn't mean:** in games, lockstep peers wait for each other every tick.
+lockstep is **not** a game-sync library, and outside simulation it does not run in
+lockstep: no actor waits for another, and turns follow the order in which messages
+arrive. The lockstep behavior applies to **simulation mode**, where a single seeded
+scheduler steps every actor in a fixed, replayable order.
+
+## lockstep and faultline
+
+lockstep's simulation mode, the `lockstep/sim` package, runs on
+[faultline](https://github.com/hmdsefi/faultline), deterministic simulation testing for Go.
+lockstep **imports** faultline; it isn't part of the faultline repo. Only `lockstep/sim` imports
+it, so a program that uses lockstep without `sim` never links faultline.
+
+```text
+github.com/hmdsefi/lockstep          actor runtime
+├── lockstep.New()                   local engine for your program
+└── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
+```
 
 ## Limitations
 
