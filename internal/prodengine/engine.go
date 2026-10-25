@@ -4,6 +4,7 @@
 package prodengine
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -75,12 +76,18 @@ type Engine struct {
 	// section, so a Stop that marks closing and then locks tmu sees every timer that was armed.
 	tmu    sync.Mutex
 	timers map[*timer]struct{} // pending timers (timer.go); its length is the pending count
+
+	fx           pool               // the effect pool (effects.go)
+	engineCtx    context.Context    // parent of every effect's context; cancelled by Stop
+	cancelEngine context.CancelFunc // cancels engineCtx
 }
 
 // New validates cfg, applies defaults, starts exactly cfg.Workers worker goroutines and
-// returns the engine. It starts no other goroutine.
+// returns the engine. It starts no other goroutine; effect goroutines (SCH-160) and runtime
+// timers (SCH-130) come later, on demand.
 func New(cfg Config) *Engine {
 	e := &Engine{cfg: withDefaults(cfg), timers: make(map[*timer]struct{})}
+	e.engineCtx, e.cancelEngine = context.WithCancel(context.Background())
 	e.s.start(e.cfg.Workers, e.cfg.Throughput)
 	return e
 }
@@ -95,11 +102,17 @@ func (e *Engine) Config() Config {
 // This form marks the engine closing, so Ready does nothing from then on, wakes every parked
 // worker and waits until every worker has exited. A worker exits at its next choice (SCH-070),
 // so a turn in progress finishes first. Queued turns are left in their queues and never run.
+// It also drops the queued effects and cancels the contexts of the running ones; their done
+// never runs (SCH-200 step 2).
 func (e *Engine) Stop() {
 	if e.s.InTurn() {
 		panic("lockstep: prodengine: Stop called from engine context")
 	}
-	e.stopOnce.Do(e.s.stop)
+	e.stopOnce.Do(func() {
+		e.fx.stop()
+		e.cancelEngine()
+		e.s.stop()
+	})
 }
 
 // parked returns the number of workers registered as parked (SCH-090). Tests use it.
