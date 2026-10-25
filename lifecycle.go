@@ -213,10 +213,8 @@ func (c *cell[M]) dropKept() {
 		if !ok {
 			continue
 		}
-		if t, isTerm := sm.sig.(Terminated); isTerm && c.ctx != nil {
-			if seq, in := c.ctx.watched.seq(t.Addr); !in || seq != sm.seq {
-				continue
-			}
+		if c.ctx != nil && c.ctx.watched.skips(sm) {
+			continue
 		}
 		c.sys.recordDropNotRunning(c.addr, sm.sig)
 	}
