@@ -7,12 +7,10 @@
 
 <p align="center"><strong>Write actors. Get exact replay.</strong></p>
 
-lockstep is an actor runtime where every message delivery, timer, and I/O event goes
-through the runtime. In production it's a concurrent actor runtime. In tests, the same
-code runs on a seeded simulation — partitions, drops, reordering, crashes — and any
-failure replays exactly from its seed.
-
-> Status: **design phase**.
+lockstep is an actor runtime for Go where every message delivery, timer, and I/O event goes
+through the runtime. The same actor code runs in your program on `lockstep.New()`, and in
+`go test` on a seeded simulation with partitions, dropped and delayed messages, and crashes. Any
+failure in the simulation replays exactly from its seed.
 
 ## What "lockstep" means here
 
@@ -30,33 +28,317 @@ lockstep's simulation mode has the same properties:
 | Deterministic lockstep (games) | lockstep (this project) |
 |---|---|
 | Same inputs, same order → same game state | Same seed → same message order → same system state |
-| A replay file is tiny: just the inputs | A failing test comes down to a single seed |
+| A replay file is tiny: only the inputs | A failing test comes down to a single seed |
 | A *desync* means nondeterminism leaked in (floats, random numbers) | A divergence means nondeterminism leaked into an actor (`time.Now`, `math/rand`, a raw goroutine) |
 | The engine must own every source of randomness | The runtime must own every scheduling, time, and I/O decision |
 
 **What it doesn't mean:** in games, lockstep peers wait for each other every tick.
-lockstep is **not** a game-sync library, and its **production mode does not run in
-lockstep**: actors run concurrently and don't wait for each other. The lockstep
-behavior applies to **simulation mode**, where a single seeded scheduler steps every
-actor in a fixed, replayable order.
+lockstep is **not** a game-sync library, and outside simulation it does not run in
+lockstep: no actor waits for another, and turns follow the order in which messages
+arrive. The lockstep behavior applies to **simulation mode**, where a single seeded
+scheduler steps every actor in a fixed, replayable order.
 
 ## Relationship with faultline
 
-lockstep's simulation mode runs on the kernel of [faultline](https://github.com/hmdsefi/faultline)
-(deterministic simulation testing for Go). lockstep **imports**
-`github.com/hmdsefi/faultline/kernel`; it isn't part of the faultline repo.
+lockstep's simulation mode, the `lockstep/sim` package, runs on
+[faultline](https://github.com/hmdsefi/faultline), deterministic simulation testing for Go.
+lockstep **imports** faultline; it isn't part of the faultline repo. Only `lockstep/sim` imports
+it, so a program that uses lockstep without `sim` never links faultline.
 
-```
+```text
 github.com/hmdsefi/lockstep          actor runtime
-├── production runtime (concurrent scheduler, remoting, clustering)
-└── simulation mode ──imports──▶ github.com/hmdsefi/faultline/kernel
+├── lockstep.New()                   local engine for your program
+└── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
 ```
 
-One engine, two products: faultline tests existing Go code, and lockstep is a
-production actor runtime whose simulation mode is exactly as strong as faultline's.
+## Install
+
+lockstep needs Go 1.26 or later:
+
+```sh
+go version
+go get github.com/hmdsefi/lockstep@v0.1.0
+```
+
+## A first actor
+
+An actor is a type with a `Receive` method for one message type. The following program is a
+counter: `Add` messages change its total, and a `Get` message asks for it.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/hmdsefi/lockstep"
+)
+
+// Msg is every message the counter accepts.
+type Msg interface{ isMsg() }
+
+// Add adds N to the total.
+type Add struct{ N int }
+
+// Get asks for the total.
+type Get struct{ Reply lockstep.ReplyTo[int] }
+
+func (Add) isMsg() {}
+func (Get) isMsg() {}
+
+// Counter is an actor that keeps a running total.
+type Counter struct{ total int }
+
+func (c *Counter) Receive(ctx *lockstep.Context[Msg], msg Msg) {
+	switch m := msg.(type) {
+	case Add:
+		c.total += m.N
+	case Get:
+		m.Reply.Send(ctx, c.total)
+	}
+}
+
+func newCounter() lockstep.Actor[Msg] { return &Counter{} }
+
+func getTotal(r lockstep.ReplyTo[int]) Msg { return Get{Reply: r} }
+
+func main() {
+	sys := lockstep.New()
+	counter, err := lockstep.Spawn(sys, "counter", newCounter)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, n := range []int{1, 2, 3} {
+		if err := lockstep.Send[Msg](sys, counter, Add{N: n}); err != nil {
+			log.Fatal(err)
+		}
+	}
+	total, err := lockstep.Ask(sys, counter, getTotal).Await(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("total:", total)
+
+	if err := sys.Shutdown(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+```sh
+go run .
+```
+
+```text
+total: 6
+```
+
+`Spawn` returns a `PID[Msg]`, so the compiler rejects a message of the wrong type. `Send` takes
+`[Msg]` explicitly because `Add{N: n}` alone has type `Add`. `Ask` puts a `ReplyTo[int]` into the
+`Get` message and returns a `*Reply[int]`. `Await` blocks, so call it outside actors; inside an
+actor, `lockstep.Pipe` delivers the reply as a message instead.
+
+## The same actor in a simulation test
+
+`sim.Simulate` runs a test body once per seed. Each run is a simulated world with virtual time
+and a simulated network. The following test runs the counter on server node `n1`, sends 20 `Add`
+messages from client node `c1`, and lets faultline crash and restart `n1` at random times. A
+final check runs when the run ends:
+
+```go
+package main
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/hmdsefi/faultline"
+	"github.com/hmdsefi/faultline/kernel/fault"
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/sim"
+)
+
+func TestCounter(t *testing.T) {
+	opts := sim.Options{Options: faultline.Options{Seeds: 50, Duration: 10 * time.Second}}
+	sim.Simulate(t, opts, func(s *sim.Sim) {
+		w := s.World()
+		var counter lockstep.PID[Msg]
+		s.Node("n1", func(sys *lockstep.System) {
+			counter, _ = lockstep.Spawn(sys, "counter", newCounter)
+		})
+		s.Client("c1", func(*lockstep.System) {})
+		w.Plan(&fault.Random{MaxDown: 1, Rules: []fault.Rule{
+			{Kind: fault.KindCrash, Every: 8 * time.Second, MaxFor: time.Second},
+		}})
+
+		for range 20 {
+			w.RunFor(250 * time.Millisecond)
+			if err := sim.Send[Msg](s, "c1", counter, Add{N: 1}); err != nil {
+				w.T().Fatal(err)
+			}
+		}
+		w.RunFor(4 * time.Second) // faults stop at 7.5s, a quarter before the end
+		total, err := sim.Ask(s, "c1", counter, getTotal)
+		w.Final("every add counted", func() error {
+			if err != nil {
+				return err
+			}
+			if total != 20 {
+				return fmt.Errorf("total is %d after 20 adds", total)
+			}
+			return nil
+		})
+	})
+}
+```
+
+The test imports faultline directly, so add it to `go.mod` and run the test:
+
+```sh
+go mod tidy
+go test .
+```
+
+```text
+--- FAIL: TestCounter (0.01s)
+    counter_test.go:16: faultline: running 50 seeds from base 0x64b5629963419063 (test name)
+    --- FAIL: TestCounter/seed=0x870af07a512d3866 (0.01s)
+        faultline: final check "every add counted" failed after the run at t=10.000000000s
+          total is 0 after 20 adds
+        replay:    FAULTLINE_SEED=0x870af07a512d3866 go test -v -run '^TestCounter$' example.com/counter
+        artifacts: $TMPDIR/faultline-501/example.com_counter/TestCounter/870af07a512d3866/
+    counter_test.go:16: faultline: stopping after failing seed 0x870af07a512d3866; 48 of 50 seeds not run (set Options.KeepGoing to run all)
+FAIL
+FAIL	example.com/counter	0.330s
+FAIL
+```
+
+The first seed passes and the second fails. The counter keeps its total in memory, so a crash
+loses it. The run's `schedule.json` artifact shows when: `n1` crashed at t=4.87s, after 19 adds,
+and restarted at t=5.71s with a new counter. The 20th add reached a node that was down.
+
+The seeds come from the test's name, so they are the same on every machine. The `replay` line is
+the command that runs the failing seed again:
+
+```sh
+FAULTLINE_SEED=0x870af07a512d3866 go test -v -run '^TestCounter$' example.com/counter
+```
+
+```text
+=== RUN   TestCounter
+    counter_test.go:16: faultline: FAULTLINE_SEED=0x870af07a512d3866: running 1 seed
+=== RUN   TestCounter/seed=0x870af07a512d3866
+    faultline: final check "every add counted" failed after the run at t=10.000000000s
+      total is 0 after 20 adds
+    replay:    FAULTLINE_SEED=0x870af07a512d3866 go test -v -run '^TestCounter$' example.com/counter
+    artifacts: $TMPDIR/faultline-501/example.com_counter/TestCounter/870af07a512d3866/
+--- FAIL: TestCounter (0.01s)
+    --- FAIL: TestCounter/seed=0x870af07a512d3866 (0.01s)
+FAIL
+FAIL	example.com/counter	0.250s
+FAIL
+```
+
+The replay fails the same check at the same virtual time, and its `report.json` holds the same
+trace hash (a hash of every event in the run) as the first run: `0x56d752b8033ec3c3`. faultline
+writes the artifacts under `os.TempDir()`, shown here as `$TMPDIR`; they include `trace.jsonl`,
+`timeline.txt`, and a self-contained `timeline.html`.
+
+Besides the checks you register, `sim` fails a seed when actors deadlock on each other's asks
+(`lockstep: deadlock: A → B → A`), when an effect has no handler, and when an actor stops or
+restarts with an effect still pending or a resource it owns fails to close.
+
+## Check actor code with lockstep-vet
+
+A replay is exact only if actor code takes time, randomness, and I/O from the runtime.
+`lockstep-vet` reports actor code that doesn't:
+
+- `LS100`: nondeterminism and blocking, such as `time.Now`, global `math/rand`, `crypto/rand`, a
+  `go` statement, `select`, a range over a map, environment variables, channel operations, locks,
+  and blocking network, file, database, or process calls.
+- `LS110`: `Reply.Await`, which blocks the actor; use `lockstep.Pipe` instead.
+- `LS001` and `LS002`: malformed and unknown `//lockstep:` directives.
+
+Install it and run it through `go vet`:
+
+```sh
+go install github.com/hmdsefi/lockstep/analysis/cmd/lockstep-vet@v0.1.0
+go vet -vettool=$(which lockstep-vet) ./...
+```
+
+On the counter it prints nothing. If `Receive` also recorded `time.Now()` on every `Add` and
+waited on an ask with `Await`, it would print:
+
+```text
+main.go:37:50: LS110: Reply.Await blocks the actor; use lockstep.Pipe to receive the reply as a message (actor code: (*Counter).Receive)
+main.go:34:17: LS100: time.Now uses the wall clock; use ctx.Now, ctx.After or ctx.Every (actor code: (*Counter).Receive)
+```
+
+To accept one finding, add `//lockstep:allow LS100 <reason>` on the reported line, on the line
+above it, or in the doc comment of the enclosing declaration.
+
+The same checks run in golangci-lint as the module plugin `lockstep`. Build a custom binary with
+this `.custom-gcl.yml`:
+
+```yaml
+version: v2.14.0
+plugins:
+  - module: github.com/hmdsefi/lockstep/analysis
+    import: github.com/hmdsefi/lockstep/analysis/golangci
+    version: v0.1.0
+```
+
+Enable the linter in `.golangci.yml`:
+
+```yaml
+version: "2"
+linters:
+  enable:
+    - lockstep
+  settings:
+    custom:
+      lockstep:
+        type: module
+```
+
+Then run `golangci-lint custom` and `./custom-gcl run ./...`. golangci-lint's
+[module plugin guide](https://golangci-lint.run/docs/plugins/module-plugins/) describes both files.
+
+## The Raft demo
+
+[`examples/raft`](examples/raft/README.md) is a Raft cluster written as lockstep actors. It runs
+three or five servers and their clients through partitions, crashes, paused servers, and lossy
+links, checks Raft's safety properties after every event, and replays any failing seed exactly.
+Three planted bugs show what a failing seed looks like.
+
+## Limitations
+
+v0.1.0 runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
+`lockstep.New()` runs every actor turn on one engine goroutine, so actors interleave but never run
+in parallel. Effects started with `lockstep.Do` run on separate goroutines, at most 64 at a time.
+
+v0.1.0 has no pooled production scheduler. It does not read the live heap: `WithAdmission`,
+`WithWatchdog`, and `WithGoroutineWarning` are accepted and have no effect on `lockstep.New()`.
+The actor cap (`WithMaxActors`) applies everywhere. There is no remoting, clustering,
+persistence, or OpenTelemetry support, so actors on different nodes talk only in simulation.
+
+The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
+tracks what comes next.
 
 ## Built with
 
-[gograph](https://github.com/hmdsefi/gograph), through faultline's kernel, powers
-deadlock detection in simulation (`deadlock: A → B → C → A`) and diagrams of
-failing runs.
+[gograph](https://github.com/hmdsefi/gograph) finds the cycles in the wait-for graph that
+`lockstep/sim` builds from pending asks, which is how it reports a deadlock.
+
+## License
+
+lockstep is licensed under the [Mozilla Public License 2.0](LICENSE).
+
+## Next steps
+
+- [The Raft demo](examples/raft/README.md): a larger lockstep program and its simulation tests.
+- [faultline](https://github.com/hmdsefi/faultline): seeds, fault planners, and failure artifacts.
+- [Roadmap](https://github.com/hmdsefi/lockstep/issues/232): the plan for later releases.
