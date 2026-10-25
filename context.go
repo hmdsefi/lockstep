@@ -14,7 +14,8 @@ import (
 // Context is an incarnation's handle to the runtime. The runtime passes the same *Context to
 // every turn of one incarnation and a new one to the next incarnation. Self and Parent may be
 // called at any time; every other method panics when called outside a turn of its incarnation.
-// Every method panics on a nil *Context.
+// Call its methods only from the goroutine that runs the handler. Every method panics on a nil
+// *Context.
 type Context[M any] struct {
 	cell   *cell[M]
 	inc    uint32      // the incarnation number (SUP-020)
