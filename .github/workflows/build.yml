@@ -213,6 +213,9 @@ jobs:
             go -C "$mod" test -race -count=1 ./...
             echo "::endgroup::"
           done
+      - name: raft demo seeds (no race)
+        if: matrix.go == '1.26.x'
+        run: go -C examples/raft test -count=1 -timeout 60m -run 'TestATRFT4[6-9]|TestDemoPartitionBug' -v ./raftsim
 
   vet:
     name: lockstep-vet (examples)
