@@ -395,6 +395,7 @@ func TestEffectPoolNeverExceedsWorkers(t *testing.T) {
 // contexts of running effects, drops the queued ones, and later Starts report false.
 func TestEffectsAfterStop(t *testing.T) {
 	e := New(Config{Node: "n", Workers: 2, EffectWorkers: 1, EffectQueue: 1})
+	t.Cleanup(e.Stop)
 	fx := e.effects()
 	entered := make(chan struct{})
 	ctxDone := make(chan struct{})
@@ -423,4 +424,104 @@ func TestEffectsAfterStop(t *testing.T) {
 		t.Error("Cancel of an effect started after Stop = true, want false")
 	}
 	time.Sleep(50 * time.Millisecond)
+}
+
+// TestEffectCancelRacesQueueHead races Cancel of the queued effect against the running effect
+// returning, which makes the goroutine take the queue head. Whatever the interleaving: a true
+// Cancel means done never runs and a Run that did start sees its context cancelled; a false
+// Cancel means done runs exactly once.
+func TestEffectCancelRacesQueueHead(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 2, EffectWorkers: 1, EffectQueue: 1})
+	fx := e.effects()
+	for i := range 300 {
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		fx.Start(engine.EffectRequest{Name: "head", Run: func(context.Context) (any, error) {
+			close(entered)
+			<-release
+			return nil, nil
+		}}, func(any, error) {})
+		recv(t, entered, "the running effect")
+
+		var runs, dones atomic.Int32
+		ctxs := make(chan context.Context, 1)
+		cancel := fx.Start(engine.EffectRequest{Name: "queued", Run: func(ctx context.Context) (any, error) {
+			runs.Add(1)
+			ctxs <- ctx
+			return nil, nil
+		}}, func(any, error) { dones.Add(1) })
+
+		won := make(chan bool, 1)
+		go func() { won <- cancel() }()
+		close(release)
+		if <-won {
+			if runs.Load() == 1 {
+				// Run started before Cancel took the job: its context must end.
+				ctx := recv(t, ctxs, "the context of the started effect")
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Second):
+					t.Fatalf("iteration %d: Cancel returned true after Run started, but its context is not cancelled", i)
+				}
+			}
+			waitFor(t, 5*time.Second, "the effect goroutine to exit", func() bool { return effectGoroutines() == 0 })
+			time.Sleep(time.Millisecond)
+			if dones.Load() != 0 {
+				t.Fatalf("iteration %d: done ran after Cancel returned true", i)
+			}
+		} else {
+			waitFor(t, 5*time.Second, "done", func() bool { return dones.Load() > 0 })
+			if n := dones.Load(); n != 1 {
+				t.Fatalf("iteration %d: done ran %d times, want once", i, n)
+			}
+		}
+		waitFor(t, 5*time.Second, "effect goroutines to exit", func() bool { return effectGoroutines() == 0 })
+	}
+}
+
+// TestEffectStopSuppressesDoneOfCancelledContext checks that a Run that returns because Stop
+// cancelled its context never has its done called (SCH-190, SCH-200).
+func TestEffectStopSuppressesDoneOfCancelledContext(t *testing.T) {
+	for range 100 {
+		e := New(Config{Node: "n", Workers: 2, EffectWorkers: 1, EffectQueue: 1})
+		entered := make(chan struct{})
+		e.effects().Start(engine.EffectRequest{Name: "running", Run: func(ctx context.Context) (any, error) {
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}, noDone(t, "the effect cancelled by Stop"))
+		recv(t, entered, "the running effect")
+		e.Stop()
+		waitFor(t, 5*time.Second, "effect goroutines to exit", func() bool { return effectGoroutines() == 0 })
+	}
+	time.Sleep(20 * time.Millisecond)
+}
+
+// TestEffectGoexitKeepsPoolSize checks that a Run that ends its goroutine with runtime.Goexit
+// neither leaks a pool slot nor strands the queue.
+func TestEffectGoexitKeepsPoolSize(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 2, EffectWorkers: 1, EffectQueue: 1})
+	fx := e.effects()
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	fx.Start(engine.EffectRequest{Name: "exits", Run: func(context.Context) (any, error) {
+		close(entered)
+		<-release
+		runtime.Goexit()
+		return nil, nil
+	}}, noDone(t, "the effect that called Goexit"))
+	recv(t, entered, "the first effect")
+	got := make(chan any, 2)
+	fx.Start(engine.EffectRequest{Name: "queued", Run: func(context.Context) (any, error) { return "queued", nil }},
+		func(v any, _ error) { got <- v })
+	close(release)
+	if v := recv(t, got, "done of the queued effect"); v != "queued" {
+		t.Errorf("done of the queued effect got %v, want %q", v, "queued")
+	}
+	waitFor(t, time.Second, "effect goroutines to exit", func() bool { return effectGoroutines() == 0 })
+	fx.Start(engine.EffectRequest{Name: "later", Run: func(context.Context) (any, error) { return "later", nil }},
+		func(v any, _ error) { got <- v })
+	if v := recv(t, got, "done of a later effect"); v != "later" {
+		t.Errorf("done of a later effect got %v, want %q (a pool slot leaked)", v, "later")
+	}
 }
