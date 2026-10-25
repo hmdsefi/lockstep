@@ -38,21 +38,10 @@ type Config struct {
 	Store           Store               // production storage; nil in simulation
 	Observer        Observer            // nil in production
 	Bugs            Bug
+
+	// send sends msg to a peer; nil means lockstep.Send[Msg]. Tests set it to see or fail sends.
+	send func(from lockstep.Sender, to lockstep.PID[Msg], msg Msg) error
 }
-
-// Node is the Raft actor. Create it with New.
-type Node struct {
-	cfg Config
-}
-
-// Started runs when an incarnation starts.
-func (n *Node) Started(*lockstep.Context[Msg]) {}
-
-// Receive handles one message.
-func (n *Node) Receive(*lockstep.Context[Msg], Msg) {}
-
-// Stopped runs when an incarnation ends.
-func (n *Node) Stopped(*lockstep.Context[Msg], lockstep.StopReason) {}
 
 // New validates cfg, applies defaults and returns the actor factory.
 func New(cfg Config) (func() lockstep.Actor[Msg], error) {
@@ -75,7 +64,20 @@ func New(cfg Config) (func() lockstep.Actor[Msg], error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return func() lockstep.Actor[Msg] { return &Node{cfg: cfg} }, nil
+	send := cfg.send
+	if send == nil {
+		send = lockstep.Send[Msg]
+	}
+	return func() lockstep.Actor[Msg] { return &Node{cfg: cfg, send: send} }, nil
+}
+
+// Spawn spawns New(cfg)'s actor as "raft" under sys's user guardian, at DefaultPath.
+func Spawn(sys *lockstep.System, cfg Config) (lockstep.PID[Msg], error) {
+	factory, err := New(cfg)
+	if err != nil {
+		return lockstep.PID[Msg]{}, err
+	}
+	return lockstep.Spawn(sys, "raft", factory)
 }
 
 // validate returns the first broken rule of a config whose defaults are applied.
