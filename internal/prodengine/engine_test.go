@@ -44,10 +44,7 @@ func TestATSCH01DefaultsAndValidation(t *testing.T) {
 		{Config{Node: "n", EffectQueue: -2}, "lockstep: prodengine: invalid EffectQueue -2"},
 		{Config{Node: "n", Workers: -3, Throughput: -4}, "lockstep: prodengine: invalid Workers -3"},
 	} {
-		got := panicText(func() {
-			e := New(tc.cfg)
-			e.Stop()
-		})
+		got := panicText(func() { newEngine(t, tc.cfg) })
 		if got != tc.want {
 			t.Errorf("New(%+v) panicked with %q, want %q", tc.cfg, got, tc.want)
 		}

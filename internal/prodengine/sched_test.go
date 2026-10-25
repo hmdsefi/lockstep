@@ -148,7 +148,7 @@ func TestYieldRunsAgain(t *testing.T) {
 // while workers run, choose and park, and afterwards Ready does nothing.
 func TestStopWhileWorking(t *testing.T) {
 	for i := range 200 {
-		e := New(Config{Node: "n", Workers: 4})
+		e := newEngine(t, Config{Node: "n", Workers: 4})
 		as := fakes(t, 8)
 		for j := range i % 16 {
 			a := as[j%len(as)]
@@ -163,7 +163,7 @@ func TestStopWhileWorking(t *testing.T) {
 	}
 	waitFor(t, time.Second, "workers to exit", func() bool { return workerGoroutines() == 0 })
 
-	e := New(Config{Node: "n", Workers: 2})
+	e := newEngine(t, Config{Node: "n", Workers: 2})
 	e.Stop()
 	a := newFake(t, 0)
 	a.add()
@@ -249,5 +249,68 @@ func TestCallbackInEngineContext(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if got := runs.Load(); got != n {
 		t.Errorf("%d callback runs, want %d", got, n)
+	}
+}
+
+// idleScheduler returns a scheduler with n workers whose goroutines never start, so a test can
+// drive the park protocol step by step.
+func idleScheduler(n int) *scheduler {
+	s := &scheduler{throughput: 1}
+	s.workers = make([]worker, n)
+	s.goids = make([]uint64, n)
+	s.park.stack = make([]*worker, 0, n)
+	for i := range s.workers {
+		w := &s.workers[i]
+		w.s, w.index, w.hint = s, i, uint32(i+1) //nolint:gosec // G115: a small index
+		w.wake = make(chan struct{}, 1)
+		w.victims = newVictimRand()
+	}
+	return s
+}
+
+// woken reports whether w holds a wake token, taking it.
+func woken(w *worker) bool {
+	select {
+	case <-w.wake:
+		return true
+	default:
+		return false
+	}
+}
+
+// TestParkPassesWakeOn covers SCH-090's liveness when a waker picks a worker whose second look
+// already found other work: that worker passes the wakeup on to another parked worker.
+func TestParkPassesWakeOn(t *testing.T) {
+	s := idleScheduler(2)
+	w0, w1 := &s.workers[0], &s.workers[1]
+	x, y := newFake(t, 0), newFake(t, 1)
+
+	// X is pushed while no worker is registered, so its wakeOne wakes nobody.
+	x.slot.Ready()
+	s.pushGlobal(x)
+	s.park.register(w0)
+	s.park.register(w1)
+	if ent, ok := w1.find(false); !ok || ent.actor != x {
+		t.Fatalf("w1's second look = %v, %v; want X", ent, ok)
+	}
+	// E is pushed before w1 leaves the park; its wakeOne picks w1, the most recent registrant.
+	y.slot.Ready()
+	s.pushGlobal(y)
+	if !woken(w1) || w1.parked {
+		t.Fatal("the push did not choose w1")
+	}
+	w1.leavePark()
+	if !woken(w0) || w0.parked || s.park.n.Load() != 0 {
+		t.Errorf("after w1 left the park: w0 parked=%v, count %d; want w0 woken and the count 0",
+			w0.parked, s.park.n.Load())
+	}
+
+	// Without a waker in between, leaving the park wakes nobody.
+	s.park.register(w0)
+	s.park.register(w1)
+	w1.leavePark()
+	if woken(w0) || !w0.parked || s.park.n.Load() != 1 {
+		t.Errorf("w1 left the park unchosen: w0 woken or unregistered (count %d); want w0 still parked",
+			s.park.n.Load())
 	}
 }
