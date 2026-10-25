@@ -12,18 +12,7 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// fakeActor is an engine.ActorRef identified by id.
-type fakeActor struct {
-	id   int
-	slot engine.Slot
-}
-
-func (f *fakeActor) Address() engine.Address {
-	return engine.Address{Node: "n", Path: "/fake"}
-}
-func (f *fakeActor) Slot() *engine.Slot { return &f.slot }
-func (f *fakeActor) RunTurn(int) bool   { return false }
-
+// actors returns n fake actors with ids 0 … n-1. The queue tests never run their turns.
 func actors(n int) []*fakeActor {
 	out := make([]*fakeActor, n)
 	for i := range out {
@@ -340,5 +329,23 @@ func TestRunqNoAlloc(t *testing.T) {
 		}
 	}); n != 0 {
 		t.Errorf("overflow path allocates %v times, want 0", n)
+	}
+}
+
+// TestLocalRingDrop checks that drop empties the ring and clears every slot.
+func TestLocalRingDrop(t *testing.T) {
+	var q localRing
+	for _, a := range actors(LocalQueueSize - 3) {
+		q.push(a, nil)
+	}
+	q.pop()
+	q.drop()
+	if n := q.len(); n != 0 {
+		t.Fatalf("len() = %d after drop, want 0", n)
+	}
+	for i := range q.buf {
+		if r := q.buf[i].load(); r != nil {
+			t.Fatalf("slot %d holds %v after drop, want nil", i, r)
+		}
 	}
 }

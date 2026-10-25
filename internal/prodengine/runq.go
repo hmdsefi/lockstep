@@ -96,6 +96,19 @@ func (q *localRing) pop() (engine.ActorRef, bool) {
 	}
 }
 
+// drop removes every entry and clears every slot, so the ring keeps no reference. Only the owner
+// calls it, when its worker exits; a thief that races it finds the ring empty or fails its CAS.
+func (q *localRing) drop() {
+	for {
+		if _, ok := q.pop(); !ok {
+			break
+		}
+	}
+	for i := range q.buf {
+		q.buf[i].store(nil)
+	}
+}
+
 // grabHalf moves the oldest ceil(n/2) of q's n entries to the tail of dst, in order, and returns
 // how many it moved (SCH-070 step 4). It is called by the owner of dst, which is not q's
 // owner, and moves nothing when q is empty or dst lacks room.
