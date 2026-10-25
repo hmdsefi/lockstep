@@ -13,7 +13,7 @@ the seam: the local engine behind `lockstep.New()`, and the simulation engine in
 which runs on [faultline](https://github.com/hmdsefi/faultline).
 
 ```mermaid
-flowchart TB
+flowchart LR
     accTitle: lockstep's parts and how they depend on each other
     accDescr: Your actors use the lockstep runtime. The runtime runs on the engine seam, which two engines implement: the local engine used by lockstep.New and the simulation engine in lockstep/sim. The simulation engine runs on faultline. lockstep-vet checks your actor code.
     actors["Your actors"]
