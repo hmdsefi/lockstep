@@ -375,6 +375,8 @@ lockstep is licensed under the [Mozilla Public License 2.0](LICENSE).
 
 ## Next steps
 
+- [Why lockstep](docs/why-lockstep.md): the kind of bug lockstep is built for, and when to use
+  something else.
+- [Architecture](docs/architecture.md): the runtime, its two engines, and how simulation maps onto
+  faultline.
 - [The Raft demo](examples/raft/README.md): a larger lockstep program and its simulation tests.
-- [faultline](https://github.com/hmdsefi/faultline): seeds, fault planners, and failure artifacts.
-- [Roadmap](https://github.com/hmdsefi/lockstep/issues/232): the plan for later releases.
