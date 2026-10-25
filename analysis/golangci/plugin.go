@@ -24,7 +24,7 @@ type Settings struct {
 }
 
 // New decodes settings with register.DecodeSettings[Settings] and returns the plugin. It returns
-// an error for unknown fields and for unknown analyzer names in Disable (ANL-410).
+// an error for unknown fields and for unknown analyzer names in Disable.
 func New(settings any) (register.LinterPlugin, error) {
 	s, err := register.DecodeSettings[Settings](settings)
 	if err != nil {

@@ -11,8 +11,7 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// SpawnOption configures one Spawn. WithMailbox (MBX), WithStrategy (SUP) and the throughput hint
-// (SCH) are SpawnOptions.
+// SpawnOption configures one Spawn. WithMailbox and WithStrategy are SpawnOptions.
 type SpawnOption func(*spawnConfig)
 
 // spawnConfig is what the SpawnOptions of one Spawn configure. Option appliers only set fields and
@@ -87,7 +86,8 @@ func (*System) rebuilding() bool { return false }
 // name "$<n>". factory is called at every start and restart, never by Spawn itself.
 //
 // Errors: ErrInvalidName, ErrInvalidOption, ErrStopped, ErrNameTaken, ErrActorCap and
-// ErrOverloaded (OVL), each wrapped as in §7. Spawn panics if parent, factory or an option is nil.
+// ErrOverloaded, each wrapped so that errors.Is matches it. Spawn panics if parent, factory or an
+// option is nil.
 // A spawn refused for any of these reasons registers nothing and takes no generated name.
 func Spawn[M any](parent Spawner, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
 	cfg := newSpawnConfig(opts)

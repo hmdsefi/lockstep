@@ -37,7 +37,9 @@ func (d Directive) String() string {
 }
 
 // Strategy is a supervision strategy for the children of one actor. Build it with OneForOne or
-// AllForOne and adjust the exported fields; a zero Strategy is invalid.
+// AllForOne and adjust the exported fields. A Strategy is valid when one of those built it,
+// MaxRestarts and MinBackoff are not negative, Window is positive, and MaxBackoff is at least
+// MinBackoff; a zero Strategy is invalid.
 type Strategy struct {
 	scope uint8 // a supervise.Scope; 0 for a Strategy not built by OneForOne or AllForOne
 
@@ -86,7 +88,7 @@ func newStrategy(scope supervise.Scope, decider func(err error) Directive) Strat
 }
 
 // WithStrategy sets the strategy for the children of the spawned actor. Without it, the strategy
-// is OneForOne(nil). Spawn returns an error wrapping ErrInvalidOption if s is invalid (SUP-370).
+// is OneForOne(nil). Spawn returns an error wrapping ErrInvalidOption if s is invalid.
 func WithStrategy(s Strategy) SpawnOption {
 	return func(c *spawnConfig) {
 		if err := validateStrategy(s); err != nil {
@@ -98,8 +100,8 @@ func WithStrategy(s Strategy) SpawnOption {
 }
 
 // WithGuardianStrategy sets the user guardian's strategy for top-level actors. Without it, the
-// strategy is OneForOne(nil). New panics with an error wrapping ErrInvalidOption if s is invalid
-// (SUP-370).
+// strategy is OneForOne(nil). New panics with an error wrapping ErrInvalidOption if s is
+// invalid.
 func WithGuardianStrategy(s Strategy) Option {
 	return func(c *systemConfig) {
 		if err := validateStrategy(s); err != nil {

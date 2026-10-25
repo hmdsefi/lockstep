@@ -9,7 +9,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// AwaitInActor reports Reply.Await in actor code (LS110). Phase 1.
+// AwaitInActor reports Reply.Await in actor code (LS110).
 var AwaitInActor = &analysis.Analyzer{
 	Name:     "awaitinactor",
 	Doc:      "report Reply.Await in actor code (LS110)",

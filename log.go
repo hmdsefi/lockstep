@@ -11,11 +11,10 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// Logf formats a log line for this actor (ACT-130). It formats with fmt.Sprintf and records
-// lockstep.log when the tracer is enabled. On engines whose goroutines may block (the local and
-// production engines) it also logs the line at slog.LevelInfo through slog.Default() with the
-// attributes node, path and uid (lowercase hex); on the simulation engine the line reaches only
-// the trace.
+// Logf formats a log line for this actor. It formats with fmt.Sprintf and records lockstep.log
+// when the tracer is enabled. In a System built by New it also logs the line at slog.LevelInfo
+// through slog.Default() with the attributes node, path and uid (lowercase hex); in simulation
+// the line reaches only the trace.
 func (c *Context[M]) Logf(format string, args ...any) {
 	c.mustInTurn()
 	text := fmt.Sprintf(format, args...)

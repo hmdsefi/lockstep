@@ -46,10 +46,9 @@ type Effect[T any] interface {
 	// show it. Names starting with "lockstep." are reserved for lockstep's built-in effects.
 	Name() string
 
-	// Run performs the operation and returns its result. The local engine (Phase 1) and the
-	// production engine call it on one of their effect workers; simulation never calls it. Run
-	// should return soon after ctx is done, which happens when the effect times out or is
-	// cancelled.
+	// Run performs the operation and returns its result. A System built by New calls it on a
+	// goroutine of its own; simulation never calls it. Run should return soon after ctx is done,
+	// which happens when the effect times out or is cancelled.
 	Run(ctx context.Context) (T, error)
 }
 

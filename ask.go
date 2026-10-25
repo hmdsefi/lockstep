@@ -27,18 +27,18 @@ type askConfig struct {
 type AskOption func(*askConfig)
 
 // WithTimeout sets the ask's timeout. The default is 5 s. It never panics: Ask and NewReply
-// resolve the reply with an error wrapping ErrInvalidOption when d <= 0 (MSG-700).
+// resolve the reply with an error wrapping ErrInvalidOption when d <= 0.
 func WithTimeout(d time.Duration) AskOption {
 	return func(c *askConfig) { c.timeout = d }
 }
 
 // Ask sends the message build returns to the actor to and returns the future of its answer.
 // build receives the ask's ReplyTo and is called once, synchronously, before Ask returns, unless
-// the ask fails before sending (MSG-300). With a *System sender outside any actor's turn, a full
-// BlockSender mailbox on a blocking engine makes Ask wait until the request is enqueued or the
-// ask resolves, at its timeout at the latest (MSG-330). An invalid option value resolves the
-// reply with an error wrapping ErrInvalidOption. Ask panics if from or build is nil, an option
-// is nil, or from is a Context outside its turn.
+// the ask fails before sending. With a *System sender outside any actor's turn, a full
+// BlockSender mailbox in a System built by New makes Ask wait until the request is enqueued or
+// the ask resolves, at its timeout at the latest. An invalid option value resolves the reply with
+// an error wrapping ErrInvalidOption. Ask panics if from or build is nil, an option is nil, or
+// from is a Context outside its turn.
 func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...AskOption) *Reply[R] {
 	// 1. Misuse panics.
 	s := mustSender(from)
@@ -154,12 +154,12 @@ func buildRequest[M, R any](sys *System, p *pendingAsk, to Address, build func(R
 
 // NewReply creates an ask without a target: a pending reply on from's system with Ask's timeout
 // and exactly-once resolution, and the ReplyTo that answers it. The caller builds and sends the
-// request itself with Send (cluster.Ask does, VAC). An error from that Send (for example
-// ErrMailboxFull) does not resolve the reply; the caller resolves it, for example with
-// rt.Fail(from, err), as cluster.Ask does. A request that a DropNewest or DropOldest mailbox drops
-// is not reported, so the reply resolves at its timeout (MSG-390). An invalid option value
-// returns the zero ReplyTo and a reply resolved with an error wrapping ErrInvalidOption. NewReply
-// panics if from is nil, an option is nil, or from is a Context outside its turn.
+// request itself with Send. An error from that Send (for example ErrMailboxFull) does not
+// resolve the reply; the caller resolves it, for example with rt.Fail(from, err). A request that
+// a DropNewest or DropOldest mailbox drops is not reported, so the reply resolves at its timeout.
+// An invalid option value returns the zero ReplyTo and a reply resolved with an error wrapping
+// ErrInvalidOption. NewReply panics if from is nil, an option is nil, or from is a Context
+// outside its turn.
 func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 	// MSG-380's checks, in its order: from nil, a Context outside its turn (ACT-120), a nil option.
 	sys, fromAddr, _ := mustSender(from).sendOrigin()

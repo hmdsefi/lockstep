@@ -13,8 +13,9 @@ import (
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
 
-// ErrActorCap is the sentinel of architecture §22.1, repeated for its text. ErrOverloaded, its
-// companion, is declared with the engine's errors (ENG-120).
+// ErrActorCap is the error of a spawn refused because the System has reached its actor cap
+// (WithMaxActors). The refusal's text names the parent, the live actor count, the cap and its
+// reserve, and errors.Is matches ErrActorCap.
 var ErrActorCap = errors.New("lockstep: actor cap reached")
 
 // DefaultMaxActors is the actor cap of a System built without WithMaxActors.

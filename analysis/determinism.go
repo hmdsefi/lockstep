@@ -14,7 +14,7 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-// Determinism reports nondeterminism and blocking in actor code (LS100). Phase 1.
+// Determinism reports nondeterminism and blocking in actor code (LS100).
 var Determinism = &analysis.Analyzer{
 	Name:     "determinism",
 	Doc:      "report nondeterminism and blocking in actor code (LS100)",
