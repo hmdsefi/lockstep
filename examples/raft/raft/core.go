@@ -7,6 +7,8 @@ import (
 	"math/rand/v2"
 	"slices"
 	"time"
+
+	"github.com/hmdsefi/lockstep"
 )
 
 // role is a server's Raft role.
@@ -49,12 +51,28 @@ type queued struct {
 	msg  Msg
 }
 
+// proposal is a client proposal a leader appended and has not answered yet (RFT-240).
+type proposal struct {
+	index  uint64
+	term   uint64
+	client uint32
+	seq    uint64
+	to     lockstep.ReplyTo[Result]
+}
+
+// clientReply is an answer to a Propose. Client replies are not gated by the outbox (RFT-100).
+type clientReply struct {
+	to lockstep.ReplyTo[Result]
+	r  Result
+}
+
 // core is one incarnation's Raft state and its transitions, without actors (RFT §11): inputs
-// change the state and queue messages in the outbox, and the Node sends what takeSends returns.
-// Per-peer state lives in slices indexed by the position in Peers.
+// change the state, queue messages in the outbox and answer clients, and the Node sends what
+// takeSends and takeReplies return. Per-peer state lives in slices indexed by the position in
+// Peers.
 //
 // core is reached from actor code: it reads no clock, starts no goroutine, ranges over no map and
-// draws randomness only through the *rand.Rand it is given.
+// draws no randomness; the env's armElection draws the election delay (RFT-150).
 type core struct {
 	cfg  Config
 	obs  Observer // never nil (RFT-280)
@@ -69,14 +87,18 @@ type core struct {
 	log    raftLog
 	gen    uint64 // generation of the latest election timer (RFT-150)
 
+	commit  uint64 // highest index known to be committed
+	applied uint64 // highest index applied to sm
+
 	// Candidate state, reset on every election: replied[p] is set by any VoteReply of the term
 	// from Peers[p], granted[p] by a granting one. The candidate's own entries are set.
 	replied []bool
 	granted []bool
 
-	// Leader state, set on winning (RFT-180).
-	next  []uint64
-	match []uint64
+	// Leader state, set on winning (RFT-180). The leader's own match is durableLast (RFT-220).
+	next    []uint64
+	match   []uint64
+	pending []proposal // in index order
 
 	// Persist pipeline (RFT-090).
 	dirty     bool   // term, vote or log changed since the last issued persist
@@ -92,6 +114,9 @@ type core struct {
 
 	outbox []queued
 	sent   []queued // takeSends's buffer, reused across turns
+
+	replies []clientReply
+	spare   []clientReply // takeReplies's other buffer, reused across turns
 }
 
 // newCore returns the follower state of RFT-080 for durable state d: commit and applied index 0,
@@ -131,8 +156,7 @@ func electionDelay(r *rand.Rand, minD, maxD time.Duration) time.Duration {
 	return minD + time.Duration(r.Int64N(int64(maxD-minD)+1))
 }
 
-// step handles a message from a peer or a client. Of AppendEntries and AppendReply it applies the
-// term rules of RFT-140 only; replication and Propose are not handled here yet.
+// step handles a message from a peer or a client.
 func (c *core) step(m Msg) {
 	switch m := m.(type) {
 	case RequestVote:
@@ -144,11 +168,22 @@ func (c *core) step(m Msg) {
 			c.onVoteReply(p, m)
 		}
 	case AppendEntries:
-		if p, ok := c.observeTerm(m.Leader, m.Term); ok && m.Term < c.term {
+		p, ok := c.observeTerm(m.Leader, m.Term)
+		switch {
+		case !ok:
+		case m.Term < c.term || c.role == leader:
+			// A leader of the same term exists only if votes were lost (BugVoteNotDurable); the
+			// sender is not this server's leader, so it is rejected like a stale one.
 			c.queue(p, AppendReply{Term: c.term, From: c.cfg.ID, LastIndex: c.log.LastIndex()})
+		default:
+			c.onAppendEntries(p, m)
 		}
 	case AppendReply:
-		c.observeTerm(m.From, m.Term)
+		if p, ok := c.observeTerm(m.From, m.Term); ok && m.Term == c.term && c.role == leader {
+			c.onAppendReply(p, m)
+		}
+	case Propose:
+		c.onPropose(m)
 	}
 }
 
@@ -160,10 +195,15 @@ func (c *core) observeTerm(sender string, term uint64) (int, bool) {
 		return 0, false
 	}
 	if term > c.term {
+		wasLeader := c.role == leader
 		c.stepDown()
 		c.setTerm(term)
 		c.role = follower
 		c.leader = ""
+		if wasLeader {
+			// A follower always has an election timer; a candidate keeps its running one.
+			c.armElection()
+		}
 	}
 	return p, true
 }
@@ -266,18 +306,176 @@ func (c *core) winIfMajority() {
 	c.broadcastAppend()
 }
 
-// broadcastAppend queues an AppendEntries to every peer (RFT-190). It is where a new leader and
-// every tick of a leader start replication; this version replicates nothing yet.
-func (c *core) broadcastAppend() {}
+// broadcastAppend queues to every other peer, in Peers order, an AppendEntries with the entries
+// from next[p] on, at most MaxBatch of them, as a new slice per message (RFT-030, RFT-190). It
+// leaves next unchanged.
+func (c *core) broadcastAppend() {
+	last := c.log.LastIndex()
+	batch := uint64(c.cfg.MaxBatch) //nolint:gosec // G115: New checks that MaxBatch is positive
+	for p := range c.cfg.Peers {
+		if p == c.self {
+			continue
+		}
+		next := c.next[p]
+		c.queue(p, AppendEntries{
+			Term:      c.term,
+			Leader:    c.cfg.ID,
+			PrevIndex: next - 1,
+			PrevTerm:  c.log.Term(next - 1),
+			Entries:   c.log.slice(next, min(last, next+batch-1)),
+			Commit:    c.commit,
+		})
+	}
+}
 
-// stepDown makes a leader a follower that knows no leader and drops its leader state (RFT-140,
-// RFT-260). It does nothing on a follower or candidate.
+// onAppendEntries handles an AppendEntries of the current term from Peers[p] on a follower or
+// candidate (RFT-200). A follower whose log already holds every entry changes nothing and does not
+// allocate besides its reply (RFT §11).
+func (c *core) onAppendEntries(p int, m AppendEntries) {
+	c.role = follower
+	c.leader = m.Leader
+	c.armElection()
+	last := c.log.LastIndex()
+	if m.PrevIndex > last || c.log.Term(m.PrevIndex) != m.PrevTerm {
+		c.queue(p, AppendReply{Term: c.term, From: c.cfg.ID, LastIndex: last})
+		return
+	}
+	for k := range m.Entries {
+		i := m.PrevIndex + 1 + uint64(k)
+		if i <= last && c.log.Term(i) == m.Entries[k].Term {
+			continue // a matching entry never truncates the log
+		}
+		if i <= last {
+			c.truncateLog(i - 1)
+		}
+		c.appendLog(m.Entries[k:]...)
+		break
+	}
+	match := m.PrevIndex + uint64(len(m.Entries))
+	if m.Commit > c.commit {
+		c.commitTo(min(m.Commit, match))
+	}
+	c.queue(p, AppendReply{Term: c.term, From: c.cfg.ID, Success: true, Match: match})
+}
+
+// onAppendReply handles an AppendReply of the current term from Peers[p] on a leader (RFT-210).
+func (c *core) onAppendReply(p int, m AppendReply) {
+	if !m.Success {
+		c.next[p] = max(1, min(c.next[p]-1, m.LastIndex+1))
+		return
+	}
+	c.match[p] = max(c.match[p], m.Match)
+	c.next[p] = c.match[p] + 1
+	c.leaderCommit()
+}
+
+// leaderCommit advances a leader's commit index to the largest index of its term that a majority
+// of servers hold, the leader counting its durable last index as its match (RFT-220).
+func (c *core) leaderCommit() {
+	if c.role != leader {
+		return
+	}
+	for n := c.log.LastIndex(); n > c.commit && c.log.Term(n) == c.term; n-- {
+		held := 0
+		for p, m := range c.match {
+			if p == c.self {
+				m = c.durableLast
+			}
+			if m >= n {
+				held++
+			}
+		}
+		if held > len(c.cfg.Peers)/2 {
+			c.commitTo(n)
+			return
+		}
+	}
+}
+
+// commitTo raises the commit index to n, if n is above it, and applies the newly committed
+// entries in index order, answering the pending proposal of each (RFT-230, RFT-250).
+func (c *core) commitTo(n uint64) {
+	if n <= c.commit {
+		return
+	}
+	old := c.commit
+	c.commit = n
+	c.obs.Committed(c.cfg.ID, c.term, old, n, &c.log)
+	for c.applied < c.commit {
+		i := c.applied + 1
+		e := c.log.Entry(i)
+		out := ""
+		if e.Cmd != "" {
+			out = c.sm.Apply(i, e.Cmd)
+		}
+		c.applied = i
+		c.obs.Applied(c.cfg.ID, i, e, c.sm.Hash())
+		if c.role == leader && len(c.pending) > 0 && c.pending[0].index == i {
+			pp := c.pending[0]
+			c.pending[0] = proposal{} // drop the answered ReplyTo from the backing array
+			c.pending = c.pending[1:]
+			r := Result{Status: Unknown}
+			if e.Term == pp.term && e.Client == pp.client && e.Seq == pp.seq {
+				r = Result{Status: OK, Output: out, Index: i}
+			}
+			c.reply(pp.to, pp.client, pp.seq, r)
+		}
+	}
+}
+
+// onPropose answers a Propose at once, or appends it and sends it to the peers (RFT-240). With
+// BugStaleRead a leader answers a read from its state machine without the log (RFT-540).
+func (c *core) onPropose(m Propose) {
+	switch {
+	case c.role != leader:
+		c.reply(m.ReplyTo, m.Client, m.Seq, Result{Status: NotLeader, Leader: c.leader})
+	case m.Read && c.cfg.Bugs&BugStaleRead != 0:
+		c.reply(m.ReplyTo, m.Client, m.Seq, Result{Status: OK, Output: c.sm.Query(m.Cmd), Index: c.applied})
+	case len(c.pending) >= c.cfg.MaxPending:
+		c.reply(m.ReplyTo, m.Client, m.Seq, Result{Status: Busy})
+	default:
+		c.appendLog(Entry{Term: c.term, Client: m.Client, Seq: m.Seq, Cmd: m.Cmd})
+		c.pending = append(c.pending, proposal{
+			index:  c.log.LastIndex(),
+			term:   c.term,
+			client: m.Client,
+			seq:    m.Seq,
+			to:     m.ReplyTo,
+		})
+		c.broadcastAppend()
+	}
+}
+
+// reply calls Observer.Replied and queues r for to (RFT-250).
+func (c *core) reply(to lockstep.ReplyTo[Result], client uint32, seq uint64, r Result) {
+	c.obs.Replied(c.cfg.ID, client, seq, r)
+	c.replies = append(c.replies, clientReply{to: to, r: r})
+}
+
+// takeReplies removes and returns the queued client replies, in order. The result is valid until
+// the next call.
+func (c *core) takeReplies() []clientReply {
+	out := c.replies
+	clear(c.spare) // release the previous turn's replies
+	c.replies = c.spare[:0]
+	c.spare = out
+	return out
+}
+
+// stepDown makes a leader a follower that knows no leader, answers Unknown to its pending
+// proposals in index order and clears them (RFT-140, RFT-260). It does nothing on a follower or
+// candidate. It arms no timer, so Stopped can use it; RFT-140 arms the timer itself.
 func (c *core) stepDown() {
 	if c.role != leader {
 		return
 	}
 	c.role = follower
 	c.leader = ""
+	for _, pp := range c.pending {
+		c.reply(pp.to, pp.client, pp.seq, Result{Status: Unknown})
+	}
+	clear(c.pending)
+	c.pending = c.pending[:0]
 }
 
 // setTerm sets the current term and clears the vote (RFT-140).
@@ -301,16 +499,24 @@ func (c *core) appendLog(es ...Entry) {
 	from := c.log.LastIndex() + 1
 	c.log.append(es...)
 	c.wrote(from)
+	c.obs.LogWritten(c.cfg.ID, from, &c.log)
 }
 
-// wrote records a log write or truncation from index from on for the next persist and calls
-// Observer.LogWritten.
+// truncateLog drops the entries after last and marks the log for the next persist from last+1
+// on. The dropped entries no longer belong to the durable prefix. The caller appends right after,
+// and its LogWritten call covers the truncation (RFT-200).
+func (c *core) truncateLog(last uint64) {
+	c.log.truncate(last)
+	c.wrote(last + 1)
+	c.durableLast = min(c.durableLast, last)
+}
+
+// wrote records a log write or truncation from index from on for the next persist (RFT-090).
 func (c *core) wrote(from uint64) {
 	if c.from == 0 || from < c.from {
 		c.from = from
 	}
 	c.dirty = true
-	c.obs.LogWritten(c.cfg.ID, from, &c.log)
 }
 
 // armElection starts a new election timer generation (RFT-150).
@@ -364,8 +570,9 @@ func (c *core) endTurn() (Persist, bool) {
 }
 
 // persisted handles the successful completion of the in-flight persist: it records the durable
-// last index, calls Observer.Durable with the values PersistStarted reported, and lets the
-// messages waiting for this persist leave (RFT-090).
+// last index, calls Observer.Durable with the values PersistStarted reported, lets the messages
+// waiting for this persist leave (RFT-090), and on a leader recomputes the commit index, since the
+// leader's own match is its durable last index (RFT-220).
 func (c *core) persisted() {
 	c.inFlight = false
 	c.completed++
@@ -374,6 +581,7 @@ func (c *core) persisted() {
 		c.durableLast = min(c.durableLast, c.from-1)
 	}
 	c.obs.Durable(c.cfg.ID, c.startedHS, c.startedLast, c.startedChain)
+	c.leaderCommit()
 }
 
 // takeSends removes and returns the outbox messages whose persist has completed, in queue order.
