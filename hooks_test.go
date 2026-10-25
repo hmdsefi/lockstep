@@ -116,8 +116,10 @@ func TestATACT35EngineBuiltSystem(t *testing.T) {
 	}
 }
 
-// AT-ENG-27 (the Bind clause): ENG-125.
-func TestBindCalledOnce(t *testing.T) {
+// AT-ENG-27: ENG-125. NewSystem binds the admission exactly once, and a source change the engine
+// reports makes the runtime emit OVL's event=on record. The String and Error clauses are in
+// internal/engine's TestAdmissionValues.
+func TestATENG27AdmissionChange(t *testing.T) {
 	eng := enginetest.New("n1", 1)
 	if _, err := hooks.NewSystem(eng.Engine(), nil); err != nil {
 		t.Fatal(err)
@@ -125,6 +127,24 @@ func TestBindCalledOnce(t *testing.T) {
 	// Usage panics unless Bind ran; a second Bind during NewSystem would have panicked already.
 	if got := eng.Usage(); got != (engine.Usage{}) {
 		t.Errorf("Usage() = %+v, want zero", got)
+	}
+
+	eng.ChangeAdmission(engine.AdmissionChange{Source: engine.SourcePressure, On: true, Shedding: true})
+	var on []engine.Record
+	for _, r := range eng.Records() {
+		if r.Kind == "lockstep.overload" {
+			on = append(on, r)
+		}
+	}
+	if len(on) != 1 {
+		t.Fatalf("%d lockstep.overload records after the change, want 1", len(on))
+	}
+	got := map[string]string{}
+	for _, a := range on[0].Attrs {
+		got[a.Key] = a.Value
+	}
+	if got["event"] != "on" || got["reason"] != "pressure" || got["shedding"] != "true" {
+		t.Errorf("lockstep.overload attributes %v, want event=on reason=pressure shedding=true", got)
 	}
 }
 

@@ -32,7 +32,8 @@ func Send[M any](from Sender, to PID[M], msg M) error {
 
 // SendContext is Send, except that when from is a *System, the target's policy is BlockSender
 // and the message cannot be enqueued yet, it waits until the message is enqueued or ctx ends, and
-// then returns ctx.Err(). Send with a *System sender is SendContext with context.Background().
+// then returns ctx.Err(). Called from an actor's turn it never waits: BlockSender acts as FailSend.
+// Send with a *System sender is SendContext with context.Background().
 func SendContext[M any](ctx context.Context, from Sender, to PID[M], msg M) error {
 	if ctx == nil {
 		panic("lockstep: SendContext: nil context") // MBX §7, before the Sender checks
@@ -132,10 +133,11 @@ type routeRequest struct {
 	ask     Address         // MBX-092's ask address of an Ask request, zero for every other message
 	seq     uint64          // the inbound envelope's Seq (MBX-120), 0 for a local send
 	size    int64           // msg's bytes for the target's mailbox estimate (OVL-410), computed by the caller before routing
-	// wait is set only for an outside sender, a Send or SendContext from a *System: the context that
-	// ends its wait for room in a BlockSender mailbox on a blocking engine (MBX-090). It is nil for
-	// every sender that never waits: an actor, an Ask request, an inbound envelope (MBX-120) and a
-	// message the interposer held, which the engine offers.
+	// wait is set only for an outside sender, a Send, SendContext or Ask from a *System: the context
+	// that ends its wait for room in a BlockSender mailbox on a blocking engine (MBX-090), when it is
+	// called outside engine context (offer). For an Ask it ends when the ask resolves (askWait,
+	// MSG-330). It is nil for every sender that never waits: an actor, an inbound envelope (MBX-120)
+	// and a message the interposer held, which the engine offers.
 	wait context.Context
 }
 
@@ -193,8 +195,11 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 // MBX-090's result and records: Send returns nil for an enqueued message, a drop and a dead
 // letter, and an error wrapping ErrMailboxFull for a refusal. The error and the records name the
 // target as the sender named it. Only an outside sender (r.wait set) to a BlockSender mailbox on
-// a blocking engine waits for room (offerWaiting); for every other sender BlockSender acts as
-// FailSend.
+// a blocking engine, called outside engine context, waits for room (offerWaiting); for every other
+// sender BlockSender acts as FailSend. In engine context (a turn, or a timer or effect callback)
+// nothing may wait: the engine's goroutine would block, and with it the turns that free a slot and
+// the timer that ends an ask's wait (MBX-070, MSG-330), as Shutdown (ACT-060) and Await (MSG-460)
+// never wait there either.
 //
 // Every message offer handles is a user message of Send, the request of an Ask or an arrival
 // (MBX-120); replies, piped replies, timer messages and signals never come here (MBX-035). Admission
@@ -225,7 +230,7 @@ func (s *System) offer(r routeRequest) outcome {
 	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, size: r.size, kind: entrySent}
 	var out mailbox.Outcome
 	var evicted entry
-	if r.wait != nil && s.eng.Blocking && c.blocksSenders() {
+	if r.wait != nil && s.eng.Blocking && !s.eng.Scheduler.InTurn() && c.blocksSenders() {
 		var err error
 		if out, err = s.offerWaiting(c, r, e, shed); err != nil {
 			// The context ended before the entry got a slot: a rejection, never reported to
