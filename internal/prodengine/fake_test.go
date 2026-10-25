@@ -106,6 +106,21 @@ func workerGoroutines() int {
 	}
 }
 
+// settledGoroutines returns runtime.NumGoroutine() once it has not changed for 50 ms, or after
+// 2 s, so goroutines that earlier tests left exiting do not count.
+func settledGoroutines() int {
+	n := runtime.NumGoroutine()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+		m := runtime.NumGoroutine()
+		if m == n {
+			return n
+		}
+		n = m
+	}
+	return n
+}
+
 // panicText runs f and returns the text of the value it panicked with, or "" if it returned.
 func panicText(f func()) (text string) {
 	defer func() {

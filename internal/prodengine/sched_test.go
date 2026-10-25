@@ -293,7 +293,7 @@ func TestParkPassesWakeOn(t *testing.T) {
 	if ent, ok := w1.find(false); !ok || ent.actor != x {
 		t.Fatalf("w1's second look = %v, %v; want X", ent, ok)
 	}
-	// E is pushed before w1 leaves the park; its wakeOne picks w1, the most recent registrant.
+	// Y is pushed before w1 leaves the park; its wakeOne picks w1, the most recent registrant.
 	y.slot.Ready()
 	s.pushGlobal(y)
 	if !woken(w1) || w1.parked {
