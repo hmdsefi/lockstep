@@ -128,7 +128,7 @@ func TestATEFF23ProductionPool(t *testing.T) {
 		}
 	})
 
-	start := time.Now()
+	bStart := make(chan time.Time, 1) // when Do(B) was called
 	send(t, sys, pid, any(func(ctx *Context[any]) {
 		Do(ctx, effA, func(v int64, err error) any { return prodFetched{"a", v, err} }, WithEffectTimeout(time.Hour))
 		// A holds the pool's one worker before B and C start: otherwise A could still sit in the
@@ -138,6 +138,7 @@ func TestATEFF23ProductionPool(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Error("A's Run did not start within 10s")
 		}
+		bStart <- time.Now()
 		Do(ctx, effB, func(v int64, err error) any { return prodFetched{"b", v, err} }, WithEffectTimeout(10*time.Millisecond))
 		Do(ctx, effC, func(v int64, err error) any { return prodFetched{"c", v, err} }, WithEffectTimeout(time.Hour))
 	}))
@@ -153,7 +154,7 @@ func TestATEFF23ProductionPool(t *testing.T) {
 	if b.tag != "b" || b.v != 0 || !errors.Is(b.err, ErrTimeout) {
 		t.Fatalf("second outcome = %+v, want B's zero value and ErrTimeout", b)
 	}
-	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+	if elapsed := time.Since(<-bStart); elapsed < 10*time.Millisecond {
 		t.Errorf("B timed out after %v, want at least its 10ms timeout counted from Do", elapsed)
 	}
 	noMsg(t, out, 50*time.Millisecond) // A is still running: nothing else arrives
