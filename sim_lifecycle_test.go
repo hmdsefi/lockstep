@@ -24,10 +24,11 @@ type refusedStep struct {
 	err  error
 }
 
-// AT-MBX-24 (third case), MBX-092: an actor on n1 asks a held, full DropNewest mailbox on n2; the
-// ask resolves with ErrMailboxFull as soon as the failure travels back, long before its timeout.
-func TestATMBX24RefusedAskAcrossNodes(t *testing.T) {
-	const askTimeout = 5 * time.Second
+// AT-MSG-38 and AT-MBX-24 (third case), MSG-345, MBX-092: an actor on n1 asks a held, full
+// DropNewest mailbox on n2 with a timeout of one hour; the ask resolves with ErrMailboxFull one
+// network round trip later, long before its timeout.
+func TestATMSG38RefusedAskOnAnotherNode(t *testing.T) {
+	const askTimeout = time.Hour
 	var err error
 	var resolved bool
 	var started, at time.Duration
@@ -60,7 +61,7 @@ func TestATMBX24RefusedAskAcrossNodes(t *testing.T) {
 		if e := sim.Send(s, "n1", a, refusedStep{to: lockstep.PIDAt[refusedReq]("n2", "/user/t2")}); e != nil {
 			w.T().Fatal(e)
 		}
-		w.RunFor(askTimeout + time.Second)
+		w.RunFor(time.Second)
 
 		tt := w.T()
 		if !resolved {
