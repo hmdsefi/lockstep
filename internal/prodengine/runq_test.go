@@ -4,6 +4,7 @@
 package prodengine
 
 import (
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -32,12 +33,14 @@ func actors(n int) []*fakeActor {
 	return out
 }
 
-// idOf returns the id of a fakeActor ref, or -1 for nil.
+// idOf returns the id of a fakeActor ref. For any other ref, nil included, it reports an error
+// and returns -1; it does not stop the test, so goroutines other than the test's may call it.
 func idOf(t testing.TB, r engine.ActorRef) int {
 	t.Helper()
 	f, ok := r.(*fakeActor)
 	if !ok {
-		t.Fatalf("ref is %T, want *fakeActor", r)
+		t.Errorf("ref is %T, want *fakeActor", r)
+		return -1
 	}
 	return f.id
 }
@@ -132,6 +135,34 @@ func TestLocalRingOverflow(t *testing.T) {
 	}
 }
 
+// TestLocalRingClearsTakenSlots checks that the owner clears the slots it takes entries from, by
+// pop and by an overflow, so a ring does not keep those actors reachable.
+func TestLocalRingClearsTakenSlots(t *testing.T) {
+	var q localRing
+	var g globalQueue
+	as := actors(LocalQueueSize + 1)
+	q.push(as[0], &g)
+	q.push(as[1], &g)
+	q.pop()
+	if r := q.buf[0].load(); r != nil {
+		t.Fatalf("slot 0 after pop holds %v, want nil", r)
+	}
+	for _, a := range as[2:LocalQueueSize] {
+		q.push(a, &g)
+	}
+	q.push(as[0], &g) // slot 0 again: the ring is full now
+	if !q.push(as[LocalQueueSize], &g) {
+		t.Fatal("push into a full ring did not overflow")
+	}
+	for i := range LocalQueueSize {
+		r := q.buf[i].load()
+		// The overflow took entries 1..128 of the ring, in slots 1..128.
+		if taken := i >= 1 && i <= LocalQueueSize/2; taken != (r == nil) {
+			t.Fatalf("slot %d holds %v after the overflow; want nil only in slots 1..%d", i, r, LocalQueueSize/2)
+		}
+	}
+}
+
 func TestGrabHalf(t *testing.T) {
 	for _, n := range []int{1, 2, 5, 256} {
 		var victim, thief localRing
@@ -157,15 +188,23 @@ func TestGrabHalf(t *testing.T) {
 }
 
 // TestGrabRacesOwner runs the owner against three thieves; every entry must be seen exactly once.
+// Every 10,000 pushes the thieves pause while the owner pushes until the ring overflows, so the
+// run covers both a steal and an overflow racing the thieves' last grabs; the test fails if
+// either never happened.
 func TestGrabRacesOwner(t *testing.T) {
 	const total = 100_000
 	as := actors(total)
 	seen := make([]atomic.Int32, total)
-	mark := func(r engine.ActorRef) { seen[idOf(t, r)].Add(1) }
+	mark := func(r engine.ActorRef) {
+		if id := idOf(t, r); id >= 0 {
+			seen[id].Add(1)
+		}
+	}
 
 	var victim localRing
 	var g globalQueue
-	var done atomic.Bool
+	var done, pause atomic.Bool
+	var grabs atomic.Int64
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Add(1)
@@ -173,9 +212,14 @@ func TestGrabRacesOwner(t *testing.T) {
 			defer wg.Done()
 			var mine localRing
 			for !done.Load() {
+				if pause.Load() {
+					runtime.Gosched()
+					continue
+				}
 				if victim.grabHalf(&mine) == 0 {
 					continue
 				}
+				grabs.Add(1)
 				for {
 					r, ok := mine.pop()
 					if !ok {
@@ -186,8 +230,27 @@ func TestGrabRacesOwner(t *testing.T) {
 			}
 		}()
 	}
-	for i, a := range as {
-		victim.push(a, &g)
+	overflows := 0
+	next := 0
+	push := func() {
+		if victim.push(as[next], &g) {
+			overflows++
+		}
+		next++
+	}
+	for next < total {
+		// A paused thief finishes at most one grab of at most LocalQueueSize/2 entries, so the
+		// ring overflows within 4*LocalQueueSize pushes.
+		if next%10_000 == 0 && total-next > 4*LocalQueueSize {
+			pause.Store(true)
+			for before := overflows; overflows == before; {
+				push()
+			}
+			pause.Store(false)
+			continue
+		}
+		i := next
+		push()
 		if i%3 == 0 {
 			if r, ok := victim.pop(); ok {
 				mark(r)
@@ -214,6 +277,9 @@ func TestGrabRacesOwner(t *testing.T) {
 		if n := seen[i].Load(); n != 1 {
 			t.Fatalf("entry %d seen %d times, want 1", i, n)
 		}
+	}
+	if grabs.Load() == 0 || overflows == 0 {
+		t.Fatalf("grabs = %d, overflows = %d; want both > 0, or the run raced nothing", grabs.Load(), overflows)
 	}
 }
 
