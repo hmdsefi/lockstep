@@ -1,0 +1,144 @@
+// Copyright 2026 Hamed Yousefi
+// SPDX-License-Identifier: MPL-2.0
+
+package filestore
+
+import (
+	"encoding/binary"
+	"fmt"
+	"hash/crc32"
+
+	"github.com/hmdsefi/lockstep/persist"
+)
+
+const (
+	headerSize = 8 // uint32 payload length, uint32 CRC-32C of the payload
+
+	journalFixed    = 12               // uint64 firstSeq, uint32 count
+	minJournalBytes = journalFixed + 4 // at least one entry: its length prefix
+	snapshotFixed   = 8                // uint64 seq
+	entryLenSize    = 4                // uint32 length before every event
+)
+
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// encodeJournalRecord returns the record of one batch: the header, then firstSeq (the Seq of
+// events[0]), the count and the length-prefixed event data. The sequence numbers of the later
+// events are implied. It returns an error wrapping ErrTooLarge if the payload would exceed
+// MaxRecordSize.
+func encodeJournalRecord(events []persist.Event) ([]byte, error) {
+	if len(events) == 0 {
+		return nil, fmt.Errorf("filestore: empty batch")
+	}
+	size := int64(journalFixed)
+	for _, e := range events {
+		size += entryLenSize + int64(len(e.Data))
+		if size > MaxRecordSize {
+			return nil, fmt.Errorf("filestore: batch of %d events exceeds %d bytes: %w",
+				len(events), MaxRecordSize, ErrTooLarge)
+		}
+	}
+	rec := make([]byte, headerSize, headerSize+int(size))
+	rec = binary.LittleEndian.AppendUint64(rec, events[0].Seq)
+	rec = binary.LittleEndian.AppendUint32(rec, uint32(len(events))) //nolint:gosec // len(events) <= size/4 <= MaxRecordSize
+	for _, e := range events {
+		rec = binary.LittleEndian.AppendUint32(rec, uint32(len(e.Data))) //nolint:gosec // len(e.Data) < MaxRecordSize
+		rec = append(rec, e.Data...)
+	}
+	return seal(rec), nil
+}
+
+// encodeSnapshotRecord returns the record of a snapshot: the header, then seq and the data. It
+// returns an error wrapping ErrTooLarge if the payload would exceed MaxSnapshotSize.
+func encodeSnapshotRecord(snap persist.Snapshot) ([]byte, error) {
+	if int64(len(snap.Data))+snapshotFixed > MaxSnapshotSize {
+		return nil, fmt.Errorf("filestore: snapshot of %d bytes exceeds %d bytes: %w",
+			len(snap.Data), MaxSnapshotSize-snapshotFixed, ErrTooLarge)
+	}
+	rec := make([]byte, headerSize, headerSize+snapshotFixed+len(snap.Data))
+	rec = binary.LittleEndian.AppendUint64(rec, snap.Seq)
+	rec = append(rec, snap.Data...)
+	return seal(rec), nil
+}
+
+// seal fills the header of rec, whose first headerSize bytes are reserved, from the payload
+// behind them.
+func seal(rec []byte) []byte {
+	payload := rec[headerSize:]
+	binary.LittleEndian.PutUint32(rec[0:], uint32(len(payload))) //nolint:gosec // callers bound the payload by MaxRecordSize or MaxSnapshotSize
+	binary.LittleEndian.PutUint32(rec[4:], crc32.Checksum(payload, castagnoli))
+	return rec
+}
+
+// payloadOf returns the payload of the record at the start of b and the record's size. It
+// applies the checks every record shares, in order: the header is complete, the length is in
+// [minLen, maxLen], the payload is complete, the checksum matches. A failure wraps ErrCorrupt.
+func payloadOf(b []byte, minLen, maxLen uint32) (payload []byte, size int, err error) {
+	if len(b) < headerSize {
+		return nil, 0, fmt.Errorf("%w: incomplete header (%d of %d bytes)", ErrCorrupt, len(b), headerSize)
+	}
+	l := binary.LittleEndian.Uint32(b[0:])
+	if l < minLen || l > maxLen {
+		return nil, 0, fmt.Errorf("%w: record length %d out of range [%d, %d]", ErrCorrupt, l, minLen, maxLen)
+	}
+	if len(b)-headerSize < int(l) { // l is at most maxLen, so it fits an int
+		return nil, 0, fmt.Errorf("%w: incomplete payload (%d of %d bytes)", ErrCorrupt, len(b)-headerSize, l)
+	}
+	payload = b[headerSize : headerSize+int(l)]
+	if crc32.Checksum(payload, castagnoli) != binary.LittleEndian.Uint32(b[4:]) {
+		return nil, 0, fmt.Errorf("%w: checksum mismatch", ErrCorrupt)
+	}
+	return payload, headerSize + int(l), nil
+}
+
+// parseJournalRecord parses the journal record at the start of b and returns its events, with
+// Seq values firstSeq, firstSeq+1 and so on, and the record's size in bytes. Bytes after the
+// record are ignored. The Data of the events point into b, with their capacity limited so an
+// append cannot reach a neighbour. A record that is not valid (incomplete, out of range, bad
+// checksum, or not parsing exactly) returns an error wrapping ErrCorrupt.
+func parseJournalRecord(b []byte) ([]persist.Event, int, error) {
+	payload, size, err := payloadOf(b, minJournalBytes, MaxRecordSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	first := binary.LittleEndian.Uint64(payload[0:])
+	count := binary.LittleEndian.Uint32(payload[8:])
+	body := payload[journalFixed:]
+	if count == 0 {
+		return nil, 0, fmt.Errorf("%w: batch count 0", ErrCorrupt)
+	}
+	if uint64(count)*entryLenSize > uint64(len(body)) {
+		return nil, 0, fmt.Errorf("%w: %d entries do not fit in %d bytes (entry lengths)", ErrCorrupt, count, len(body))
+	}
+	events := make([]persist.Event, 0, count)
+	for i := range count {
+		if len(body) < entryLenSize {
+			return nil, 0, fmt.Errorf("%w: entry %d is cut off (entry lengths)", ErrCorrupt, i)
+		}
+		n := binary.LittleEndian.Uint32(body)
+		body = body[entryLenSize:]
+		if uint64(n) > uint64(len(body)) {
+			return nil, 0, fmt.Errorf("%w: entry %d of %d bytes exceeds the payload (entry lengths)", ErrCorrupt, i, n)
+		}
+		events = append(events, persist.Event{Seq: first + uint64(i), Data: body[:n:n]})
+		body = body[n:]
+	}
+	if len(body) != 0 {
+		return nil, 0, fmt.Errorf("%w: %d bytes after the last entry (entry lengths)", ErrCorrupt, len(body))
+	}
+	return events, size, nil
+}
+
+// parseSnapshotRecord parses the snapshot record at the start of b and returns the snapshot, its
+// Data pointing into b, and the record's size in bytes. An invalid record returns an error
+// wrapping ErrCorrupt.
+func parseSnapshotRecord(b []byte) (persist.Snapshot, int, error) {
+	payload, size, err := payloadOf(b, snapshotFixed, MaxSnapshotSize)
+	if err != nil {
+		return persist.Snapshot{}, 0, err
+	}
+	return persist.Snapshot{
+		Seq:  binary.LittleEndian.Uint64(payload),
+		Data: payload[snapshotFixed:len(payload):len(payload)],
+	}, size, nil
+}
