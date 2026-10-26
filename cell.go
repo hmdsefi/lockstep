@@ -8,6 +8,8 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/mailbox"
@@ -52,6 +54,15 @@ type actorCell interface {
 	requestStop(reason StopReason, from engine.ActorRef)
 	// lifecycle returns the cell's state and incarnation number; any goroutine may call it.
 	lifecycle() (supervise.State, uint32)
+	// turnSeq returns the cell's turn counter, odd while a turn runs (OVL-520); any goroutine may
+	// call it.
+	turnSeq() uint64
+	// markStuck marks the turn whose counter is seq, which started at start, stuck, unless that
+	// turn has ended (OVL-520). The watchdog's adapter calls it.
+	markStuck(seq uint64, start time.Time)
+	// stuck reports whether the turn in progress is marked stuck (OVL-520); any goroutine may call
+	// it, and it takes no lock.
+	stuck() bool
 }
 
 // cell is one actor: the engine.ActorRef that engines schedule (ENG-300). The same cell, with the
@@ -86,6 +97,12 @@ type cell[M any] struct {
 	// offer and the turn's pops, its state bytes in turns.
 	mem memCount
 
+	// turns is the cell's turn counter, odd while a turn runs, and stuckAt the watchdog's mark of a
+	// stuck turn, nil if none (OVL-520, stuck.go). Only RunTurn adds to turns and clears stuckAt;
+	// the watchdog's adapter reads turns and stores stuckAt.
+	turns   atomic.Uint64
+	stuckAt atomic.Pointer[stuckMark]
+
 	// guarded by mu
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)
 	stopReq bool   // a stop request was queued; later ones are discarded (SUP-050, ACT-710)
@@ -98,6 +115,7 @@ type cell[M any] struct {
 	held, heldReady bool
 
 	// turn-owned
+	turn    uint64          // the value of turns during the turn in progress (stuck.go)
 	state   supervise.State // changed only by setState, along the edges of SUP-010
 	inc     uint32          // incarnation number: 0 at spawn, +1 per started incarnation (SUP-020)
 	actor   Actor[M]

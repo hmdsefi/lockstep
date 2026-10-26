@@ -266,9 +266,12 @@ func (c *cell[M]) drain() {
 
 // callStopped calls Stopped with reason r as a guarded call during the turn. A failure in it (a
 // panic or a Fail) is a cleanup failure (SUP-110): it is reported and the stop or restart
-// continues as if Stopped had returned.
+// continues as if Stopped had returned. A stuck Stopped only has its mark cleared (OVL-530): the
+// stop or restart goes on.
 func (c *cell[M]) callStopped(r StopReason) {
-	if failed, err := c.callGuarded(func() { c.stopper.Stopped(c.ctx, r) }); failed {
+	failed, err := c.callGuarded(func() { c.stopper.Stopped(c.ctx, r) })
+	c.unmark()
+	if failed {
 		c.failCleanup(err)
 	}
 }

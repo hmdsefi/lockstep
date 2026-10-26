@@ -23,8 +23,9 @@ const (
 	// DropOldest drops the oldest sent message in the mailbox, records the drop and enqueues the
 	// new one. Send returns nil.
 	DropOldest
-	// BlockSender makes an outside sender (a *System) wait until the mailbox has room and the
-	// System admits messages again (see WithAdmission), or until its context ends. For a sender
+	// BlockSender makes an outside sender (a *System) wait until the mailbox has room, the System
+	// admits messages again (see WithAdmission) and the actor is not stuck (see WithWatchdog), or
+	// until its context ends. For a sender
 	// inside an actor, and in simulation, which cannot make a caller wait, it behaves as FailSend.
 	BlockSender
 )

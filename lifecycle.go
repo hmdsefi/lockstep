@@ -111,10 +111,18 @@ func (c *cell[M]) lifecycle() (supervise.State, uint32) {
 }
 
 // callHandler calls fn, a handler of the live incarnation with source src, as a guarded call in
-// the in-turn window (ACT-120, SUP-140), and hands a failure to handlerFailed.
+// the in-turn window (ACT-120, SUP-140), and hands a failure to handlerFailed. If the watchdog
+// marked the turn stuck while fn ran, it clears the mark and fails the incarnation with the stuck
+// failure, unless fn failed itself, whose failure wins (OVL-530). A mark that came while runtime
+// code ran before fn is cleared first, without a failure.
 func (c *cell[M]) callHandler(src supervise.Source, fn func()) {
 	c.handled++
-	if failed, err := c.callGuarded(fn); failed {
+	c.unmark()
+	failed, err := c.callGuarded(fn)
+	if m := c.unmark(); m != nil && !failed {
+		failed, err = true, c.stuckFailure(m)
+	}
+	if failed {
 		c.handlerFailed(src, err)
 	}
 }
