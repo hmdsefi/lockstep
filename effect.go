@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/hooks"
 	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
@@ -118,11 +119,8 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 		return 0
 	}
 
-	// EFF-020: the ID, the start record, the timeout timer, the engine.
-	id := EffectID(c.sys.effectSeq.Add(1))
 	want := reflect.TypeFor[T]()
 	pe := &pendingEffect[M]{
-		id:   id,
 		name: name,
 		inc:  ctx.inc,
 		// bind turns the engine's result into the call of done, or reports a value that is not a T
@@ -139,14 +137,29 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 			return func() M { return done(val, err) }, nil
 		},
 	}
+	return c.startEffect(pe, cfg.timeout, e, func(rctx context.Context) (any, error) {
+		v, err := e.Run(rctx)
+		return v, err
+	})
+}
+
+// startEffect starts pe, an effect of the live incarnation that is not ending, with timeout and
+// the engine request's value and run (EFF-020): it gives pe the system's next ID, records
+// lockstep.effect.start, puts pe in the pending table, arms the timeout timer and calls the
+// engine's Effects.Start. It returns pe's ID. Do and StartInternal share it, so their effects
+// share the ID counter, the table, the timeout and the records (PER-240).
+func (c *cell[M]) startEffect(pe *pendingEffect[M], timeout time.Duration, value any, run func(context.Context) (any, error)) EffectID {
+	id := EffectID(c.sys.effectSeq.Add(1))
+	pe.id = id
+	name := pe.name
 	eng := c.sys.eng
 	if eng.Tracer.Enabled() {
 		eng.Tracer.Record("lockstep.effect.start",
 			engine.Attr{Key: "actor", Value: c.addr.String()},
-			engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(ctx.inc), 10)},
+			engine.Attr{Key: "inc", Value: strconv.FormatUint(uint64(pe.inc), 10)},
 			engine.Attr{Key: "effect", Value: strconv.FormatUint(uint64(id), 10)},
 			engine.Attr{Key: "name", Value: name},
-			engine.Attr{Key: "timeout", Value: cfg.timeout.String()},
+			engine.Attr{Key: "timeout", Value: timeout.String()},
 		)
 	}
 	// The effect is in the table before the timer or the engine can call back, which on the local
@@ -159,17 +172,14 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 	}
 	c.effects[id] = pe
 	c.emu.Unlock()
-	pe.cancelTimer = eng.Clock.AfterFunc(cfg.timeout, effectTimeoutLabel, func() { c.effectTimedOut(pe) })
+	pe.cancelTimer = eng.Clock.AfterFunc(timeout, effectTimeoutLabel, func() { c.effectTimedOut(pe) })
 
 	cancel := eng.Effects.Start(engine.EffectRequest{
 		ID:    uint64(id),
 		Name:  name,
 		Actor: c.addr.engine(),
-		Value: e,
-		Run: func(rctx context.Context) (any, error) {
-			v, err := e.Run(rctx)
-			return v, err
-		},
+		Value: value,
+		Run:   run,
 	}, func(v any, err error) { c.effectDone(pe, v, err) })
 
 	c.emu.Lock()
@@ -188,16 +198,18 @@ func Do[T, M any](ctx *Context[M], e Effect[T], done func(T, error) M, opts ...E
 }
 
 // pendingEffect is one effect of a cell that has no outcome yet (EFF §3, §11). It belongs to the
-// incarnation inc that called Do. id, name, inc and bind never change; cancelRun is guarded by the
-// cell's emu, and the effect is pending exactly while the cell's table holds it. Do sets
-// cancelTimer before it calls Effects.Start, and it is read only after Start: by effectDone, which
-// the engine calls after Start, and by cancelEffect, which runs in the cell's turn after Do has
-// returned.
+// incarnation inc that called Do or StartInternal. id, name, inc, bind and internal never change
+// once startEffect has set id; cancelRun is guarded by the cell's emu, and the effect is pending
+// exactly while the cell's table holds it. startEffect sets cancelTimer before it calls
+// Effects.Start, and it is read only after Start: by effectDone, which the engine calls after
+// Start, and by cancelEffect, which runs in the cell's turn after Do or StartInternal has
+// returned. A Do effect has bind; an internal effect has internal instead (PER-240).
 type pendingEffect[M any] struct {
-	id   EffectID
-	name string
-	inc  uint32
-	bind func(v any, err error) (call func() M, misuse error)
+	id       EffectID
+	name     string
+	inc      uint32
+	bind     func(v any, err error) (call func() M, misuse error)
+	internal func(ctx any, v any, err error) // the internal effect's Done; nil for Do
 
 	cancelTimer engine.Cancel // of the timeout timer
 	cancelRun   engine.Cancel // the Cancel that Effects.Start returned; nil until Start has returned
@@ -299,6 +311,10 @@ func (c *cell[M]) effectTimedOut(pe *pendingEffect[M]) {
 // says outcome=error. If the incarnation has ended and no entry can be enqueued, the result is
 // recorded as dropped (MBX-170). It runs no lock and no user code under a lock.
 func (c *cell[M]) deliverEffect(pe *pendingEffect[M], v any, err error, outcome string) {
+	if pe.internal != nil {
+		c.deliverInternal(pe, v, err, outcome)
+		return
+	}
 	call, misuse := pe.bind(v, err)
 	if misuse != nil {
 		c.sys.eng.Failer.Fail(misuse)
@@ -352,4 +368,78 @@ func (c *cell[M]) recordEffectDone(inc uint32, id EffectID, name, outcome string
 		engine.Attr{Key: "outcome", Value: outcome},
 		engine.Attr{Key: "err", Value: desc},
 	)
+}
+
+// startInternal is ActorControl.StartInternal for the incarnation of ctx (PER-240): e starts as a
+// Do effect would, with DefaultEffectTimeout, and its outcome reaches e.Done through the system
+// queue (deliverInternal). It panics outside a handler of the incarnation, for an invalid name and
+// for a nil Run or Done. While the incarnation is stopping or restarting it starts nothing, records
+// lockstep.effect.done with effect 0 and outcome refused, and returns a cancel that does nothing
+// (EFF-030). Otherwise the cancel it returns cancels the effect as CancelEffect does (EFF-110); it
+// must be called in a handler of the incarnation, and does nothing once the effect has an outcome.
+func (c *cell[M]) startInternal(ctx *Context[M], e hooks.InternalEffect) (cancel func()) {
+	ctx.mustInTurn()
+	if !engine.ValidEffectName(e.Name) {
+		panic(fmt.Sprintf("lockstep: StartInternal: invalid effect name %q", e.Name))
+	}
+	if e.Run == nil {
+		panic("lockstep: StartInternal: nil Run")
+	}
+	if e.Done == nil {
+		panic("lockstep: StartInternal: nil Done")
+	}
+	if c.ending() {
+		c.recordEffectDone(ctx.inc, 0, e.Name, outcomeRefused, nil) // EFF-030
+		return func() {}
+	}
+	pe := &pendingEffect[M]{name: e.Name, inc: ctx.inc, internal: e.Done}
+	c.startEffect(pe, DefaultEffectTimeout, e, e.Run)
+	return func() {
+		ctx.mustInTurn()
+		c.cancelEffect(pe)
+	}
+}
+
+// internalResult is the system message that carries an internal effect's outcome to a later turn
+// of its incarnation inc (PER-240): a system message, so neither paused user delivery nor a full
+// mailbox holds it back. res is the error when the outcome has one, otherwise the value, which a
+// drop record describes.
+type internalResult struct {
+	inc  uint32
+	done func(ctx any, v any, err error)
+	v    any
+	err  error
+	res  any
+}
+
+func (internalResult) isSysMsg() {}
+
+// deliverInternal ends the internal effect pe with outcome: it records lockstep.effect.done and
+// pushes the outcome to the system queue. After the final stop the queue is closed and the outcome
+// is recorded as dropped (MBX-170). It runs no user code.
+func (c *cell[M]) deliverInternal(pe *pendingEffect[M], v any, err error, outcome string) {
+	c.recordEffectDone(pe.inc, pe.id, pe.name, outcome, err)
+	m := internalResult{inc: pe.inc, done: pe.internal, v: v, err: err, res: v}
+	if err != nil {
+		m.res = err
+	}
+	if !c.offerSystem(m, nil) {
+		c.sys.recordDropEnded(c.addr, pe.inc, m.res)
+	}
+}
+
+// processInternalResult handles the internal effect outcome m that the turn popped (PER-240). Done
+// runs only in Running and only for the live incarnation: an outcome of an incarnation that has
+// ended, or is ending, is dropped as incarnation-ended (PER-160), and one that reaches a
+// Suspended incarnation is dropped as not-running. Done is a guarded handler call with source
+// receive, so a panic or a Fail in it fails the actor as one in Receive would (SUP-140).
+func (c *cell[M]) processInternalResult(m internalResult) {
+	switch {
+	case m.inc != c.inc || c.ctx == nil || c.ending():
+		c.sys.recordDropEnded(c.addr, m.inc, m.res)
+	case c.state != supervise.Running:
+		c.sys.recordDropNotRunning(c.addr, m.res)
+	default:
+		c.callHandler(supervise.InReceive, func() { m.done(c.ctx, m.v, m.err) })
+	}
 }

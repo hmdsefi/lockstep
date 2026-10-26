@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -155,12 +156,16 @@ func TestControlMisuse(t *testing.T) {
 	}
 
 	var kept *Context[any]
+	run := func(context.Context) (any, error) { return nil, nil }
+	done := func(any, any, error) {}
 	v := inProbe(t, sys, pid, func(ctx *Context[any]) any {
 		kept = ctx
 		ctl := hooks.Control(ctx)
 		var got []any
 		for _, f := range []func(){
 			func() { ctl.StartInternal(hooks.InternalEffect{Name: "x"}) },
+			func() { ctl.StartInternal(hooks.InternalEffect{Name: "x", Run: run}) },
+			func() { ctl.StartInternal(hooks.InternalEffect{Name: "-x", Run: run, Done: done}) },
 			func() { ctl.Record("lockstep.persist.test", "a") },
 		} {
 			got = append(got, recoverOf(f))
@@ -168,13 +173,18 @@ func TestControlMisuse(t *testing.T) {
 		return got
 	})
 	panics, _ := v.([]any)
-	want := []any{"lockstep: StartInternal: not implemented", `lockstep: ActorControl.Record("lockstep.persist.test"): odd number of key-value arguments`}
+	want := []any{"lockstep: StartInternal: nil Run", "lockstep: StartInternal: nil Done",
+		`lockstep: StartInternal: invalid effect name "-x"`, `lockstep: ActorControl.Record("lockstep.persist.test"): odd number of key-value arguments`}
 	if fmt.Sprint(panics) != fmt.Sprint(want) {
 		t.Errorf("in a turn: panics %q, want %q", panics, want)
 	}
 	ctl := hooks.Control(kept)
 	if got, want := mustPanic(t, func() { ctl.PauseUser(true) }), "lockstep: Context of "+pid.String()+" used outside its turn"; got != want {
 		t.Errorf("PauseUser outside a turn panicked with %v, want %q", got, want)
+	}
+	outside := hooks.InternalEffect{Name: "x", Run: run, Done: done}
+	if got, want := mustPanic(t, func() { ctl.StartInternal(outside) }), "lockstep: Context of "+pid.String()+" used outside its turn"; got != want {
+		t.Errorf("StartInternal outside a turn panicked with %v, want %q", got, want)
 	}
 	if ctl.Address() != pid.String() || ctl.TraceEnabled() != sys.eng.Tracer.Enabled() {
 		t.Errorf("outside a turn: Address() = %q, TraceEnabled() = %v", ctl.Address(), ctl.TraceEnabled())

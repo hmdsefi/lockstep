@@ -4,12 +4,14 @@
 package sim_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/hmdsefi/faultline/kernel"
+	"github.com/hmdsefi/faultline/kernel/fault"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
@@ -317,6 +319,338 @@ func TestHooksControlRecord(t *testing.T) {
 		recs := ofKind(w.Sim.Records(), "lockstep.persist.test")
 		if len(recs) != 1 || !slices.Equal(attrKeys(recs[0]), []string{"a"}) || attr(recs[0], "a") != "1" {
 			tt.Errorf("lockstep.persist.test records %v, want one with a=1", recs)
+		}
+	})
+}
+
+// inlineName is the name of the inline internal effects below. It is not reserved, so a test can
+// register a handler for it and check that the handler is never called.
+const inlineName = "test.inline"
+
+// inline returns an inline internal effect named inlineName with run and done; a nil run returns
+// (nil, nil).
+func inline(run func() (any, error), done func(ctx any, v any, err error)) hooks.InternalEffect {
+	if run == nil {
+		run = func() (any, error) { return nil, nil }
+	}
+	return hooks.InternalEffect{
+		Name:   inlineName,
+		Inline: true,
+		Run:    func(context.Context) (any, error) { return run() },
+		Done:   done,
+	}
+}
+
+// lastEvent returns the last kernel.event record of recs: the event running when recs was read.
+func lastEvent(recs []kernel.Record) kernel.Record {
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].Kind == "kernel.event" {
+			return recs[i]
+		}
+	}
+	return kernel.Record{}
+}
+
+// stepUntil runs the kernel's events one at a time until cond holds, failing the seed if the
+// queue runs dry first.
+func stepUntil(tt testing.TB, w *kernel.Sim, cond func() bool) {
+	tt.Helper()
+	for !cond() {
+		if !w.Step() {
+			tt.Fatal("the event queue ran dry")
+		}
+	}
+}
+
+// AT-PER-26, PER-250: two pauses in Started hold back three user messages; a resume from an
+// internal effect's Done hands them over in send order; the incarnation after a failure handles
+// messages without any PauseUser call.
+func TestATPER26PauseUser(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var got []int
+		starts, pauses, dones := 0, 0, 0
+		var a lockstep.PID[PMsg]
+		s.Node("n1", func(sys *lockstep.System) {
+			a = spawnControlled(sys, "a", &controlled[PMsg]{
+				started: func(ctx *lockstep.Context[PMsg]) {
+					starts++
+					if starts == 1 {
+						hooks.Control(ctx).PauseUser(true)
+						hooks.Control(ctx).PauseUser(true)
+						pauses += 2
+					}
+				},
+				receive: func(_ *lockstep.Context[PMsg], m PMsg) { got = append(got, m.N) },
+				signal: func(ctx *lockstep.Context[PMsg], _ lockstep.Signal) {
+					hooks.Control(ctx).StartInternal(inline(nil, func(ctx any, _ any, _ error) {
+						dones++
+						hooks.Control(ctx).PauseUser(false)
+					}))
+				},
+			})
+		})
+		w.RunFor(time.Millisecond)
+
+		sendPMsgs(tt, s, a, 1, 2, 3)
+		w.RunFor(time.Second)
+		if len(got) != 0 {
+			tt.Fatalf("Receive got %v while paused, want nothing", got)
+		}
+		hooks.Signal(s.System("n1"), engineAddr(a.Address()), wake())
+		w.RunFor(time.Second)
+		if dones != 1 || !slices.Equal(got, []int{1, 2, 3}) {
+			tt.Fatalf("after Done resumed (%d Done calls): Receive got %v, want [1 2 3]", dones, got)
+		}
+
+		if err := s.InjectFail(a.Address(), errors.New("boom")); err != nil {
+			tt.Fatalf("InjectFail: %v", err)
+		}
+		w.RunFor(time.Second)
+		sendPMsgs(tt, s, a, 4)
+		w.RunFor(time.Second)
+		if starts != 2 || pauses != 2 || !slices.Equal(got, []int{1, 2, 3, 4}) {
+			tt.Errorf("after the restart: %d starts, %d PauseUser calls, Receive got %v; want 2, 2 and [1 2 3 4]",
+				starts, pauses, got)
+		}
+	})
+}
+
+// AT-PER-25 (second sentence), PER-240: a panic in an internal effect's Done fails the actor like
+// a panic in Receive: lockstep.fail with source receive, and the supervisor decides on the panic.
+func TestATPER25DonePanicFailsActor(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var decided []error
+		var child lockstep.PID[PMsg]
+		s.Node("n1", func(sys *lockstep.System) {
+			strategy := lockstep.OneForOne(func(err error) lockstep.Directive {
+				decided = append(decided, err)
+				return lockstep.DirectiveStop
+			})
+			spawnControlled(sys, "p", &controlled[PMsg]{started: func(ctx *lockstep.Context[PMsg]) {
+				child = spawnControlled(ctx, "c", &controlled[PMsg]{started: func(ctx *lockstep.Context[PMsg]) {
+					hooks.Control(ctx).StartInternal(inline(nil, func(any, any, error) { panic("done panics") }))
+				}})
+			}}, lockstep.WithStrategy(strategy))
+		})
+		w.RunFor(time.Second)
+
+		var fails []kernel.Record
+		for _, r := range ofKind(w.Sim.Records(), "lockstep.fail") {
+			if attr(r, "actor") == child.String() {
+				fails = append(fails, r)
+			}
+		}
+		if len(fails) != 1 || attr(fails[0], "source") != "receive" || attr(fails[0], "err") != "lockstep: panic: done panics" {
+			tt.Errorf("lockstep.fail records of the child %v, want one with source receive for the panic in Done", fails)
+		}
+		var pe *lockstep.PanicError
+		if len(decided) != 1 || !errors.As(decided[0], &pe) || pe.Value != "done panics" {
+			tt.Errorf("the supervisor decided on %v, want one *lockstep.PanicError with value \"done panics\"", decided)
+		}
+	})
+}
+
+// PER-520, PER-240: an inline internal effect started in a turn at time t runs Run in its own
+// lockstep/effect event at t, outside the turn, and its completion in a second lockstep/effect
+// event, followed by the turn that calls Done. A handler registered for its name is never called,
+// and the effect records carry its name.
+func TestPER520InlineEvents(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		handled := 0
+		s.HandleEffect(inlineName, func(sim.EffectCall) sim.EffectResult {
+			handled++
+			return sim.EffectResult{}
+		})
+		var inTurn, runInTurn bool
+		var startEvent, runEvent, doneEvent kernel.Record
+		var runAt, doneAt int // the number of records when Run and Done ran
+		var dones []any
+		var a lockstep.PID[PMsg]
+		n1 := s.Node("n1", func(sys *lockstep.System) {
+			a = spawnControlled(sys, "a", &controlled[PMsg]{receive: func(ctx *lockstep.Context[PMsg], _ PMsg) {
+				inTurn = true
+				startEvent = lastEvent(w.Sim.Records())
+				hooks.Control(ctx).StartInternal(inline(func() (any, error) {
+					runInTurn = inTurn
+					recs := w.Sim.Records()
+					runAt, runEvent = len(recs), lastEvent(recs)
+					return 7, nil
+				}, func(dctx any, v any, err error) {
+					if _, ok := dctx.(*lockstep.Context[PMsg]); !ok || err != nil {
+						tt.Errorf("Done got ctx %T and err %v, want a *lockstep.Context[PMsg] and nil", dctx, err)
+					}
+					recs := w.Sim.Records()
+					doneAt, doneEvent = len(recs), lastEvent(recs)
+					dones = append(dones, v)
+				}))
+				inTurn = false
+			}})
+		})
+		w.RunFor(time.Millisecond)
+		sendPMsgs(tt, s, a, 1)
+		w.RunFor(time.Second)
+
+		if runEvent.Kind == "" || runInTurn {
+			tt.Fatalf("Run called: %v, inside the starting turn: %v; want called outside it", runEvent.Kind != "", runInTurn)
+		}
+		if startEvent.Text != "lockstep/turn" || runEvent.Text != "lockstep/effect" || runEvent.Node != n1.ID() || runEvent.At != startEvent.At {
+			tt.Errorf("Run ran in event %q on node %d at %v, started in %q at %v; want lockstep/effect on n1 at the start time",
+				runEvent.Text, runEvent.Node, runEvent.At, startEvent.Text, startEvent.At)
+		}
+		if !slices.Equal(dones, []any{7}) {
+			tt.Fatalf("Done got %v, want [7]", dones)
+		}
+		recs := w.Sim.Records()
+		var between []string
+		for _, r := range recs[runAt:doneAt] {
+			if r.Kind == "kernel.event" && r.Node == n1.ID() {
+				between = append(between, r.Text)
+			}
+		}
+		if !slices.Equal(between, []string{"lockstep/effect", "lockstep/turn"}) || doneEvent.Text != "lockstep/turn" || doneEvent.At != startEvent.At {
+			tt.Errorf("events of n1 from Run to Done %q, Done in %q at %v; want the completion event, then the turn that calls Done, at %v",
+				between, doneEvent.Text, doneEvent.At, startEvent.At)
+		}
+		if n := ran(recs, n1, "lockstep/effect"); n != 2 || handled != 0 {
+			tt.Errorf("%d lockstep/effect events and %d handler calls, want 2 and 0", n, handled)
+		}
+		starts, ends := ofKind(recs, "lockstep.effect.start"), ofKind(recs, "lockstep.effect.done")
+		if len(starts) != 1 || attr(starts[0], "name") != inlineName {
+			tt.Errorf("lockstep.effect.start records %v, want one named %q", starts, inlineName)
+		}
+		if len(ends) != 1 || attr(ends[0], "name") != inlineName || attr(ends[0], "outcome") != "ok" {
+			tt.Errorf("lockstep.effect.done records %v, want one named %q with outcome ok", ends, inlineName)
+		}
+	})
+}
+
+// PER-160, PER-520: an incarnation that ends between an inline effect's run and completion events
+// never runs Done, and a node crash discards the events still pending.
+func TestPER160InternalEffectCancelled(t *testing.T) {
+	// setup adds n1 with an actor that starts an inline effect on every user message; started
+	// and ran report that StartInternal returned and that Run ran, and dones counts Done's calls.
+	type probe struct {
+		n1           *kernel.Node
+		a            lockstep.PID[PMsg]
+		started, ran bool
+		dones        int
+	}
+	setup := func(s *sim.Sim) *probe {
+		p := &probe{}
+		p.n1 = s.Node("n1", func(sys *lockstep.System) {
+			p.a = spawnControlled(sys, "a", &controlled[PMsg]{receive: func(ctx *lockstep.Context[PMsg], _ PMsg) {
+				hooks.Control(ctx).StartInternal(inline(func() (any, error) {
+					p.ran = true
+					return nil, nil
+				}, func(any, any, error) { p.dones++ }))
+				p.started = true
+			}})
+		})
+		s.World().RunFor(time.Millisecond)
+		sendPMsgs(s.World().T(), s, p.a, 1)
+		return p
+	}
+
+	// The seeded tie-break orders the completion event among the same-time turns of the
+	// restart, so some seeds end the incarnation first (the effect is cancelled) and others
+	// deliver the completion to the failed incarnation (it is dropped). Done runs in neither.
+	cancelled := 0
+	t.Run("inject fail", func(t *testing.T) {
+		sim.Simulate(t, fullTrace(48), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			p := setup(s)
+			stepUntil(tt, w.Sim, func() bool { return p.ran })
+			if err := s.InjectFail(p.a.Address(), errors.New("boom")); err != nil {
+				tt.Fatalf("InjectFail: %v", err)
+			}
+			w.RunFor(time.Second)
+
+			recs := w.Sim.Records()
+			if p.dones != 0 {
+				tt.Errorf("Done ran %d times, want 0", p.dones)
+			}
+			ends := ofKind(recs, "lockstep.effect.done")
+			if len(ends) != 1 {
+				tt.Fatalf("lockstep.effect.done records %v, want one", ends)
+			}
+			var drops []kernel.Record
+			for _, r := range ofKind(recs, "lockstep.drop") {
+				if attr(r, "to") == p.a.String() {
+					drops = append(drops, r)
+				}
+			}
+			switch ran(recs, p.n1, "lockstep/effect") {
+			case 1: // the incarnation ended first: the completion event never ran
+				cancelled++
+				if attr(ends[0], "outcome") != "cancelled" || len(drops) != 0 {
+					tt.Errorf("effect.done %v and drops %v, want outcome=cancelled and no drop", ends[0], drops)
+				}
+			case 2: // the completion reached the failed incarnation and was dropped
+				if attr(ends[0], "outcome") != "ok" || len(drops) != 1 {
+					tt.Errorf("effect.done %v and drops %v, want outcome=ok and one drop", ends[0], drops)
+				}
+			default:
+				tt.Errorf("%d lockstep/effect events, want 1 or 2", ran(recs, p.n1, "lockstep/effect"))
+			}
+		})
+	})
+	if cancelled == 0 {
+		t.Error("no seed ended the incarnation before the completion event: outcome=cancelled is untested")
+	}
+	t.Logf("%d of 48 seeds ended the incarnation before the completion event", cancelled)
+
+	t.Run("crash before run", func(t *testing.T) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			p := setup(s)
+			stepUntil(tt, w.Sim, func() bool { return p.started })
+			w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: "n1"})
+			w.RunFor(time.Second)
+			if n := ran(w.Sim.Records(), p.n1, "lockstep/effect"); n != 0 || p.ran || p.dones != 0 {
+				tt.Errorf("after a crash before the run event: %d lockstep/effect events, Run ran %v, %d Done calls; want 0, false, 0",
+					n, p.ran, p.dones)
+			}
+		})
+	})
+
+	t.Run("crash after run", func(t *testing.T) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			p := setup(s)
+			stepUntil(tt, w.Sim, func() bool { return p.ran })
+			w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: "n1"})
+			w.RunFor(time.Second)
+			if n := ran(w.Sim.Records(), p.n1, "lockstep/effect"); n != 1 || p.dones != 0 {
+				tt.Errorf("after a crash between the events: %d lockstep/effect events, %d Done calls; want 1 and 0", n, p.dones)
+			}
+		})
+	})
+}
+
+// PER-520, PER-240: a panic in an inline Run reaches Done as the error the other engines give it,
+// with outcome=error, and does not fail the seed.
+func TestPER520InlineRunPanic(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var errs []error
+		s.Node("n1", func(sys *lockstep.System) {
+			spawnControlled(sys, "a", &controlled[PMsg]{started: func(ctx *lockstep.Context[PMsg]) {
+				hooks.Control(ctx).StartInternal(inline(func() (any, error) { panic("disk on fire") },
+					func(_ any, _ any, err error) { errs = append(errs, err) }))
+			}})
+		})
+		w.RunFor(time.Second)
+
+		want := `lockstep: effect "test.inline" panicked: disk on fire`
+		if len(errs) != 1 || errs[0] == nil || errs[0].Error() != want {
+			tt.Fatalf("Done got errors %v, want one %q", errs, want)
+		}
+		ends := ofKind(w.Sim.Records(), "lockstep.effect.done")
+		if len(ends) != 1 || attr(ends[0], "outcome") != "error" || attr(ends[0], "err") != want {
+			tt.Errorf("lockstep.effect.done records %v, want one with outcome error and err %q", ends, want)
 		}
 	})
 }

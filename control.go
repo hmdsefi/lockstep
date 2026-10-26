@@ -40,9 +40,9 @@ type actorControl[M any] struct {
 // Address returns the PID's String() (ACT-410).
 func (a actorControl[M]) Address() string { return a.ctx.cell.addr.String() }
 
-// StartInternal starts e for this incarnation (PER-240). It is not implemented yet.
-func (actorControl[M]) StartInternal(hooks.InternalEffect) (cancel func()) {
-	panic("lockstep: StartInternal: not implemented")
+// StartInternal starts e for this incarnation (PER-240): see cell.startInternal.
+func (a actorControl[M]) StartInternal(e hooks.InternalEffect) (cancel func()) {
+	return a.ctx.cell.startInternal(a.ctx, e)
 }
 
 // PauseUser stops (true) or resumes (false) the delivery of user messages to the incarnation from

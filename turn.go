@@ -165,6 +165,8 @@ func (c *cell[M]) processSystem(m sysMsg) {
 		c.endIncarnation(m)
 	case resume:
 		c.resumeIncarnation(m)
+	case internalResult:
+		c.processInternalResult(m)
 	case inject:
 		// A failure of the current incarnation, as one in Receive would be (SFT-040); in any
 		// other state there is nothing to fail.

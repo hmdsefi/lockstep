@@ -4,6 +4,7 @@
 package sim
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"strconv"
@@ -70,7 +71,8 @@ func (s *Sim) HandleEffect(name string, h func(c EffectCall) EffectResult) {
 	s.handlers[name] = h
 }
 
-// Start is the engine's Effects. It never calls req.Run (EFF-400): it calls the Sim's handler
+// Start is the engine's Effects. For an inline internal effect it runs req.Run in a node event of
+// its own (startInline). For any other effect it never calls req.Run (EFF-400): it calls the Sim's handler
 // for req.Name inside this call, so inside the turn that called Do, and schedules the handler's
 // result as one lockstep/effect node event after the handler's latency, which calls done
 // (EFF-430). The Cancel it returns cancels that event. The handler runs with no runtime lock
@@ -85,6 +87,9 @@ func (s *Sim) HandleEffect(name string, h func(c EffectCall) EffectResult) {
 func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error)) engine.Cancel {
 	if !e.canSchedule() {
 		return notPending
+	}
+	if ie, ok := req.Value.(hooks.InternalEffect); ok && ie.Inline {
+		return e.startInline(req, done)
 	}
 	h := e.s.handlers[req.Name]
 	if h == nil {
@@ -122,6 +127,59 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 		}
 		return cancelled
 	}
+}
+
+// startInline runs the inline internal effect req (PER-520): it schedules a lockstep/effect event
+// at the current time that calls req.Run with a background context, outside any turn, and then
+// schedules a second lockstep/effect event at the same time that calls done with Run's result.
+// A panic in Run becomes the error the other engines give it (ENG-430), never a seed failure.
+// Handlers registered with HandleEffect are never consulted. Both events go through the counted
+// schedule path, so they are lockstep activity (SIM-250), and a node crash discards them. The
+// effect is held for the leak check from Start until done is called or the Cancel succeeds
+// (SIM-290). The Cancel cancels whichever of the two events is pending and reports true unless
+// done has been called or the effect was cancelled already; a cancelled effect never calls done.
+func (e *simEngine) startInline(req engine.EffectRequest, done func(v any, err error)) engine.Cancel {
+	actor, held := req.Actor.String(), &heldEffect{id: req.ID, name: req.Name}
+	var cancelled, finished bool
+	var pending engine.Cancel // the Cancel of the event to run next
+	pending = e.schedule(0, effectLabel, func() {
+		if cancelled || !e.canSchedule() {
+			return
+		}
+		v, err := runInline(req)
+		if cancelled || !e.canSchedule() { // the effect was cancelled, or the node crashed, during Run
+			return
+		}
+		pending = e.schedule(0, effectLabel, func() {
+			if cancelled || !e.canSchedule() {
+				return
+			}
+			finished = true
+			e.release(actor, held)
+			done(v, err)
+		})
+	})
+	e.hold(actor, held)
+	return func() bool {
+		if cancelled || finished {
+			return false
+		}
+		cancelled = true
+		pending()
+		e.release(actor, held)
+		return true
+	}
+}
+
+// runInline calls req.Run with a background context and turns a panic into an error with the
+// text of the other engines (ENG-430).
+func runInline(req engine.EffectRequest) (v any, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			v, err = nil, fmt.Errorf("lockstep: effect %q panicked: %v", req.Name, p)
+		}
+	}()
+	return req.Run(context.Background())
 }
 
 // effectCall returns the EffectCall of req on e's node and incarnation (EFF-400, EFF-420).
