@@ -44,6 +44,7 @@ type internalActor struct {
 	run     func(context.Context) (any, error) // the effect's Run; nil returns (nil, nil)
 	onUser  func(*Context[iMsg], iMsg)         // runs in Receive, after got
 	doneCh  chan doneCall                      // if set, gets every Done call
+	onDone  func()                             // if set, runs first in every Done call
 
 	ctx    *Context[iMsg] // the Context of the incarnation
 	cancel func()         // StartInternal's result
@@ -60,6 +61,9 @@ func (a *internalActor) effect() hooks.InternalEffect {
 		Name: internalName,
 		Run:  run,
 		Done: func(ctx any, v any, err error) {
+			if a.onDone != nil {
+				a.onDone()
+			}
 			d := doneCall{ctx: ctx, v: v, err: err, received: len(a.got)}
 			a.dones = append(a.dones, d)
 			if a.doneCh != nil {
@@ -310,6 +314,8 @@ func TestPER240InternalEffectSuspended(t *testing.T) {
 			starts := 0
 			child := &internalActor{inStart: true}
 			p := &parentOf{child: child, directive: tc.directive}
+			var decidedAtDone []int // len(p.decided) at each Done call
+			child.onDone = func() { decidedAtDone = append(decidedAtDone, len(p.decided)) }
 			strategy := OneForOne(func(err error) Directive {
 				p.decided = append(p.decided, err)
 				return p.directive
@@ -352,6 +358,9 @@ func TestPER240InternalEffectSuspended(t *testing.T) {
 				d := child.dones[0]
 				if d.ctx != any(first) || d.v != 42 || d.err != nil {
 					t.Errorf("Done got (%p, %v, %v), want the first incarnation's Context, 42 and nil", d.ctx, d.v, d.err)
+				}
+				if len(decidedAtDone) != 1 || decidedAtDone[0] != 1 {
+					t.Errorf("the parent had decided %v times at the Done calls, want [1]: Done runs only after the resume", decidedAtDone)
 				}
 				return
 			}

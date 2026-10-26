@@ -785,8 +785,8 @@ func TestATPER14Panics(t *testing.T) {
 }
 
 // AT-PER-15, PER-140: a failed commit or write fails the counter with PER-140's error and
-// acknowledges nothing; Fail during Handle discards the events and fails the counter with the
-// given error.
+// acknowledges nothing; Fail during Handle discards the events and the Then callbacks and fails
+// the counter with the given error, so the ask gets no reply.
 func TestATPER15WriteCommitFailure(t *testing.T) {
 	errX := errors.New("write failed")
 	t.Run("commit", func(t *testing.T) {
@@ -841,10 +841,15 @@ func TestATPER15WriteCommitFailure(t *testing.T) {
 			r := newCounterRun(s)
 			r.node()
 			w.RunFor(time.Millisecond)
-			if err := sim.Send(s, "n1", r.pid, CounterCmd(FailWith{N: 7, Err: errX})); err != nil {
-				tt.Fatalf("Send: %v", err)
+			_, err := sim.Ask(s, "n1", r.pid, func(rt lockstep.ReplyTo[int64]) CounterCmd {
+				return FailWith{N: 7, Err: errX, ReplyTo: rt}
+			})
+			if !errors.Is(err, lockstep.ErrTimeout) {
+				tt.Errorf("Ask(FailWith{7, errX}): %v, want ErrTimeout", err)
 			}
-			w.RunFor(50 * time.Millisecond)
+			if replies := replyLog(r.log); len(replies) != 0 {
+				tt.Errorf("Then callbacks ran: %q", replies)
+			}
 			if len(r.errs) != 1 || r.errs[0] != errX {
 				tt.Errorf("errs %v, want [%v]", r.errs, errX)
 			}
@@ -856,6 +861,36 @@ func TestATPER15WriteCommitFailure(t *testing.T) {
 				tt.Errorf("lockstep.persist.fail records %v, want none", pf)
 			}
 		})
+	})
+}
+
+// PER-120: Stop inside a Handle call that returns no events stops the counter at once, after
+// the Then callbacks ran; no write starts.
+func TestPersistStopWithoutEvents(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		r := newCounterRun(s)
+		r.directive = func(error) lockstep.Directive { return lockstep.DirectiveStop }
+		r.node()
+		w.RunFor(time.Millisecond)
+		r.ask(tt, addCmd(5))
+		writes := len(effectStarts(w.Sim.Records(), "lockstep.persist.write"))
+		if got := r.ask(tt, func(rt lockstep.ReplyTo[int64]) CounterCmd { return StopNow{ReplyTo: rt} }); got != 5 {
+			tt.Errorf("StopNow replied %d, want 5", got)
+		}
+		recs := w.Sim.Records()
+		if n := len(effectStarts(recs, "lockstep.persist.write")) - writes; n != 0 {
+			tt.Errorf("%d write starts after StopNow, want none", n)
+		}
+		if stops := r.ofActor(recs, "lockstep.stop"); len(stops) != 1 {
+			tt.Errorf("stop records of the counter %v, want one", stops)
+		}
+		if want := []string{fmt.Sprintf("5 %s", lockstep.Normal)}; !slices.Equal(r.stops, want) {
+			tt.Errorf("Stopped calls %q, want %q", r.stops, want)
+		}
+		if want := []string{"reply 5", "reply 5"}; !slices.Equal(replyLog(r.log), want) || len(r.errs) != 0 {
+			tt.Errorf("replies %q and errs %v, want %q and none", replyLog(r.log), r.errs, want)
+		}
 	})
 }
 
@@ -963,6 +998,49 @@ func TestPersistResumeRecoversAgain(t *testing.T) {
 			}
 			if r.factories != 1 || len(r.recs) != 2 {
 				tt.Errorf("%d factory calls and %d recoveries, want 1 and 2", r.factories, len(r.recs))
+			}
+		})
+	})
+	t.Run("commit failure, then a failed recovery and two commands", func(t *testing.T) {
+		// The second Recover call, the re-run after the commit failure, fails; Add{1} that started
+		// it stays kept, Add{2} joins it, and the next re-run handles both in order.
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			errX := errors.New("recover failed")
+			recovers := 0
+			r.config = func(cfg *persist.Config[Added, CounterState]) {
+				inner := cfg.Journal
+				cfg.Journal = &fakeJournal{Journal: inner, recover: func() (persist.Bounds, error) {
+					if recovers++; recovers == 2 {
+						return persist.Bounds{}, errX
+					}
+					return inner.Recover(context.Background(), "c-1")
+				}}
+			}
+			commitFails(s, r)
+			logged := len(r.log)
+			lockstep.Ask(s.System("n1"), r.pid, addCmd(1))
+			w.RunFor(10 * time.Millisecond)
+			if len(r.errs) != 2 || !errors.Is(r.errs[1], errX) {
+				tt.Fatalf("errs %v, want a second error wrapping %v", r.errs, errX)
+			}
+			lockstep.Ask(s.System("n1"), r.pid, addCmd(2))
+			w.RunFor(50 * time.Millisecond)
+			sum := recovered(tt, r)
+			want := []string{
+				fmt.Sprintf("recovered %d", sum),
+				"handle sim_test.Add", fmt.Sprintf("reply %d", sum+1),
+				"handle sim_test.Add", fmt.Sprintf("reply %d", sum+3),
+			}
+			if !slices.Equal(r.log[logged:], want) {
+				tt.Errorf("counter calls %q, want %q", r.log[logged:], want)
+			}
+			if got := r.ask(tt, getCmd); got != sum+3 {
+				tt.Errorf("Get replied %d, want %d", got, sum+3)
+			}
+			if r.factories != 1 || recovers != 3 {
+				tt.Errorf("%d factory calls and %d Recover calls, want 1 and 3", r.factories, recovers)
 			}
 		})
 	})

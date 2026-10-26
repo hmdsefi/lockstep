@@ -50,11 +50,17 @@ type Boom struct{}
 // AddThenStop adds N and stops the counter.
 type AddThenStop struct{ N int64 }
 
-// FailWith adds N and fails the counter with Err.
+// FailWith adds N, registers a Then callback that replies to ReplyTo, and fails the counter with
+// Err. The failure discards the event and the callback, so no reply goes out.
 type FailWith struct {
-	N   int64
-	Err error
+	N       int64
+	Err     error
+	ReplyTo lockstep.ReplyTo[int64]
 }
+
+// StopNow registers a Then callback that replies with the sum, stops the counter and returns no
+// events.
+type StopNow struct{ ReplyTo lockstep.ReplyTo[int64] }
 
 func (Add) counterCmd()         {}
 func (AddMany) counterCmd()     {}
@@ -63,6 +69,7 @@ func (SnapNow) counterCmd()     {}
 func (Boom) counterCmd()        {}
 func (AddThenStop) counterCmd() {}
 func (FailWith) counterCmd()    {}
+func (StopNow) counterCmd()     {}
 
 // Added is the counter's event. One Added{1} encodes to the 7 bytes {"N":1}.
 type Added struct{ N int64 }
@@ -99,9 +106,9 @@ type counterRun struct {
 func newCounterRun(s *sim.Sim) *counterRun { return &counterRun{s: s} }
 
 // node adds n1. Its setup builds a filestore.Store on n1's Volume and spawns /user/parent, whose
-// OneForOne decider appends each error to r.errs and returns r.directive's decision, by default
-// a restart. The parent spawns the
-// counter as /user/parent/counter with persistence ID c-1, and r.pid follows the latest boot.
+// OneForOne decider appends each error to r.errs and returns r.directive's decision, by default a
+// restart. The parent spawns the counter as /user/parent/counter with persistence ID c-1, and
+// r.pid follows the latest boot.
 func (r *counterRun) node() *kernel.Node {
 	return r.s.Node("n1", func(sys *lockstep.System) {
 		r.boots++
@@ -213,8 +220,12 @@ func (c *pcounter) Handle(ctx *counterCtx, state CounterState, cmd CounterCmd) [
 		ctx.Stop()
 		return []Added{{N: m.N}}
 	case FailWith:
+		ctx.Then(reply(m.ReplyTo))
 		ctx.Fail(m.Err)
 		return []Added{{N: m.N}}
+	case StopNow:
+		ctx.Then(reply(m.ReplyTo))
+		ctx.Stop()
 	}
 	return nil
 }

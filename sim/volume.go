@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hmdsefi/faultline/kernel/simdisk"
@@ -76,7 +77,8 @@ func (e *simEngine) ownerOf(actor string) owner {
 // *fs.PathError wrapping fs.ErrPermission without touching the disk. A file an actor opens must
 // be closed before that actor stops or restarts; otherwise the seed fails with check
 // lockstep/leak. A call made by a storage operation of package persist adds the disk latency
-// drawn from Options.Disk.Latency to the time that operation takes.
+// drawn from Options.Disk.Latency to the time that operation takes. Like the methods of s, the
+// FS and its files panic once the run of s has ended.
 func (s *Sim) Volume(node string) filestore.FS {
 	s.check()
 	ln, ok := s.byName[node]
@@ -111,6 +113,7 @@ var (
 // misuse failure in the lockstep/misuse slot, emits lockstep.misuse, and returns the
 // *fs.PathError the method named op returns for name.
 func (v *volume) allowed(op, name string) error {
+	v.s.check()
 	x := v.s.exec
 	if x.eng != nil && x.eng.n == v.ln.n {
 		return nil
@@ -126,7 +129,7 @@ func (v *volume) allowed(op, name string) error {
 }
 
 // enter checks a call of the FS method op with name: the event (PER-510), then the name, which
-// must satisfy fs.ValidPath (PER-500). It samples the latency of class class and returns the
+// must satisfy fs.ValidPath and contain no backslash (PER-500). It samples the latency of class class and returns the
 // volume path of name.
 func (v *volume) enter(op, name string, class simdisk.Op) (string, error) {
 	if err := v.allowed(op, name); err != nil {
@@ -141,9 +144,10 @@ func (v *volume) enter(op, name string, class simdisk.Op) (string, error) {
 }
 
 // volumePath maps the FS name to its volume path: "." to "/" and x to "/" + x (PER-500). A name
-// failing fs.ValidPath returns the error of the FS method op, as the OS FS does.
+// failing fs.ValidPath or containing a backslash returns the error of the FS method op, as the
+// OS FS does (PER-430).
 func volumePath(op, name string) (string, error) {
-	if !fs.ValidPath(name) {
+	if !fs.ValidPath(name) || strings.ContainsRune(name, '\\') {
 		return "", &fs.PathError{Op: op, Path: name, Err: fs.ErrInvalid}
 	}
 	if name == "." {
@@ -284,7 +288,7 @@ func (f *volFile) Size() (int64, error) {
 	}
 	n := f.f.Size()
 	if n < 0 {
-		return 0, &fs.PathError{Op: "size", Path: f.f.Name(), Err: fs.ErrClosed}
+		return 0, &fs.PathError{Op: "Size", Path: f.f.Name(), Err: fs.ErrClosed}
 	}
 	return n, nil
 }

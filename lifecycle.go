@@ -211,9 +211,8 @@ func (c *cell[M]) keep(m sysMsg) { c.kept = append(c.kept, m) }
 // watched under another Watch call's sequence number), which is discarded without a record; each
 // kept internal effect outcome is recorded as lockstep.drop reason incarnation-ended, so its Done
 // never runs (PER-160); the kept notices are discarded, since the children they name are being
-// stopped. The children whose
-// failure the cell escalated are stopped the same way, so the escalated list is cleared too
-// (SUP-220).
+// stopped. The children whose failure the cell escalated are stopped the same way, so the escalated
+// list is cleared too (SUP-220).
 func (c *cell[M]) dropKept() {
 	kept := c.kept
 	c.kept = nil
