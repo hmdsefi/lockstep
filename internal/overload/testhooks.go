@@ -42,13 +42,17 @@ func SetStack(stack func(buf []byte, all bool) int) (restore func()) {
 // Uint64Value returns a metrics.Value of kind KindUint64 holding v, which a read hook needs
 // because the runtime/metrics package offers no constructor for one. Tests only.
 func Uint64Value(v uint64) metrics.Value {
-	// value mirrors the layout of metrics.Value; the check below catches a layout change.
+	// value mirrors the layout of metrics.Value. The checks catch a layout change: the size
+	// before the write, the field order after it.
 	type value struct {
 		kind    metrics.ValueKind
 		scalar  uint64
 		pointer unsafe.Pointer
 	}
 	var out metrics.Value
+	if unsafe.Sizeof(out) != unsafe.Sizeof(value{}) {
+		panic("overload: Uint64Value: runtime/metrics.Value layout changed")
+	}
 	*(*value)(unsafe.Pointer(&out)) = value{kind: metrics.KindUint64, scalar: v}
 	if out.Kind() != metrics.KindUint64 || out.Uint64() != v {
 		panic("overload: Uint64Value: runtime/metrics.Value layout changed")

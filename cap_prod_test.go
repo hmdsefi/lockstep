@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// AT-OVL-11, OVL-060: on a production System built by New, 64 goroutines spawn from *System concurrently
-// until refused with WithMaxActors(1000): exactly 990 succeed (limit 1000 minus its reserve of
-// 10), every refusal is ErrActorCap, and the live count ends at 990.
+// AT-OVL-11, OVL-060: on a production System built by New, 64 goroutines spawn from *System
+// concurrently until refused with WithMaxActors(1000): exactly 990 succeed (limit 1000 minus its
+// reserve of 10), every refusal is ErrActorCap, and the live count ends at 990.
 func TestATOVL11CapUnderConcurrentSpawns(t *testing.T) {
 	const (
 		limit      = 1000
