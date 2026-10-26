@@ -48,11 +48,17 @@ type Boom struct{}
 // AddThenStop adds N and stops the counter.
 type AddThenStop struct{ N int64 }
 
-// FailWith adds N and fails the counter with Err.
+// FailWith adds N, registers a Then callback that replies to ReplyTo, and fails the counter with
+// Err. The failure discards the event and the callback, so no reply goes out.
 type FailWith struct {
-	N   int64
-	Err error
+	N       int64
+	Err     error
+	ReplyTo lockstep.ReplyTo[int64]
 }
+
+// StopNow registers a Then callback that replies with the sum, stops the counter and returns no
+// events.
+type StopNow struct{ ReplyTo lockstep.ReplyTo[int64] }
 
 func (Add) counterCmd()         {}
 func (AddMany) counterCmd()     {}
@@ -61,6 +67,7 @@ func (SnapNow) counterCmd()     {}
 func (Boom) counterCmd()        {}
 func (AddThenStop) counterCmd() {}
 func (FailWith) counterCmd()    {}
+func (StopNow) counterCmd()     {}
 
 // Added is the counter's event. One Added{1} encodes to the 7 bytes {"N":1}.
 type Added struct{ N int64 }
@@ -210,8 +217,12 @@ func (c *pcounter) Handle(ctx *counterCtx, state CounterState, cmd CounterCmd) [
 		ctx.Stop()
 		return []Added{{N: m.N}}
 	case FailWith:
+		ctx.Then(reply(m.ReplyTo))
 		ctx.Fail(m.Err)
 		return []Added{{N: m.N}}
+	case StopNow:
+		ctx.Then(reply(m.ReplyTo))
+		ctx.Stop()
 	}
 	return nil
 }
