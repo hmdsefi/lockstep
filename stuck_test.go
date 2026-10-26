@@ -171,9 +171,10 @@ func TestATOVL40ShutdownWhileStuck(t *testing.T) {
 	var builds atomic.Int32
 	stuckActor(t, sys, g, &builds, make(chan int, 4))
 
+	// began is taken before the context so that its 200 ms deadline cannot fall before began.
+	began := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	began := time.Now()
 	err := sys.Shutdown(ctx)
 	elapsed := time.Since(began)
 	if !errors.Is(err, context.DeadlineExceeded) {
