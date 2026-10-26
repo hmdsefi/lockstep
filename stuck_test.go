@@ -6,6 +6,7 @@ package lockstep
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,10 +44,15 @@ func (g *gate) wait() {
 func (g *gate) open() { g.once.Do(func() { close(g.release) }) }
 
 // quietLogs captures slog's default logger for the test, so the stuck-turn reports of a system
-// built after it do not reach the test output.
+// built after it do not reach the test output. It restores the standard log package's output and
+// flags, which slog.SetDefault redirects, once the capture has ended.
 func quietLogs(t *testing.T) {
 	t.Helper()
-	restoreStdLog(t)
+	w, f := log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(w)
+		log.SetFlags(f)
+	})
 	captureDefaultLogger(t)
 }
 
