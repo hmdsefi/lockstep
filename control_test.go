@@ -178,6 +178,12 @@ func TestControlMisuse(t *testing.T) {
 	if fmt.Sprint(panics) != fmt.Sprint(want) {
 		t.Errorf("in a turn: panics %q, want %q", panics, want)
 	}
+	// The probe's reply is sent inside its turn, which may still be finishing on a worker.
+	for deadline := time.Now().Add(5 * time.Second); kept.inTurn.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the probe's turn did not end within 5s")
+		}
+	}
 	ctl := hooks.Control(kept)
 	if got, want := mustPanic(t, func() { ctl.PauseUser(true) }), "lockstep: Context of "+pid.String()+" used outside its turn"; got != want {
 		t.Errorf("PauseUser outside a turn panicked with %v, want %q", got, want)
