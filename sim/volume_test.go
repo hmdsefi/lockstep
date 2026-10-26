@@ -67,7 +67,7 @@ func TestPER500VolumeMapping(t *testing.T) {
 		w, tt := s.World(), s.World().T()
 		boots := 0
 		var kept filestore.File
-		var invalidErr, missingErr, sizeErr error
+		var invalidErr, backslashErr, missingErr, sizeErr error
 		var root, sub []filestore.Info
 		size := int64(-2)
 		n1 := s.Node("n1", func(*lockstep.System) {
@@ -83,6 +83,7 @@ func TestPER500VolumeMapping(t *testing.T) {
 				panic(err)
 			}
 			_, invalidErr = fsys.Create("../x")
+			_, backslashErr = fsys.Create(`d\x`)
 			_, missingErr = fsys.Open("missing")
 			var err error
 			if root, err = fsys.ReadDir("."); err != nil {
@@ -120,6 +121,9 @@ func TestPER500VolumeMapping(t *testing.T) {
 		if !isPathError(invalidErr, "Create", "../x", fs.ErrInvalid) {
 			tt.Errorf("Create(../x) error %#v, want a *fs.PathError Create ../x fs.ErrInvalid", invalidErr)
 		}
+		if !isPathError(backslashErr, "Create", `d\x`, fs.ErrInvalid) {
+			tt.Errorf("Create(d\\x) error %#v, want a *fs.PathError Create d\\x fs.ErrInvalid", backslashErr)
+		}
 		if !isPathError(missingErr, "open", "/missing", fs.ErrNotExist) {
 			tt.Errorf("Open(missing) error %#v, want simdisk's *fs.PathError open /missing fs.ErrNotExist", missingErr)
 		}
@@ -129,11 +133,29 @@ func TestPER500VolumeMapping(t *testing.T) {
 		n1.Crash()
 		n1.Restart()
 		w.RunFor(time.Millisecond)
-		if boots != 2 || size != 0 || !isPathError(sizeErr, "size", "/d/x", fs.ErrClosed) {
-			tt.Errorf("after %d boots, Size of the crashed-away handle = %d, %#v; want 0 and a *fs.PathError size /d/x fs.ErrClosed",
+		if boots != 2 || size != 0 || !isPathError(sizeErr, "Size", "/d/x", fs.ErrClosed) {
+			tt.Errorf("after %d boots, Size of the crashed-away handle = %d, %#v; want 0 and a *fs.PathError Size /d/x fs.ErrClosed",
 				boots, size, sizeErr)
 		}
 	})
+}
+
+// SIM-040: the FS of a Volume and its files panic once the run of their Sim has ended, as the
+// Sim's own methods do.
+func TestVolumeAfterRunPanics(t *testing.T) {
+	var fsys filestore.FS
+	var f filestore.File
+	sim.Simulate(t, fullTrace(1), func(s *sim.Sim) {
+		s.Node("n1", func(*lockstep.System) {
+			fsys = s.Volume("n1")
+			f = mustFile(fsys.Create("a"))
+			must(f.Close())
+		})
+		s.World().RunFor(time.Millisecond)
+	})
+	const want = "lockstep: sim: Sim used after its run ended"
+	expectPanic(t, want, func() { _, _ = fsys.Open("a") })
+	expectPanic(t, want, func() { _, _ = f.Size() })
 }
 
 // The markers the misuse scenarios print when the refused call returned the expected error.
