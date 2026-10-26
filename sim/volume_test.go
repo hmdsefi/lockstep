@@ -58,7 +58,7 @@ func must(err error) {
 	}
 }
 
-// PER-500, AT-PER-44: Volume returns one FS per node over its simdisk volume, mapping x to /x and
+// PER-500, the Volume part of AT-PER-44: Volume returns one FS per node over its simdisk volume, mapping x to /x and
 // . to /; Info comes from simdisk, simdisk's errors pass through, a handle crashed away reports
 // its size as closed, the Volume's own name check uses the FS method name, and an unknown node
 // panics.
@@ -198,7 +198,7 @@ var (
 	})
 )
 
-// PER-510, AT-PER-45: a volume used from another node's event, or outside any node event, fails
+// PER-510, the Volume part of AT-PER-45: a volume used from another node's event, or outside any node event, fails
 // the seed with check lockstep/misuse after a lockstep.misuse record, and the call returns a
 // *fs.PathError with fs.ErrPermission without touching the volume.
 func TestPER510VolumeMisuse(t *testing.T) {
@@ -248,13 +248,22 @@ func writeSync(s *sim.Sim) func() (any, error) {
 }
 
 // PER-530, PER-520: an inline run's completion event comes the run's sampled disk latency after
-// the run: WriteAt 1ms plus Sync 2ms, with Size adding nothing. Without latency it comes at the
-// run's time, and Volume calls outside inline runs add nothing.
+// the run: WriteAt 1ms plus Sync 2ms, with Size adding nothing. With every class set, Create and
+// Close add 4ms each and Size still nothing, so a Size that sampled any class would move the
+// completion. Without latency it comes at the run's time, and Volume calls outside inline runs
+// add nothing.
 func TestPER530InlineLatency(t *testing.T) {
 	slow := fullTrace(3)
 	slow.Disk.Latency = simdisk.LatencyConfig{
 		Write: simdisk.Latency{Base: time.Millisecond},
 		Sync:  simdisk.Latency{Base: 2 * time.Millisecond},
+	}
+	every := fullTrace(3)
+	every.Disk.Latency = simdisk.LatencyConfig{
+		Meta:  simdisk.Latency{Base: 4 * time.Millisecond},
+		Read:  simdisk.Latency{Base: 8 * time.Millisecond},
+		Write: simdisk.Latency{Base: 16 * time.Millisecond},
+		Sync:  simdisk.Latency{Base: 32 * time.Millisecond},
 	}
 	for _, tc := range []struct {
 		name  string
@@ -264,6 +273,7 @@ func TestPER530InlineLatency(t *testing.T) {
 		want  time.Duration
 	}{
 		{"write and sync", slow, false, writeSync, 3 * time.Millisecond},
+		{"every class", every, false, writeSync, 56 * time.Millisecond}, // 4 + 16 + 32 + 4
 		{"zero latency", fullTrace(3), false, writeSync, 0},
 		{"setup calls", slow, true, func(*sim.Sim) func() (any, error) { return nil }, 0},
 	} {
@@ -348,7 +358,7 @@ var (
 // leakFile matches the leak failure of file /a of n1's /user/a in incarnation 1.
 var leakFile = regexp.MustCompile(`^lockstep: leak: lockstep://n1/user/a#[0-9a-f]+ \(incarnation 1\): file /a on node n1 still open$`)
 
-// PER-540, SIM-290 (c), AT-PER-48: a file still open when the incarnation that opened it ends by
+// PER-540, SIM-290 (c), the Volume part of AT-PER-48: a file still open when the incarnation that opened it ends by
 // restart or stop fails the seed with check lockstep/leak, files in path order, after the
 // lockstep.leak records of every such file.
 func TestPER540FileLeak(t *testing.T) {
