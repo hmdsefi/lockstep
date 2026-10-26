@@ -47,10 +47,12 @@ type Sampler struct {
 	log      *slog.Logger
 	mon      *Monitor
 
-	// hyst and samples belong to the sampling callbacks, which the engine clock never overlaps.
+	// hyst, samples and ticks belong to the sampling callbacks, which the engine clock never
+	// overlaps.
 	hyst    Hysteresis
 	on      bool
 	samples [2]metrics.Sample
+	ticks   int
 
 	// enabled reports whether the last sample found thresholds in force (OVL-310). It is written by
 	// the sampling callbacks and read from any goroutine.
@@ -122,6 +124,10 @@ func (s *Sampler) tick() {
 		return
 	}
 	s.sample()
+	s.ticks++
+	if s.mon != nil && s.ticks%monitorEvery == 0 {
+		s.mon.Sample() // OVL-600: every 10th tick, whether or not admission is on
+	}
 	s.arm()
 }
 

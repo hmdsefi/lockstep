@@ -6,6 +6,8 @@ package lockstep
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"log/slog"
 	"math"
 	"runtime"
@@ -317,6 +319,45 @@ func TestATOVL32AdmissionLogs(t *testing.T) {
 		if !slices.EqualFunc(g.attrs, w.attrs, slog.Attr.Equal) {
 			t.Errorf("record %d attributes = %v, want %v", i, g.attrs, w.attrs)
 		}
+	}
+}
+
+// goroutineWarnings returns the records of OBS-060's "Goroutines above bound" event.
+func goroutineWarnings(recs []slogRecord) []slogRecord {
+	return slices.DeleteFunc(slices.Clone(recs), func(r slogRecord) bool { return r.msg != "goroutine count above bound" })
+}
+
+// OVL-600, OVL-610, OVL-620: New starts a goroutine monitor with the bound of WithGoroutineWarning
+// that logs through the system's logger, slog's default when New runs, with the node. A count
+// above the bound that stays there is warned about once, on the tenth tick.
+func TestGoroutineWarningInNew(t *testing.T) {
+	verifyNoneAtEnd(t)
+	// slog.SetDefault with a custom handler also redirects the log package: restore it too.
+	logWriter, logFlags, logPrefix := log.Writer(), log.Flags(), log.Prefix()
+	t.Cleanup(func() { log.SetOutput(logWriter); log.SetFlags(logFlags); log.SetPrefix(logPrefix) })
+	records := captureDefaultLogger(t)
+	counts := &atomic.Int64{}
+	counts.Store(800)
+	t.Cleanup(overload.SetNumGoroutine(func() int { return int(counts.Load()) }))
+	t.Cleanup(overload.SetGoroutineProfile(func(w io.Writer) error {
+		_, err := io.WriteString(w, "goroutine profile: total 800\n800 @ 0x1\n#\t0x1\tmain.busy+0x1\t/src/main.go:1\n")
+		return err
+	}))
+	sys := newLocalSystem(t, WithNodeName("n1"), WithGoroutineWarning(500))
+	waitUntil(t, "the goroutine warning", func() bool { return len(goroutineWarnings(records())) > 0 })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sys.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown = %v", err)
+	}
+	got := goroutineWarnings(records())
+	want := slogRecord{slog.LevelWarn, "goroutine count above bound", []slog.Attr{
+		slog.String("node", "n1"), slog.Int("goroutines", 800), slog.Int("bound", 500),
+		slog.String("summary", "800 main.busy")}}
+	if len(got) != 1 || got[0].level != want.level || got[0].msg != want.msg ||
+		!slices.EqualFunc(got[0].attrs, want.attrs, slog.Attr.Equal) {
+		t.Errorf("warnings = %+v, want exactly %+v", got, want)
 	}
 }
 
