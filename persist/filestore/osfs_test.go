@@ -99,7 +99,7 @@ func TestOpenErrors(t *testing.T) {
 
 func TestATPER42InvalidNames(t *testing.T) {
 	fsys := &osFS{root: t.TempDir()}
-	bad := []string{"../x", "/x", "a/../b", "a//b", "a/", "", ".."}
+	bad := []string{"../x", "/x", "a/../b", "a//b", "a/", "", "..", `..\x`, `a\b`, `\x`}
 	calls := map[string]func(name string) error{
 		"Create":      func(n string) error { f, err := fsys.Create(n); closeIf(f); return err },
 		"Open":        func(n string) error { f, err := fsys.Open(n); closeIf(f); return err },
