@@ -65,8 +65,9 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 }
 
 // accepting reports whether the cell pops user messages: only in Running (SUP-010, ENG-310 step
-// 2), so not before the incarnation has started, after a handler failed, or once a stop started.
-func (c *cell[M]) accepting() bool { return c.state == supervise.Running }
+// 2), so not before the incarnation has started, after a handler failed, or once a stop started;
+// and not while the incarnation's user delivery is paused (MBX-190, PER-250).
+func (c *cell[M]) accepting() bool { return c.state == supervise.Running && !c.paused }
 
 // popSystem and popUser pop under c.mu, so a hold that starts during a turn stops it at the next
 // pop (hold.go); a held cell pops nothing.
@@ -206,6 +207,8 @@ func (c *cell[M]) begin() {
 	c.actor = a
 	c.ctx = &Context[M]{cell: c, inc: c.inc}
 	c.rng = nil // the stream of an earlier incarnation is never reused (TMR-120)
+	// A new incarnation starts with its user delivery unpaused (PER-250).
+	c.paused = false
 	// A live incarnation judges its signals by its own watched set (deliverSignal).
 	c.endedWatched = watchedSet{}
 	c.starter, _ = a.(Starter[M])
