@@ -52,6 +52,10 @@ type Sampler struct {
 	on      bool
 	samples [2]metrics.Sample
 
+	// enabled reports whether the last sample found thresholds in force (OVL-310). It is written by
+	// the sampling callbacks and read from any goroutine.
+	enabled atomic.Bool
+
 	mu      sync.Mutex // guards cancel and stopped
 	cancel  engine.Cancel
 	stopped bool
@@ -90,6 +94,11 @@ func (s *Sampler) Stop() {
 		cancel()
 	}
 }
+
+// Enabled reports whether memory admission has thresholds in force: the last sample found
+// explicit thresholds or a Go memory limit, and both metrics were readable (OVL-310, OVL-330). It
+// is false before the first sample and with admission off. Safe for concurrent use.
+func (s *Sampler) Enabled() bool { return s.enabled.Load() }
 
 func (s *Sampler) isStopped() bool {
 	s.mu.Lock()
@@ -146,6 +155,7 @@ func (s *Sampler) sample() {
 		}
 		high, low = limit-limit/10, limit-limit/5
 	}
+	s.enabled.Store(true)
 	s.hyst.High, s.hyst.Low = high, low
 	changed, on := s.hyst.Update(live)
 	if changed {
@@ -156,6 +166,7 @@ func (s *Sampler) sample() {
 // switchOff turns the memory source off, with no thresholds in force, when it is on. The change
 // carries live and the thresholds that were last in force (OVL-340).
 func (s *Sampler) switchOff(live uint64) {
+	s.enabled.Store(false)
 	high, low := s.hyst.High, s.hyst.Low
 	s.hyst = Hysteresis{}
 	if s.on {
