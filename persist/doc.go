@@ -39,12 +39,13 @@
 //
 // A journal error, a snapshot that does not load or decode, an event that does not encode or
 // decode, or a journal that does not fit the snapshot fails the actor, and so does a panic in
-// Handle, Apply or a Then callback. Its
-// supervisor decides as for any failure: a restart recovers the state again from the store. When
-// the supervisor resumes the actor after a failure of the storage or the codecs, or after a panic
-// in Apply, in Recovered or in a Then callback of committed events, the actor recovers again from
-// the store before it handles its next message, so it never runs on a state the store does not
-// hold. Then callbacks run only for events that the journal committed.
+// Handle, Apply or a Then callback. Its supervisor decides as for any failure: a restart recovers
+// the state again from the store. After a resume, the actor recovers again from the store before it
+// handles its next message when the failure was in the storage or the codecs, or a panic in Apply,
+// Recovered or a Then callback of committed events. This way it never runs on a state the store
+// does not hold. After a panic in Handle, or in a Then callback of a Handle call that returned no
+// events, the state is unchanged and the next command uses it. Then callbacks run only for events
+// that the journal committed.
 //
 // With a SnapshotStore in the Config, the actor saves a snapshot of its state after every
 // SnapshotEvery committed events and whenever Context.Snapshot was called, once the events up to
