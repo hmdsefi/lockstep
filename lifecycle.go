@@ -199,16 +199,19 @@ func (s *System) recordFail(addr Address, inc uint32, src supervise.Source, err 
 	)
 }
 
-// keep keeps m, a signal or a child's failed or ended notice that reached the Suspended cell, in
-// arrival order (SUP-160). They are handled after a resume (resumeIncarnation), or, when the
-// incarnation ends, the signals are recorded as dropped and the notices discarded (dropKept).
+// keep keeps m, a signal, a child's failed or ended notice or an internal effect outcome that
+// reached the Suspended cell, in arrival order (SUP-160, PER-240). They are handled after a resume
+// (resumeIncarnation), or, when the incarnation ends, the signals and the outcomes are recorded as
+// dropped and the notices discarded (dropKept).
 func (c *cell[M]) keep(m sysMsg) { c.kept = append(c.kept, m) }
 
 // dropKept empties the kept list when the Suspended cell's incarnation ends, by restart or stop
 // (SUP-160): each kept signal is recorded as lockstep.drop reason not-running, in arrival order,
 // except a Terminated that a delivery would skip (ACT-630: its address is not watched, or is
-// watched under another Watch call's sequence number), which is discarded without a record; the
-// kept notices are discarded, since the children they name are being stopped. The children whose
+// watched under another Watch call's sequence number), which is discarded without a record; each
+// kept internal effect outcome is recorded as lockstep.drop reason incarnation-ended, so its Done
+// never runs (PER-160); the kept notices are discarded, since the children they name are being
+// stopped. The children whose
 // failure the cell escalated are stopped the same way, so the escalated list is cleared too
 // (SUP-220).
 func (c *cell[M]) dropKept() {
@@ -216,6 +219,10 @@ func (c *cell[M]) dropKept() {
 	c.kept = nil
 	c.sup.escalated = nil
 	for _, m := range kept {
+		if r, ok := m.(internalResult); ok {
+			c.sys.recordDropEnded(c.addr, r.inc, r.res) // PER-160
+			continue
+		}
 		sm, ok := m.(signalMsg)
 		if !ok {
 			continue

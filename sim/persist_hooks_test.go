@@ -556,7 +556,8 @@ func TestPER160InternalEffectCancelled(t *testing.T) {
 
 	// The seeded tie-break orders the completion event among the same-time turns of the
 	// restart, so some seeds end the incarnation first (the effect is cancelled) and others
-	// deliver the completion to the failed incarnation (it is dropped). Done runs in neither.
+	// deliver the completion to the failed incarnation (it keeps it, and the restart drops it).
+	// Done runs in neither.
 	cancelled := 0
 	t.Run("inject fail", func(t *testing.T) {
 		sim.Simulate(t, fullTrace(48), func(s *sim.Sim) {
@@ -588,9 +589,9 @@ func TestPER160InternalEffectCancelled(t *testing.T) {
 				if attr(ends[0], "outcome") != "cancelled" || len(drops) != 0 {
 					tt.Errorf("effect.done %v and drops %v, want outcome=cancelled and no drop", ends[0], drops)
 				}
-			case 2: // the completion reached the failed incarnation and was dropped
-				if attr(ends[0], "outcome") != "ok" || len(drops) != 1 {
-					tt.Errorf("effect.done %v and drops %v, want outcome=ok and one drop", ends[0], drops)
+			case 2: // the completion reached the failed incarnation, which kept it until its restart
+				if attr(ends[0], "outcome") != "ok" || len(drops) != 1 || attr(drops[0], "reason") != "incarnation-ended" {
+					tt.Errorf("effect.done %v and drops %v, want outcome=ok and one incarnation-ended drop", ends[0], drops)
 				}
 			default:
 				tt.Errorf("%d lockstep/effect events, want 1 or 2", ran(recs, p.n1, "lockstep/effect"))
