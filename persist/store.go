@@ -16,16 +16,18 @@ const (
 )
 
 var (
-	// ErrInvalidID: a persistence ID that is empty, longer than MaxIDLen bytes, or not accepted
-	// by the store.
+	// ErrInvalidID is returned when a persistence ID is empty, is longer than MaxIDLen bytes,
+	// or is not accepted by the store.
 	ErrInvalidID = errors.New("persist: invalid persistence id")
-	// ErrInvalidConfig: a configuration that breaks a documented requirement.
+	// ErrInvalidConfig is returned when a configuration breaks a documented requirement.
 	ErrInvalidConfig = errors.New("persist: invalid config")
-	// ErrSeqConflict: a Write whose first sequence number is not the next one of the stream.
+	// ErrSeqConflict is returned when the first sequence number of a Write is not the next one
+	// of the stream.
 	ErrSeqConflict = errors.New("persist: sequence conflict")
-	// ErrMissingEvents: a Read below the lowest retained sequence number.
+	// ErrMissingEvents is returned when a Read starts below the lowest retained sequence number.
 	ErrMissingEvents = errors.New("persist: events no longer retained")
-	// ErrInconsistent: recovery found a journal and snapshot that do not fit together.
+	// ErrInconsistent is returned when recovery finds a journal and a snapshot that do not fit
+	// together.
 	ErrInconsistent = errors.New("persist: journal and snapshot are inconsistent")
 )
 
@@ -90,7 +92,8 @@ type Bounds struct {
 // A call whose context is already done returns ctx.Err() and changes nothing.
 type Journal interface {
 	// Recover makes every written event of id durable or discards it, repairs the stream if the
-	// store can, and returns its bounds. Persist calls it once per incarnation before any Write.
+	// store can, and returns its bounds. Persist calls it at the start of every recovery, before
+	// any Write of that recovery.
 	Recover(ctx context.Context, id string) (Bounds, error)
 	// Read returns up to max committed events of id with Seq >= from, in order, without gaps.
 	// max must be at least 1.
