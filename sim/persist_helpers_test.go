@@ -103,9 +103,9 @@ type counterRun struct {
 func newCounterRun(s *sim.Sim) *counterRun { return &counterRun{s: s} }
 
 // node adds n1. Its setup builds a filestore.Store on n1's Volume and spawns /user/parent, whose
-// OneForOne decider appends each error to r.errs and returns r.directive's decision, by default
-// a restart. The parent spawns the
-// counter as /user/parent/counter with persistence ID c-1, and r.pid follows the latest boot.
+// OneForOne decider appends each error to r.errs and returns r.directive's decision, by default a
+// restart. The parent spawns the counter as /user/parent/counter with persistence ID c-1, and
+// r.pid follows the latest boot.
 func (r *counterRun) node() *kernel.Node {
 	return r.s.Node("n1", func(sys *lockstep.System) {
 		r.boots++
