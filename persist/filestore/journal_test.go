@@ -198,6 +198,10 @@ func TestATPER28RecordBytes(t *testing.T) {
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("oversize Write = %v, want ErrTooLarge", err)
 	}
+	if want := fmt.Sprintf("filestore: write c-1 seq 3..3: batch of 1 events exceeds %d bytes: filestore: record too large",
+		MaxRecordSize); err.Error() != want {
+		t.Fatalf("oversize Write error = %q, want %q", err, want)
+	}
 	if got := readFile(t, dir, seg); !bytes.Equal(got, want) {
 		t.Fatalf("oversize Write changed the segment to %d bytes", len(got))
 	}
