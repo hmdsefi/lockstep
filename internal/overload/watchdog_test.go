@@ -311,6 +311,40 @@ func TestGoroutineStackLimit(t *testing.T) {
 	}
 }
 
+// OVL-510: the buffer GoroutineStack starts from follows the size of the last dump, so it shrinks
+// after a spike instead of staying at the largest size ever needed.
+func TestGoroutineStackHintShrinks(t *testing.T) {
+	const limit = 64 << 10
+	big := "goroutine 1 [running]:\n" + strings.Repeat("x", 5*limit)
+	small := "goroutine 1 [running]:\nmain.main()"
+	dump := big
+	var first int // the buffer size of the first read of each GoroutineStack call
+	var reads int
+	t.Cleanup(overload.SetStack(func(buf []byte, all bool) int {
+		if reads == 0 {
+			first = len(buf)
+		}
+		reads++
+		return copy(buf, dump)
+	}))
+
+	overload.GoroutineStack(1) // grows to fit the spike
+	reads = 0
+	overload.GoroutineStack(1)
+	if first < len(big) {
+		t.Fatalf("a repeated dump of %d bytes started from a buffer of %d bytes; want one that holds it", len(big), first)
+	}
+
+	dump = small
+	reads = 0
+	overload.GoroutineStack(1) // the dump has shrunk
+	reads = 0
+	overload.GoroutineStack(1)
+	if first != limit {
+		t.Errorf("after the dump shrank to %d bytes the buffer is %d bytes; want %d", len(small), first, limit)
+	}
+}
+
 // OVL-510: without a test hook GoroutineStack reads the runtime's dump.
 func TestGoroutineStackRuntime(t *testing.T) {
 	goid := startParkedWorker(t)
