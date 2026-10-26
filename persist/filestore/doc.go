@@ -3,7 +3,7 @@
 
 // Package filestore stores the events and snapshots of persistent actors in files. A Store is a
 // persist.Journal and a persist.SnapshotStore: it appends events to segment files of
-// length-prefixed records protected by CRC-32C checksums, calls fsync when a commit returns, and
+// length-prefixed records protected by CRC-32C checksums, calls fsync on every commit, and
 // repairs a torn tail when recovery runs.
 //
 // Open returns a Store on a directory of the operating system's file system. New returns a Store
