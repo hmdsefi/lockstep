@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"context"
+	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,9 @@ type System struct {
 	node        string
 	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
 	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
+	// log is the system's logger: slog's default logger when the system was built (OBS-010). The
+	// system's own events log through it with the node attribute (OBS-060).
+	log *slog.Logger
 
 	reg          *registry.Registry
 	user, system Address // the guardians; neither is registered (ACT-030)
@@ -68,6 +72,7 @@ type System struct {
 	waiting waitSet        // the user mailboxes that outside senders wait on (MBX-075)
 	adm     admissionState // whether the engine's admission sheds (OVL-150)
 	ovl     overloadSubs   // the incarnations subscribed to Overloaded, in order (OVL-170)
+	prodOvl prodOverload   // the production overload machinery; empty unless New built the system
 
 	// afterRegister, when set, is called by Spawn with the new cell between its registration and
 	// the push of its begin. It is a test hook; production code never sets it.
@@ -110,20 +115,21 @@ func New(opts ...Option) *System {
 	if err != nil {
 		panic(err)
 	}
+	gate := overload.NewGate() // OVL §4.2; newSystem binds it once, startOverload feeds it
 	pe := prodengine.New(prodengine.Config{
 		Node:          cfg.node,
 		Workers:       cfg.workers,
 		Throughput:    cfg.throughput,
 		EffectWorkers: cfg.effectWorkers,
 		EffectQueue:   effectQueue(cfg.effectQueue),
-		Admission:     overload.NewGate(), // OVL §4.2; newSystem binds it once
+		Admission:     gate,
 	})
 	sys, err := newSystem(pe.Engine(), opts)
 	if err != nil {
 		pe.Stop()
 		panic(err) // unreachable: the options passed newConfig above
 	}
-	sys.prod = pe
+	sys.startOverload(pe, gate, cfg)
 	return sys
 }
 
@@ -157,6 +163,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 	s := &System{
 		eng:         eng,
 		node:        cfg.node,
+		log:         slog.Default(),
 		mbx:         cfg.mbx,
 		estimates:   cfg.estimates,
 		incarnation: eng.Epoch,
@@ -248,10 +255,12 @@ func (s *System) completeShutdown() {
 	go s.stopEngine()
 }
 
-// stopEngine calls Engine.Stop, when the engine has one, at most once (ENG-140). A concurrent
-// call returns after that Stop has returned.
+// stopEngine stops the production overload machinery and then calls Engine.Stop, when the engine
+// has one, at most once (ENG-140, OVL-700). A concurrent call returns after that Stop has
+// returned.
 func (s *System) stopEngine() {
 	s.shut.engOnce.Do(func() {
+		s.stopOverload()
 		if s.eng.Stop != nil {
 			s.eng.Stop()
 		}

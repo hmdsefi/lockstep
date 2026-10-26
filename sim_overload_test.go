@@ -19,6 +19,7 @@ import (
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/internal/overload"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -643,13 +644,14 @@ func settledGoroutines() int {
 	return n
 }
 
-// AT-OVL-25 (the observable half), OVL-230: a simulation with every host-state option set and a
-// Go memory limit below the live heap runs spawning and sending for 10 s of virtual time and
-// passes; no admission source turns on, no kernel event is labeled lockstep/overload-sample, and
-// the host's goroutine count and Go memory limit are the same after Simulate as before. The hooks that replace
-// metrics.Read, runtime.NumGoroutine, runtime.Stack and pprof with panicking functions need the
-// production sampler (plan 2.2) and are not part of this test.
+// AT-OVL-25, OVL-230: a simulation with every host-state option set, a Go memory limit below the
+// live heap and metrics.Read replaced by a panicking hook runs spawning and sending for 10 s of
+// virtual time and passes; no admission source turns on, no kernel event is labeled
+// lockstep/overload-sample, and the host's goroutine count and Go memory limit are the same after
+// Simulate as before. The hooks for runtime.NumGoroutine, runtime.Stack and the goroutine profile
+// join metrics.Read's once the goroutine monitor and the watchdog exist.
 func TestATOVL25NoHostState(t *testing.T) {
+	t.Cleanup(overload.SetReadMetrics(func([]metrics.Sample) { panic("simulation called metrics.Read") }))
 	limit := int64(max(liveHeap(t)/2, 1)) //nolint:gosec // half a heap size is far below math.MaxInt64
 	old := debug.SetMemoryLimit(limit)
 	t.Cleanup(func() { debug.SetMemoryLimit(old) })

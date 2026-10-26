@@ -350,3 +350,60 @@ func TestSamplerStop(t *testing.T) {
 		t.Errorf("Start after Stop read the metrics; calls = %d", feed.calls)
 	}
 }
+
+// The thresholds-in-force state that the admission_enabled gauge of OBS §5.5 reads (OVL-310): on
+// while a sample finds thresholds, off before the first sample, without a memory limit, while a
+// metric reads KindBad (OVL-330) and with admission off.
+func TestSamplerEnabled(t *testing.T) {
+	t.Run("limit", func(t *testing.T) {
+		feed := &metricFeed{live: []uint64{10}, limit: math.MaxInt64}
+		r := newRig(t, feed, 0, 0, false, nil)
+		if r.sampler.Enabled() {
+			t.Fatal("Enabled before Start; want false")
+		}
+		r.sampler.Start()
+		t.Cleanup(r.sampler.Stop)
+		if r.sampler.Enabled() {
+			t.Fatal("Enabled with no memory limit; want false")
+		}
+		feed.limit = 1000
+		r.eng.Advance(tick)
+		if !r.sampler.Enabled() {
+			t.Fatal("not Enabled with a memory limit of 1000; want true")
+		}
+		feed.bad = true
+		r.eng.Advance(tick)
+		if r.sampler.Enabled() {
+			t.Fatal("Enabled while the live heap reads KindBad; want false")
+		}
+		feed.bad = false
+		r.eng.Advance(tick)
+		if !r.sampler.Enabled() {
+			t.Fatal("not Enabled once the live heap reads again; want true")
+		}
+		feed.limit = math.MaxInt64
+		r.eng.Advance(tick)
+		if r.sampler.Enabled() {
+			t.Fatal("Enabled after the memory limit was removed; want false")
+		}
+	})
+	t.Run("explicit", func(t *testing.T) {
+		feed := &metricFeed{live: []uint64{10}, limit: math.MaxInt64}
+		r := newRig(t, feed, 2000, 1000, true, nil)
+		r.sampler.Start()
+		t.Cleanup(r.sampler.Stop)
+		if !r.sampler.Enabled() {
+			t.Fatal("not Enabled with WithAdmission(2000, 1000) and no limit; want true")
+		}
+	})
+	t.Run("off", func(t *testing.T) {
+		feed := &metricFeed{live: []uint64{10}, limit: 1000}
+		r := newRig(t, feed, 0, 0, true, nil)
+		r.sampler.Start()
+		t.Cleanup(r.sampler.Stop)
+		r.eng.Advance(tick)
+		if r.sampler.Enabled() {
+			t.Fatal("Enabled with WithAdmission(0, 0); want false")
+		}
+	})
+}
