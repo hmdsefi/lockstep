@@ -338,8 +338,8 @@ Each incarnation recovers at every start and restart. It pauses user messages an
    after the event the snapshot needs.
 3. Reads the events after the snapshot in batches, 256 by default, decodes each and folds it with
    `Apply`. Their sequence numbers must continue without a gap.
-4. Calls `Recovered` if the actor has one, passes it the signals that arrived meanwhile, and
-   resumes user messages.
+4. Calls `Recovered` if the actor has one, passes the signals that arrived meanwhile to its
+   `Signal` hook, and resumes user messages.
 
 Commands that arrive during recovery wait in the mailbox, in arrival order.
 
@@ -407,15 +407,16 @@ sync, then the ID's directory if a segment was created or removed, then the jour
 the ID's directory was created. The order covers the data and its directory entries: a new file's
 bytes can reach the disk while its entry does not, and a crash then loses the file. If a `Write`
 fails, the store truncates the segment to its size before the call. If a `Commit` fails, it
-truncates every segment written since the last commit, and the next `Recover` reports what
-survived. If the repair itself fails, the ID becomes unusable and every later call for it returns
+truncates every segment written since the last commit and removes a segment created since then
+that holds no committed event. The next `Recover` reports what survived. If the repair itself fails, the ID becomes unusable and every later call for it returns
 `ErrUnusable`.
 
 `Recover` makes every event it reports durable: records that survived a crash without a sync are
 synced before they count. It reads the first record of the first segment and every record of the
-last segment, and an invalid record there is either a torn tail or corruption. The record is
-corrupt if its length is in range, it ends before the end of the file, and a valid record follows
-it. Anything else is a torn tail, because an interrupted write damages only the end of the file.
+last segment. An invalid first record of a segment that is not the last is corruption. In the last
+segment, an invalid record is either a torn tail or corruption: it is corrupt if its length is in
+range, it ends before the end of the file, and a valid record follows it. Anything else is a torn
+tail, because an interrupted write damages only the end of the file.
 `Recover` truncates and syncs a torn tail, and `Bounds.Repaired` reports how many bytes it
 discarded. Corruption returns an error that wraps `ErrCorrupt`, and the store never skips it in
 the journal. `Read` validates every record it returns and reports damage the same way.
@@ -453,8 +454,8 @@ failed sync treats pending writes, and the capacity. Planners add `fault.KindSyn
 production.
 
 Disk latency comes from the simulated disk, never from the wall clock. Each `Volume` call made by a
-storage operation of `persist` samples the latency model of `Options.Disk.Latency` for its class
-(read, write, sync or metadata) from the seeded stream, and the operation's completion event is
+storage operation of `persist`, except `Size`, samples the latency model of `Options.Disk.Latency`
+for its class (read, write, sync or metadata) from the seeded stream, and the operation's completion event is
 scheduled after the sum. With no latency configured, no draw happens.
 
 A `Volume` belongs to its node. A call from another node's event, or from outside any node event,

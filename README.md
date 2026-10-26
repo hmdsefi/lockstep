@@ -501,10 +501,11 @@ restart recovers the state from what the store holds.
 `filestore.Open` uses the operating system's files. In a simulation, `s.Volume("n1")` returns the
 simulated disk of node `n1` as a `filestore.FS`, and `filestore.New` runs a store on it. The disk
 is faultline's: it keeps what was synced when the node crashes, and `Options.Disk` chooses what a
-crash does to writes that were not synced (lose them, keep some, or tear one), makes syncs
-fail, limits the capacity, and adds latency. The following test crashes and restarts `n1` while
-`c1` deposits 1, 20 times, and checks that no acknowledged deposit is lost. It adds to the program
-above, and like the first test it imports faultline directly:
+crash does to writes that were not synced (lose them, keep some, or tear one) and what a failed
+sync does to pending writes, sets the capacity, and adds latency. A planner makes syncs fail. The
+following test crashes and restarts `n1` while `c1` deposits 1, 20 times, and checks that no
+acknowledged deposit is lost. It adds to the program above, and like the first test it imports
+faultline directly:
 
 ```go
 package main
@@ -682,11 +683,12 @@ through `(*Sim).Volume`.
 
 ## Limitations
 
-lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`. It
-cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not free
-the worker. There is no remoting, clustering, or OpenTelemetry support, so actors on different nodes
-talk only in simulation. The reference store in `persist/filestore` keeps files on a local disk; a
-journal or snapshot store of another kind implements `persist.Journal` and `persist.SnapshotStore`.
+lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
+It cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not
+free the worker. There is no remoting, clustering, or OpenTelemetry support, so actors
+on different nodes talk only in simulation. The reference store in `persist/filestore` keeps files
+on a local disk; a journal or snapshot store of another kind implements `persist.Journal` and
+`persist.SnapshotStore`.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
