@@ -87,12 +87,13 @@ func (s *Store) begin(ctx context.Context, id string) (st *idState, unlock func(
 	return st, unlock, nil
 }
 
-// loadJournal loads the journal state of id with the scan of PER-370 if it is not loaded.
+// loadJournal loads the journal state of id with the scan of PER-370 if it is not loaded. Like
+// Recover of an ID that is not loaded, it makes the records it finds durable.
 func (s *Store) loadJournal(id string, st *idState) error {
 	if st.journal != nil {
 		return nil
 	}
-	j, _, err := s.scan(id)
+	j, _, err := s.scan(id, true)
 	if err != nil {
 		return err
 	}
@@ -101,21 +102,25 @@ func (s *Store) loadJournal(id string, st *idState) error {
 }
 
 // Recover commits the events of id written since the last commit, drops the in-memory state of
-// id and rebuilds it from the files. A torn last record is truncated and its size reported in
-// Bounds.Repaired; damaged data that is not a torn tail returns an error wrapping ErrCorrupt.
+// id and rebuilds it from the files. Every event it reports is durable when it returns. A torn
+// last record is truncated and its size reported in Bounds.Repaired; damaged data that is not a
+// torn tail returns an error wrapping ErrCorrupt.
 func (s *Store) Recover(ctx context.Context, id string) (persist.Bounds, error) {
 	st, unlock, err := s.begin(ctx, id)
 	if err != nil {
 		return persist.Bounds{}, err
 	}
 	defer unlock()
-	if st.journal != nil {
+	// A loaded ID is committed first, so its files hold only synced data. An ID that is not
+	// loaded may hold records an earlier process wrote and never synced; the scan syncs them.
+	loaded := st.journal != nil
+	if loaded {
 		if err := s.commit(id, st); err != nil {
 			return persist.Bounds{}, err
 		}
 		st.journal = nil
 	}
-	j, b, err := s.scan(id)
+	j, b, err := s.scan(id, !loaded)
 	if err != nil {
 		return persist.Bounds{}, err
 	}
@@ -271,6 +276,16 @@ func (s *Store) syncJournal(j *journal) error {
 // behind empty as the last segment, the scan would report its name minus one as committed. The
 // repair is not synced; the next commit or scan syncs it. If the repair fails, the ID becomes
 // unusable.
+//
+// Limit (PER-360): because the repair is not synced, a crash before the next commit can make
+// some of its truncations and removals durable and not others. With one Write per Commit, as
+// persist does, everything written since the last commit is in the last segment, and any mix
+// recovers either the batch or none of it. With several Writes over more than one segment
+// between commits, an earlier segment's truncation can reach the disk while a later segment's
+// removal does not: the scan, which reads only the first record of the first segment and the
+// records of the last one, then reports events behind a gap that Read rejects as corrupt. The
+// same holds for an empty file that a failed Create may leave named after the last written
+// sequence number plus one.
 func (s *Store) repairCommit(id string, st *idState) {
 	j := st.journal
 	next := j.lastCommitted + 1
@@ -331,15 +346,21 @@ func closeFile(f File, err *error) {
 // first record of the first segment and every record of the last one. A torn tail of the last
 // segment is truncated and synced; damage that is not a torn tail returns an error wrapping
 // ErrCorrupt.
-func (s *Store) scan(id string) (*journal, persist.Bounds, error) {
-	j, b, err := s.scanDir(journalDir + "/" + idDirName(id))
+//
+// With durable set, as for an ID whose state was not loaded, it also makes the records it reports
+// durable: if the last segment holds a record, it syncs the segment, the ID's directory and the
+// journal directory, since an earlier process may have written them without a commit. Earlier
+// segments are not synced: a segment is followed by a new one only after a Write, and with one
+// Write per Commit the Commit of the earlier batch synced it.
+func (s *Store) scan(id string, durable bool) (*journal, persist.Bounds, error) {
+	j, b, err := s.scanDir(journalDir+"/"+idDirName(id), durable)
 	if err != nil && !errors.Is(err, ErrCorrupt) {
 		err = fmt.Errorf("filestore: recover %s: %w", id, err)
 	}
 	return j, b, err
 }
 
-func (s *Store) scanDir(dir string) (*journal, persist.Bounds, error) {
+func (s *Store) scanDir(dir string, durable bool) (*journal, persist.Bounds, error) {
 	j := &journal{dir: dir}
 	infos, err := s.fs.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -366,9 +387,17 @@ func (s *Store) scanDir(dir string) (*journal, persist.Bounds, error) {
 			return nil, persist.Bounds{}, err
 		}
 	}
-	next, repaired, err := s.scanLast(j.segPath(last.seq), last)
+	next, repaired, err := s.scanLast(j.segPath(last.seq), last, durable)
 	if err != nil {
 		return nil, persist.Bounds{}, err
+	}
+	if durable && last.size > 0 {
+		if err := s.fs.SyncDir(dir); err != nil {
+			return nil, persist.Bounds{}, err
+		}
+		if err := s.fs.SyncDir(journalDir); err != nil {
+			return nil, persist.Bounds{}, err
+		}
 	}
 	j.lastWritten, j.lastCommitted = next-1, next-1
 	return j, persist.Bounds{First: first.seq, Last: next - 1, Repaired: repaired}, nil
@@ -404,8 +433,9 @@ func (s *Store) checkFirstRecord(name string, seq uint64) (err error) {
 // sequence number after the last valid one. At the first invalid record, at offset o, it decides
 // between corruption and a torn tail: corruption if the record's length is in range, the record
 // ends before the end of the file and a valid record starts there; otherwise it truncates the
-// segment to o, syncs it, sets seg's sizes and returns the number of bytes removed.
-func (s *Store) scanLast(name string, seg *segment) (next uint64, repaired int64, err error) {
+// segment to o, syncs it, sets seg's sizes and returns the number of bytes removed. With durable
+// set, it also syncs a segment that holds a record after the scan.
+func (s *Store) scanLast(name string, seg *segment, durable bool) (next uint64, repaired int64, err error) {
 	f, err := s.fs.Open(name)
 	if err != nil {
 		return 0, 0, err
@@ -441,10 +471,13 @@ func (s *Store) scanLast(name string, seg *segment) (next uint64, repaired int64
 		next += uint64(len(rec.events))
 		off += rec.size
 	}
-	if off < size {
+	torn := off < size
+	if torn {
 		if err := f.Truncate(off); err != nil {
 			return 0, 0, err
 		}
+	}
+	if torn || (durable && off > 0) {
 		if err := f.Sync(); err != nil {
 			return 0, 0, err
 		}

@@ -855,3 +855,122 @@ func TestPER330FilesClosedOnFailures(t *testing.T) {
 	}
 	committedOnReopen(t, dir, "c-1", persist.Bounds{First: 1, Last: committed})
 }
+
+// syncCalls returns the Sync and SyncDir calls among calls.
+func syncCalls(calls []string) []string {
+	var syncs []string
+	for _, c := range calls {
+		if strings.HasPrefix(c, "Sync ") || strings.HasPrefix(c, "SyncDir ") {
+			syncs = append(syncs, c)
+		}
+	}
+	return syncs
+}
+
+// TestRecoverSyncsWhatItReports checks that Recover of an ID that is not loaded makes the events
+// it reports durable: an earlier process may have written them and never synced them.
+func TestRecoverSyncsWhatItReports(t *testing.T) {
+	ctx := context.Background()
+	seg1, seg3 := segOf("c-1", 1), segOf("c-1", 3)
+	r1, r3 := jrec(t, 1, "a", "b"), jrec(t, 3, "c")
+
+	// fresh returns a Store on a recFS over a directory holding the given segments of c-1.
+	fresh := func(t *testing.T, segs map[string][]byte) (*Store, *recFS, string) {
+		t.Helper()
+		s, r, dir := newJournal(t)
+		for name, b := range segs {
+			p := filepath.Join(dir, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return s, r, dir
+	}
+	wantSyncs := []string{"Sync " + seg3, "SyncDir journal/id-c-1", "SyncDir journal"}
+
+	t.Run("fresh store", func(t *testing.T) {
+		s, r, _ := fresh(t, map[string][]byte{seg1: r1, seg3: r3})
+		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 3})
+		calls := r.calls()
+		checkCalls(t, "syncs", syncCalls(calls), append([]string{"Sync FORMAT.tmp", "SyncDir ."}, wantSyncs...))
+		// The last segment is synced after it was read, and before the directories.
+		joined := strings.Join(calls, "\n")
+		if !strings.Contains(joined, fmt.Sprintf("ReadAt %s 0 %d\nSync %s\nClose %s\nSyncDir journal/id-c-1\nSyncDir journal", seg3, len(r3), seg3, seg3)) {
+			t.Fatalf("calls =\n%s", joined)
+		}
+
+		// Recover of the loaded ID with nothing written performs no sync.
+		m := r.mark()
+		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 3})
+		checkCalls(t, "syncs of a loaded id", syncCalls(r.since(m)), nil)
+	})
+
+	t.Run("written by this store, committed", func(t *testing.T) {
+		s, r, _ := newJournal(t)
+		mustWrite(t, s, "c-1", ev(1, "a"))
+		mustCommit(t, s, "c-1")
+		m := r.mark()
+		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 1})
+		checkCalls(t, "syncs", syncCalls(r.since(m)), nil)
+	})
+
+	t.Run("torn tail is synced once", func(t *testing.T) {
+		s, r, _ := fresh(t, map[string][]byte{seg1: r1, seg3: cat(r3, r3[:5])})
+		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 3, Repaired: 5})
+		checkCalls(t, "syncs", syncCalls(r.calls())[2:], wantSyncs)
+	})
+
+	t.Run("a Write that loads the state syncs first", func(t *testing.T) {
+		s, r, _ := fresh(t, map[string][]byte{seg1: r1})
+		mustWrite(t, s, "c-1", ev(3, "c"))
+		checkCalls(t, "syncs", syncCalls(r.calls())[2:], []string{"Sync " + seg1, "SyncDir journal/id-c-1", "SyncDir journal"})
+	})
+
+	for _, tc := range []struct {
+		name string
+		segs map[string][]byte
+	}{
+		{"missing journal", nil},
+		{"empty directory", map[string][]byte{"journal/id-c-1/foo": nil}},
+		{"empty last segment", map[string][]byte{seg1: r1, seg3: nil}},
+		{"torn only record", map[string][]byte{seg1: r1[:7]}},
+	} {
+		t.Run("no record to sync: "+tc.name, func(t *testing.T) {
+			s, r, _ := fresh(t, tc.segs)
+			if _, err := s.Recover(ctx, "c-1"); err != nil {
+				t.Fatal(err)
+			}
+			syncs := syncCalls(r.calls())[2:] // after Sync FORMAT.tmp and SyncDir . of the initialization
+			if tc.name == "torn only record" {
+				checkCalls(t, "syncs", syncs, []string{"Sync " + seg1})
+				return
+			}
+			checkCalls(t, "syncs", syncs, nil)
+		})
+	}
+
+	for _, failing := range []struct{ method, name string }{
+		{"Sync", seg3}, {"SyncDir", "journal/id-c-1"}, {"SyncDir", "journal"},
+	} {
+		t.Run("failing "+failing.method+" "+failing.name, func(t *testing.T) {
+			s, r, _ := fresh(t, map[string][]byte{seg1: r1, seg3: r3})
+			boom := errors.New("injected")
+			r.fail(failing.method, failing.name, nth(1), boom)
+			_, err := s.Recover(ctx, "c-1")
+			if !errors.Is(err, boom) || err.Error() != "filestore: recover c-1: injected" {
+				t.Fatalf("Recover = %v, want the %s error", err, failing.method)
+			}
+			// The state was not loaded: the next Recover scans and syncs again.
+			m := r.mark()
+			mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 3})
+			calls := r.since(m)
+			if calls[0] != "ReadDir journal/id-c-1" {
+				t.Fatalf("next Recover starts with %q, want a scan", calls[0])
+			}
+			checkCalls(t, "syncs of the next Recover", syncCalls(calls), wantSyncs)
+		})
+	}
+}
