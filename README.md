@@ -44,11 +44,18 @@ lockstep includes:
 - **Overload protection** in the production engine: new actors and user messages are refused while
   the live heap is near its memory limit, a turn that runs too long is reported and its actor
   isolated, and a growing goroutine count is logged.
+- **Event-sourced persistent actors.** `persist.Spawn` starts an actor whose state is rebuilt from
+  a journal of events. A reply goes out only after its events are fsynced, and a restart recovers
+  from the newest snapshot and the events after it. `persist/filestore` is the reference journal
+  and snapshot store. The same actor code runs on the operating system's files in production and
+  on a simulated disk in tests, where crashes, torn writes, and failed syncs exercise the real
+  recovery code.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
 - **Deadlock and leak detection** in simulation. A cycle of pending asks fails the seed with
-  `lockstep: deadlock: A → B → A`.
+  `lockstep: deadlock: A → B → A`, and so does an actor that stops with an effect pending, a
+  resource unclosed, or a file still open on the simulated disk.
 - **A static analyzer**, `lockstep-vet`, also available as a golangci-lint plugin. It reports
   `time.Now`, global randomness, goroutines, `select`, map ranges, and blocking calls in actor
   code.
@@ -363,7 +370,208 @@ writes the artifacts under `os.TempDir()`, shown here as `$TMPDIR`; they include
 
 Besides the checks you register, `sim` fails a seed when actors deadlock on each other's asks
 (`lockstep: deadlock: A → B → A`), when an effect has no handler, and when an actor stops or
-restarts with an effect still pending or a resource it owns fails to close.
+restarts with an effect still pending, a resource it owns failing to close, or a file it opened on
+the simulated disk still open.
+
+## Persistent actors: state that survives a restart
+
+An event-sourced actor stores the events that produced its state. `persist.Spawn` starts one under
+a persistence ID, the name of its stream of events. A command handler returns events. lockstep
+writes them to a journal, calls fsync, and only then applies them to the state and runs the
+callbacks you registered with `ctx.Then`, so a reply sent from a callback tells the caller that the
+events are on disk. When the actor starts or restarts, it recovers its state from the newest
+snapshot and the events after it.
+
+The following program is a bank account. A `Deposit` stores a `Deposited` event and replies with
+the new balance:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/persist"
+	"github.com/hmdsefi/lockstep/persist/filestore"
+)
+
+// Deposit adds Amount to the account and replies with the new balance.
+type Deposit struct {
+	Amount int64
+	Reply  lockstep.ReplyTo[int64]
+}
+
+// Deposited is the event that a Deposit stores.
+type Deposited struct{ Amount int64 }
+
+// Account is an event-sourced actor whose state is its balance.
+type Account struct{}
+
+func (Account) Initial() int64 { return 0 }
+
+func (Account) Handle(ctx *persist.Context[Deposit, Deposited, int64], _ int64, d Deposit) []Deposited {
+	ctx.Then(func(ctx *persist.Context[Deposit, Deposited, int64], balance int64) {
+		d.Reply.Send(ctx, balance) // runs after the event is committed
+	})
+	return []Deposited{{Amount: d.Amount}}
+}
+
+func (Account) Apply(balance int64, e Deposited) int64 { return balance + e.Amount }
+
+func newAccount() persist.EventSourced[Deposit, Deposited, int64] { return Account{} }
+
+func deposit(amount int64) func(lockstep.ReplyTo[int64]) Deposit {
+	return func(r lockstep.ReplyTo[int64]) Deposit { return Deposit{Amount: amount, Reply: r} }
+}
+
+func main() {
+	store, err := filestore.Open("data")
+	if err != nil {
+		log.Fatal(err)
+	}
+	sys := lockstep.New()
+	account, err := persist.Spawn(sys, "account", "acct-1", newAccount, persist.Config[Deposited, int64]{
+		Journal: store,
+		Events:  persist.JSON[Deposited](),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	balance, err := lockstep.Ask(sys, account, deposit(5)).Await(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("balance:", balance)
+
+	if err := sys.Shutdown(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Run it twice:
+
+```sh
+go run .
+go run .
+```
+
+```text
+balance: 5
+balance: 10
+```
+
+The first run creates the directory `data`. The second run starts a new system on the same
+directory and recovers the balance of 5 from the journal before it handles the new deposit.
+
+`Initial` returns the state before the first event, `Handle` turns a command into events, and
+`Apply` folds one event into the state. `Apply` must be a pure function of its arguments, because
+recovery calls it again for every stored event. An actor handles one command at a time, and while
+it recovers and while a batch of events is being committed, its commands wait in the mailbox. The
+actor's message type is the command type, so `Send` and `Ask` reach it like any actor.
+`persist.JSON` encodes events with `encoding/json`; any `persist.Codec` works.
+
+To start recovery from a snapshot instead of from the first event, give the `Config` a snapshot
+store and a codec for the state. A `*filestore.Store` is both the journal and the snapshot store:
+
+```go
+persist.Config[Deposited, int64]{
+	Journal:       store,
+	Events:        persist.JSON[Deposited](),
+	Snapshots:     store,
+	State:         persist.JSON[int64](),
+	SnapshotEvery: 100,
+	PruneEvents:   true,
+}
+```
+
+The actor saves a snapshot after every 100 committed events, beside its commands. With
+`PruneEvents`, it deletes the events that an older snapshot covers. The newest two snapshots and the
+events after the older one stay, so a damaged newest snapshot falls back to the older one.
+
+A failed write or commit fails the actor, with an error that wraps the store's error, and its
+supervisor decides what happens next. No reply goes out for events that did not commit, and a
+restart recovers the state from what the store holds.
+
+### The same actor on a simulated disk
+
+`filestore.Open` uses the operating system's files. In a simulation, `s.Volume("n1")` returns the
+simulated disk of node `n1` as a `filestore.FS`, and `filestore.New` runs a store on it. The disk
+is faultline's: it keeps what was synced when the node crashes, and `Options.Disk` chooses what a
+crash does to writes that were not synced (lose them, keep some, or tear one), makes syncs
+fail, limits the capacity, and adds latency. The following test crashes and restarts `n1` while
+`c1` deposits 1, 20 times, and checks that no acknowledged deposit is lost. It adds to the program
+above, and like the first test it imports faultline directly:
+
+```go
+package main
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/hmdsefi/faultline"
+	"github.com/hmdsefi/faultline/kernel/fault"
+	"github.com/hmdsefi/faultline/kernel/simdisk"
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/persist"
+	"github.com/hmdsefi/lockstep/persist/filestore"
+	"github.com/hmdsefi/lockstep/sim"
+)
+
+func TestAccount(t *testing.T) {
+	opts := sim.Options{Options: faultline.Options{Seeds: 50, Duration: 20 * time.Second}}
+	opts.Disk.Latency = simdisk.DefaultLatency()
+	sim.Simulate(t, opts, func(s *sim.Sim) {
+		w := s.World()
+		var account lockstep.PID[Deposit]
+		s.Node("n1", func(sys *lockstep.System) {
+			store := filestore.New(s.Volume("n1"))
+			account, _ = persist.Spawn(sys, "account", "acct-1", newAccount, persist.Config[Deposited, int64]{
+				Journal: store,
+				Events:  persist.JSON[Deposited](),
+			})
+		})
+		s.Client("c1", func(*lockstep.System) {})
+		w.Plan(&fault.Random{MaxDown: 1, Rules: []fault.Rule{
+			{Kind: fault.KindCrash, Every: 4 * time.Second, MaxFor: time.Second},
+		}})
+
+		var acked int64
+		for range 20 {
+			w.RunFor(250 * time.Millisecond)
+			if _, err := sim.Ask(s, "c1", account, deposit(1), lockstep.WithTimeout(500*time.Millisecond)); err == nil {
+				acked++
+			}
+		}
+		w.RunFor(10 * time.Second) // faults stop at 15s, a quarter before the end
+		balance, err := sim.Ask(s, "c1", account, deposit(0))
+		w.Final("no acknowledged deposit is lost", func() error {
+			if err != nil {
+				return err
+			}
+			if balance < acked {
+				return fmt.Errorf("balance %d after %d acknowledged deposits", balance, acked)
+			}
+			return nil
+		})
+	})
+}
+```
+
+The recovery that runs after every crash is the code that runs in production, on a disk that lost
+or tore the writes that were not synced. A store that acknowledged a deposit before its fsync could
+lose it in a crash, and the check would fail on the seed that finds it.
+
+A `Volume` belongs to its node. Using it from another node, or from outside a node event, fails the
+seed with `lockstep/misuse`, and a file that an actor leaves open when it stops or restarts fails
+it with `lockstep/leak`. A `Store` closes every file before a call returns, so only code that opens
+files itself can leak one. [Architecture](docs/architecture.md#persistence) describes the journal
+format, the fsync order, and how recovery tells a torn write from corruption.
 
 ## Static analysis: lockstep-vet and golangci-lint
 
@@ -464,15 +672,21 @@ it, so a program that uses lockstep without `sim` never links faultline.
 ```text
 github.com/hmdsefi/lockstep          actor runtime
 ├── lockstep.New()                   production engine for your program
+├── lockstep/persist                 event-sourced actors
+│   └── persist/filestore            their journal and snapshot store, in files
 └── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
 ```
 
+`persist` and `persist/filestore` do not import faultline either. `sim` gives them a simulated disk
+through `(*Sim).Volume`.
+
 ## Limitations
 
-lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
-It cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not
-free the worker. There is no remoting, clustering, persistence, or OpenTelemetry support, so actors
-on different nodes talk only in simulation.
+lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`. It
+cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not free
+the worker. There is no remoting, clustering, or OpenTelemetry support, so actors on different nodes
+talk only in simulation. The reference store in `persist/filestore` keeps files on a local disk; a
+journal or snapshot store of another kind implements `persist.Journal` and `persist.SnapshotStore`.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
