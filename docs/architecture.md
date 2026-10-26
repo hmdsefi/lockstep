@@ -17,7 +17,7 @@ which runs every turn on one goroutine, exists only for the project's own tests.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/lockstep-parts-dark.svg">
-    <img alt="lockstep's parts: your actors call the runtime in package lockstep, with systems and PIDs, mailboxes, asks and replies, supervision, timers and effects. The runtime talks only to the engine seam, an internal interface with Scheduler, Clock, Effects, Entropy, Transport and Tracer. The production engine behind lockstep.New() and the simulation engine behind sim.Simulate implement the seam, and the simulation engine runs on the faultline kernel. lockstep-vet checks your actor code." src="assets/lockstep-parts-light.svg">
+    <img alt="lockstep's parts: your actors call the runtime in package lockstep, with systems and PIDs, mailboxes, asks and replies, supervision, timers and effects. The runtime talks only to the engine seam, an internal interface with Scheduler, Clock, Effects, Entropy, Transport and Tracer. The production engine behind lockstep.New() and the simulation engine behind sim.Simulate implement the seam, and the simulation engine runs on the faultline kernel. lockstep-vet checks your actor code. From https://github.com/hmdsefi/lockstep." src="assets/lockstep-parts-light.svg">
   </picture>
 </p>
 
@@ -81,7 +81,7 @@ as `FailSend`.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/message-path-dark.svg">
-    <img alt="How a message reaches Receive: a sender calls Send(from, pid, msg), and the message goes into the actor's user mailbox, bounded at 1024 by default; when it is full, FailSend makes Send return ErrMailboxFull. The actor's system queue holds Stop, Terminated and ChildFailed and is never full. A turn processes the system queue first, then user messages up to the budget, 32 on the production engine and 1 in simulation, and Receive(ctx, msg) handles one message at a time. A footer says messages from one sender to one receiver arrive in send order." src="assets/message-path-light.svg">
+    <img alt="How a message reaches Receive: a sender calls Send(from, pid, msg), and the message goes into the actor's user mailbox, bounded at 1024 by default; when it is full, FailSend makes Send return ErrMailboxFull. The actor's system queue holds Stop, Terminated and ChildFailed and is never full. A turn processes the system queue first, then user messages up to the budget, 32 on the production engine and 1 in simulation, and Receive(ctx, msg) handles one message at a time. A footer says messages from one sender to one receiver arrive in send order. From https://github.com/hmdsefi/lockstep." src="assets/message-path-light.svg">
   </picture>
 </p>
 
@@ -135,7 +135,7 @@ receive a `Terminated` signal when the actor stops for good.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/supervision-restart-dark.gif">
-    <img alt="Animation of a supervision tree: the /user guardian, a supervisor named payments with OneForOne, and three workers. worker-2 panics on a message; the strategy picks restart while worker-1 and worker-3 keep counting. worker-2's Stopped hook runs, a 10 ms backoff passes, and the factory builds fresh state, so its count goes from 41 to 0. The PID and mailbox survive, so the next message reaches the new incarnation. Past 10 restarts a minute, the directive becomes escalate." src="assets/supervision-restart-light.gif">
+    <img alt="Animation of a supervision tree: the /user guardian, a supervisor named payments with OneForOne, and three workers. worker-2 panics on a message; the strategy picks restart while worker-1 and worker-3 keep counting. worker-2's Stopped hook runs, a 10 ms backoff passes, and the factory builds fresh state, so its count goes from 41 to 0. The PID and mailbox survive, so the next message reaches the new incarnation. Past 10 restarts a minute, the directive becomes escalate. From https://github.com/hmdsefi/lockstep." src="assets/supervision-restart-light.gif">
   </picture>
 </p>
 
@@ -163,7 +163,7 @@ The engines run effects in different ways:
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/effect-round-trip-dark.svg">
-    <img alt="An effect's round trip: in Receive(ctx, Buy), lockstep.Do(ctx, Charge{...}, done) returns an EffectID at once. On the production engine, Charge.Run(ctx) does the real I/O on a bounded pool of 64 running and 1024 waiting; past that, done gets ErrOverloaded. In simulation, Run is never called and the handler registered with s.HandleEffect("payment.charge", h) returns a value, an error and a latency. done(v, err) builds a charged message, which the mailbox never refuses, and a later turn handles it in Receive(ctx, charged). After 30 s by default, done gets ErrTimeout, and a stop or restart cancels pending effects." src="assets/effect-round-trip-light.svg">
+    <img alt="An effect's round trip: in Receive(ctx, Buy), lockstep.Do(ctx, Charge{...}, done) returns an EffectID at once. On the production engine, Charge.Run(ctx) does the real I/O on a bounded pool of 64 running and 1024 waiting; past that, done gets ErrOverloaded. In simulation, Run is never called and the handler registered with s.HandleEffect('payment.charge', h) returns a value, an error and a latency. done(v, err) builds a charged message, which the mailbox never refuses, and a later turn handles it in Receive(ctx, charged). After 30 s by default, done gets ErrTimeout, and a stop or restart cancels pending effects. From https://github.com/hmdsefi/lockstep." src="assets/effect-round-trip-light.svg">
   </picture>
 </p>
 
@@ -194,7 +194,7 @@ simulation.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/engines-dark.svg">
-    <img alt="Two engines side by side. The production engine behind lockstep.New() has a global queue and workers with local queues; workers 1 and 2 run turns of actors A and B, and idle worker 3 steals half of worker 1's local queue. The simulation engine behind sim.Simulate has one kernel event queue ordered by virtual time, where the seed orders events at the same time. A table compares them: turns run in parallel on N workers or one at a time as kernel events; the turn budget is 32 messages by default or 1; time is the wall clock or virtual time with a clock per node; randomness is seeded from crypto/rand or derived from the seed; effects run on a bounded pool or in handlers from s.HandleEffect; a rerun has new timings, while a seed replays exactly." src="assets/engines-light.svg">
+    <img alt="Two engines side by side. The production engine behind lockstep.New() has a global queue and workers with local queues; workers 1 and 2 run turns of actors A and B, and idle worker 3 steals half of worker 1's local queue. The simulation engine behind sim.Simulate has one kernel event queue ordered by virtual time, where the seed orders events at the same time. A table compares them: turns run in parallel on N workers or one at a time as kernel events; the turn budget is 32 messages by default or 1; time is the wall clock or virtual time with a clock per node; randomness is seeded from crypto/rand or derived from the seed; effects run on a bounded pool or in handlers from s.HandleEffect; a rerun has new timings, while a seed replays exactly. From https://github.com/hmdsefi/lockstep." src="assets/engines-light.svg">
   </picture>
 </p>
 
@@ -226,7 +226,7 @@ in the same order.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/sim-replay-dark.gif">
-    <img alt="Animation of the README counter test on seed 0x870af07a512d3866, drawn from its trace. c1 sends Add to the counter on n1 every 250 ms of virtual time and the total reaches 19. faultline crashes n1 at 4.866 s, the 20th Add is dropped while n1 is down, and n1 restarts at 5.710 s with a new counter whose total is 0. At 9 s c1 asks for the total and gets 0, and the final check "every add counted" fails at 10 s with trace hash 0x56d752b8033ec3c3. Running FAULTLINE_SEED=0x870af07a512d3866 go test again replays the same 183 trace records with the same hash and the same failure." src="assets/sim-replay-light.gif">
+    <img alt="Animation of the README counter test on seed 0x870af07a512d3866, drawn from its trace. c1 sends Add to the counter on n1 every 250 ms of virtual time and the total reaches 19. faultline crashes n1 at 4.866 s, the 20th Add is dropped while n1 is down, and n1 restarts at 5.710 s with a new counter whose total is 0. At 9 s c1 asks for the total and gets 0, and the final check 'every add counted' fails at 10 s with trace hash 0x56d752b8033ec3c3. Running FAULTLINE_SEED=0x870af07a512d3866 go test again replays the same 183 trace records with the same hash and the same failure. From https://github.com/hmdsefi/lockstep." src="assets/sim-replay-light.gif">
   </picture>
 </p>
 

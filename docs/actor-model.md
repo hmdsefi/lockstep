@@ -13,7 +13,7 @@ know that theory, arrived at a very similar design, and later frameworks took it
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/actor-model-timeline-dark.svg">
-    <img alt="A timeline of the actor model: the actor formalism of Hewitt, Bishop and Steiger in 1973; Agha's definition of what an actor does in 1985; Erlang at the Ericsson Computer Science Laboratory in 1986; the OTP project in 1996; Open Source Erlang in 1998; Armstrong's thesis on let it crash in 2003; Akka on the JVM in 2009; Orleans and virtual actors in 2014; lockstep v0.1.0 in 2026." src="assets/actor-model-timeline-light.svg">
+    <img alt="A timeline of the actor model: the actor formalism of Hewitt, Bishop and Steiger in 1973; Agha's definition of what an actor does in 1985; Erlang at the Ericsson Computer Science Laboratory in 1986; the OTP project in 1996; Open Source Erlang in 1998; Armstrong's thesis on let it crash in 2003; Akka on the JVM in 2009; Orleans and virtual actors in 2014; lockstep v0.1.0 in 2026. From https://github.com/hmdsefi/lockstep." src="assets/actor-model-timeline-light.svg">
   </picture>
 </p>
 
@@ -66,7 +66,7 @@ the same data run one after another.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/shared-state-vs-actors-dark.svg">
-    <img alt="Two panels. Left, goroutines share memory: three goroutines go through one lock to a shared stock variable, with warnings that a forgotten lock is a data race, two locks in different orders deadlock, and every lock makes goroutines wait. Right, actors send messages: alice and bob send Buy messages to a shop actor's mailbox, and only the shop reads and writes its private stock, one message at a time." src="assets/shared-state-vs-actors-light.svg">
+    <img alt="Two panels. Left, goroutines share memory: three goroutines go through one lock to a shared stock variable, with warnings that a forgotten lock is a data race, two locks in different orders deadlock, and every lock makes goroutines wait. Right, actors send messages: alice and bob send Buy messages to a shop actor's mailbox, and only the shop reads and writes its private stock, one message at a time. From https://github.com/hmdsefi/lockstep." src="assets/shared-state-vs-actors-light.svg">
   </picture>
 </p>
 
@@ -100,7 +100,7 @@ the mailbox until the actor takes them, one at a time.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/actor-anatomy-dark.svg">
-    <img alt="An actor with its address, lockstep://n1/user/counter#100000003, a mailbox holding Add and Get messages, and a behavior, Receive(ctx, msg), with private state total: 6. Three arrows leave the behavior: send messages to actors whose addresses it has (lockstep.Send, lockstep.Ask), create actors (lockstep.Spawn), and pick the next behavior by updating its own fields. A note says nothing else crosses the boundary: no shared memory." src="assets/actor-anatomy-light.svg">
+    <img alt="An actor with its address, lockstep://n1/user/counter#100000003, a mailbox holding Add and Get messages, and a behavior, Receive(ctx, msg), with private state total: 6. Three arrows leave the behavior: send messages to actors whose addresses it has (lockstep.Send, lockstep.Ask), create actors (lockstep.Spawn), and pick the next behavior by updating its own fields. A note says nothing else crosses the boundary: no shared memory. From https://github.com/hmdsefi/lockstep." src="assets/actor-anatomy-light.svg">
   </picture>
 </p>
 
@@ -127,7 +127,7 @@ which they arrive decides who is declined:
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/actor-mailbox-dark.gif">
-    <img alt="Animation: alice, bob and carol send Deposit 50, Withdraw 30 and Withdraw 130 to an account actor at the same moment. The messages queue in the mailbox in arrival order: bob's, alice's, then carol's. Starting from a balance of 100, the account pays bob and leaves 70, adds alice's deposit for 120, and declines carol because 120 is less than 130. A last caption says that in another order carol is paid and bob is declined." src="assets/actor-mailbox-light.gif">
+    <img alt="Animation: alice, bob and carol send Deposit 50, Withdraw 30 and Withdraw 130 to an account actor at the same moment. The messages queue in the mailbox in arrival order: bob's, alice's, then carol's. Starting from a balance of 100, the account pays bob and leaves 70, adds alice's deposit for 120, and declines carol because 120 is less than 130. A last caption says that in another order carol is paid and bob is declined. From https://github.com/hmdsefi/lockstep." src="assets/actor-mailbox-light.gif">
   </picture>
 </p>
 
@@ -146,7 +146,7 @@ children and then itself.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/supervision-restart-dark.gif">
-    <img alt="Animation of a supervision tree in lockstep: the /user guardian, a supervisor named payments with the OneForOne strategy, and three workers. worker-2 panics on a message. The strategy picks restart while worker-1 and worker-3 keep counting. worker-2's Stopped hook runs, a backoff of 10 ms passes, and the factory builds fresh state, so its count goes from 41 to 0. The PID and mailbox survive, so the next message reaches the new incarnation. A note says that past 10 restarts a minute, the directive becomes escalate." src="assets/supervision-restart-light.gif">
+    <img alt="Animation of a supervision tree in lockstep: the /user guardian, a supervisor named payments with the OneForOne strategy, and three workers. worker-2 panics on a message. The strategy picks restart while worker-1 and worker-3 keep counting. worker-2's Stopped hook runs, a backoff of 10 ms passes, and the factory builds fresh state, so its count goes from 41 to 0. The PID and mailbox survive, so the next message reaches the new incarnation. A note says that past 10 restarts a minute, the directive becomes escalate. From https://github.com/hmdsefi/lockstep." src="assets/supervision-restart-light.gif">
   </picture>
 </p>
 
