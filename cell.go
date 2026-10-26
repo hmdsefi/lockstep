@@ -314,12 +314,13 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 	c.schedule(from)
 }
 
-// closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160):
-// it returns the Sent entries and the Self entries of the user mailbox, each in queue order, and
-// the system messages left that the actor discards as not running, in queue order: each signal
-// message with its Watch sequence number (ACT-630), a cleanup failure's ChildFailed among them
-// (SUP-110), and each inject command (SFT-040). The other system messages are discarded. Later
-// enqueues are refused. The caller records what it returns, holding no lock.
+// closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160): it
+// returns the Sent entries and the Self entries of the user mailbox, each in queue order, and the
+// system messages left that the actor discards as not running, in queue order: each signal message
+// with its Watch sequence number (ACT-630), a cleanup failure's ChildFailed among them (SUP-110),
+// each inject command (SFT-040) and each internal effect outcome (PER-240). The other system
+// messages are discarded. Later enqueues are refused. The caller records what it returns, holding
+// no lock.
 func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []sysMsg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -338,7 +339,7 @@ func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []sysMsg) {
 			notRunning = append(notRunning, m)
 		case cleanupFailed:
 			notRunning = append(notRunning, m.asSignal())
-		case inject:
+		case inject, internalResult:
 			notRunning = append(notRunning, m)
 		}
 	}
