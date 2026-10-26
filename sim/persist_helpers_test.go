@@ -81,6 +81,7 @@ type counterRun struct {
 	opts      []lockstep.SpawnOption                         // passed to persist.Spawn
 	directive func(err error) lockstep.Directive             // the parent's decision after errs grew; nil: restart
 	apply     func(e Added)                                  // called at the start of every Apply; nil: none
+	recovered func(ctx *counterCtx)                          // called at the end of every Recovered; nil: none
 	pid       lockstep.PID[CounterCmd]                       // the counter of the latest boot
 
 	boots     int                // runs of n1's setup
@@ -229,9 +230,12 @@ func (c *pcounter) Apply(state CounterState, event Added) CounterState {
 	return state
 }
 
-func (c *pcounter) Recovered(_ *counterCtx, state CounterState, rec persist.Recovery) {
+func (c *pcounter) Recovered(ctx *counterCtx, state CounterState, rec persist.Recovery) {
 	c.r.recs = append(c.r.recs, rec)
 	c.r.log = append(c.r.log, fmt.Sprintf("recovered %d", state.Sum))
+	if c.r.recovered != nil {
+		c.r.recovered(ctx)
+	}
 }
 
 func (c *pcounter) Signal(_ *counterCtx, state CounterState, _ lockstep.Signal) {
@@ -353,12 +357,17 @@ func (f *fakeSnapshots) Load(context.Context, string) (persist.Snapshot, bool, e
 // storeLog is a Journal and SnapshotStore around a Store that logs the snapshot, deletion and
 // event write calls in one list, in call order: "Save 4", "DeleteSnapshots 1", "DeleteEvents 2",
 // "Write 7". The calls of Recover, Read, Commit and Load are not logged. The deletions it logs
-// fail with failSnapshots and failEvents when those are set, and then change nothing.
+// fail with failSnapshots and failEvents when those are set, and the save of seq failSave fails
+// with errSaveFailed; a failed call changes nothing.
 type storeLog struct {
 	*filestore.Store
 	calls                     []string
 	failSnapshots, failEvents error
+	failSave                  uint64
 }
+
+// errSaveFailed is the error of the save that storeLog fails.
+var errSaveFailed = errors.New("save failed")
 
 func (l *storeLog) note(name string, n uint64) {
 	l.calls = append(l.calls, fmt.Sprintf("%s %d", name, n))
@@ -366,6 +375,9 @@ func (l *storeLog) note(name string, n uint64) {
 
 func (l *storeLog) Save(ctx context.Context, id string, snap persist.Snapshot) error {
 	l.note("Save", snap.Seq)
+	if l.failSave != 0 && snap.Seq == l.failSave {
+		return errSaveFailed
+	}
 	return l.Store.Save(ctx, id, snap)
 }
 

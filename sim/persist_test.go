@@ -1380,6 +1380,127 @@ func TestPER190DeleteOrder(t *testing.T) {
 	})
 }
 
+// PER-190: a save that fails starts no deletion, even with an older snapshot to keep, and without
+// PruneEvents a cycle deletes snapshots only.
+func TestPER190NoDeletion(t *testing.T) {
+	run := func(t *testing.T, prune bool, failSave uint64, wantCalls, wantFails []string) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			var log *storeLog
+			r.config = func(cfg *persist.Config[Added, CounterState]) {
+				log = &storeLog{Store: filestore.New(s.Volume("n1")), failSave: failSave}
+				cfg.Journal, cfg.Snapshots = log, log
+				cfg.SnapshotEvery, cfg.PruneEvents = 2, prune
+			}
+			r.node()
+			w.RunFor(time.Millisecond)
+			for range 6 {
+				r.ask(tt, addCmd(1))
+			}
+			w.RunFor(50 * time.Millisecond)
+
+			var calls []string
+			for _, c := range log.calls {
+				if !strings.HasPrefix(c, "Write ") {
+					calls = append(calls, c)
+				}
+			}
+			if !slices.Equal(calls, wantCalls) {
+				tt.Errorf("store calls %v, want %v", calls, wantCalls)
+			}
+			if got := failOps(s); !slices.Equal(got, wantFails) {
+				tt.Errorf("fail ops %v, want %v", got, wantFails)
+			}
+			if len(r.errs) != 0 {
+				tt.Errorf("errs %v, want none", r.errs)
+			}
+		})
+	}
+	t.Run("failed save after a snapshot", func(t *testing.T) {
+		// The failed save of seq 4 deletes nothing; seq 5 is due at once, and its save deletes.
+		run(t, true, 4, []string{"Save 2", "Save 4", "Save 5", "DeleteSnapshots 1", "DeleteEvents 2"}, []string{"save"})
+	})
+	t.Run("PruneEvents unset", func(t *testing.T) {
+		run(t, false, 0, []string{"Save 2", "Save 4", "DeleteSnapshots 1", "Save 6", "DeleteSnapshots 3"}, nil)
+	})
+}
+
+// PER-170: after recovery SnapshotEvery is evaluated only at the next commit, while a Snapshot
+// call in Recovered takes a snapshot at once.
+func TestPER170SnapshotAfterRecovery(t *testing.T) {
+	// run adds 1 three times with no snapshot due, restarts n1 with SnapshotEvery 2, waits, and
+	// adds 1 once more; inRecovered makes the second Recovered call Snapshot.
+	run := func(t *testing.T, inRecovered bool, wantAfterRecovery, wantEnd []string) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			r.config = func(cfg *persist.Config[Added, CounterState]) {
+				if r.boots > 1 {
+					cfg.SnapshotEvery = 2
+				}
+			}
+			r.recovered = func(ctx *counterCtx) {
+				if inRecovered && r.boots > 1 {
+					ctx.Snapshot()
+				}
+			}
+			n1 := r.node()
+			w.RunFor(time.Millisecond)
+			for range 3 {
+				r.ask(tt, addCmd(1))
+			}
+			now := w.Sim.Now()
+			w.Sim.At(now.Add(time.Millisecond), "test/crash", n1.Crash)
+			w.Sim.At(now.Add(2*time.Millisecond), "test/restart", n1.Restart)
+			w.RunFor(50 * time.Millisecond)
+			if got, want := r.recs[len(r.recs)-1], (persist.Recovery{Events: 3, LastSeq: 3}); got != want {
+				tt.Fatalf("recovery after the restart %+v, want %+v", got, want)
+			}
+			if got := snapSeqs(s); !slices.Equal(got, wantAfterRecovery) {
+				tt.Errorf("snapshot seqs after the recovery %v, want %v", got, wantAfterRecovery)
+			}
+			r.ask(tt, addCmd(1))
+			w.RunFor(50 * time.Millisecond)
+			if got := snapSeqs(s); !slices.Equal(got, wantEnd) {
+				tt.Errorf("snapshot seqs after the next Add{1} %v, want %v", got, wantEnd)
+			}
+		})
+	}
+	t.Run("SnapshotEvery", func(t *testing.T) { run(t, false, nil, []string{"4"}) })
+	t.Run("Snapshot in Recovered", func(t *testing.T) { run(t, true, []string{"3"}, []string{"3"}) })
+}
+
+// PER-170: a Snapshot call while a snapshot cycle is in flight is evaluated again when the cycle
+// ends, so its snapshot follows without another command.
+func TestPER170RequestDuringCycle(t *testing.T) {
+	opts := fullTrace(3)
+	opts.Disk.Latency.Sync.Base = 50 * time.Millisecond
+	sim.Simulate(t, opts, func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		r := newCounterRun(s)
+		r.node()
+		w.RunFor(time.Second)
+		r.mustHaveRecovered(tt)
+		r.ask(tt, addCmd(1))
+		if err := sim.Send(s, "n1", r.pid, CounterCmd(SnapNow{})); err != nil {
+			tt.Fatalf("Send: %v", err)
+		}
+		r.ask(tt, addCmd(1)) // one sync; the save of seq 1 takes more
+		if got := snapSeqs(s); len(got) != 0 || len(effectStarts(w.Sim.Records(), "lockstep.persist.save")) != 1 {
+			tt.Fatalf("snapshot seqs %v before the second SnapNow, want the save of seq 1 in flight", got)
+		}
+		if err := sim.Send(s, "n1", r.pid, CounterCmd(SnapNow{})); err != nil {
+			tt.Fatalf("Send: %v", err)
+		}
+		w.RunFor(2 * time.Second)
+		if got := snapSeqs(s); !slices.Equal(got, []string{"1", "2"}) {
+			tt.Errorf("snapshot seqs %v, want [1 2]", got)
+		}
+		r.checkOneCycleAtATime(tt)
+	})
+}
+
 // PER-160, PER-170: a snapshot save in flight when the incarnation fails is cancelled: its snapshot
 // record never appears, and the next incarnation takes snapshots as before.
 func TestPersistSnapshotCancelledAtRestart(t *testing.T) {
@@ -1409,8 +1530,12 @@ func TestPersistSnapshotCancelledAtRestart(t *testing.T) {
 			tt.Errorf("Add{1} after the restart replied %d, want 2", got)
 		}
 		w.RunFor(time.Second)
-		// Recovery found no snapshot: the next incarnation's snapshot is of seq 2 once the commit
-		// is done, and nothing else.
+		// The cancelled save ran before the failure, so its snapshot is on disk and the recovery
+		// starts from it; only its completion was dropped. The next incarnation's snapshot is of
+		// seq 2 once the commit is done, and nothing else.
+		if want := []persist.Recovery{{}, {SnapshotSeq: 1, LastSeq: 1}}; !slices.Equal(r.recs, want) {
+			tt.Errorf("recs %+v, want %+v: the second recovery starts from the snapshot of seq 1", r.recs, want)
+		}
 		if got := snapSeqs(s); !slices.Equal(got, []string{"2"}) {
 			tt.Errorf("snapshot seqs %v, want [2]", got)
 		}
