@@ -5,6 +5,7 @@ package overload
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"runtime"
@@ -60,7 +61,8 @@ func NewMonitor(bound int, log *slog.Logger) *Monitor {
 
 // Sample reads the goroutine count. While armed, a count of at least the bound logs one warning
 // and disarms the monitor; while disarmed, a count below bound - bound/5 re-arms it (OVL-610).
-// With a bound of 0 it does nothing. The Sampler calls it on every 10th tick; callers must not
+// With a bound of 0 it does nothing. The warning's summary is empty when the goroutine profile
+// could not be read. The Sampler calls it on every 10th tick; callers must not
 // run it concurrently with itself.
 func (m *Monitor) Sample() {
 	if m.bound <= 0 {
@@ -75,8 +77,9 @@ func (m *Monitor) Sample() {
 		return
 	}
 	m.armed = false
-	if m.log == nil {
-		return
+	ctx := context.Background()
+	if m.log == nil || !m.log.Enabled(ctx, slog.LevelWarn) {
+		return // the monitor is disarmed; the profile dump stops the world, so skip it when nobody reads it
 	}
 	m.log.Warn("goroutine count above bound",
 		slog.Int("goroutines", n), slog.Int("bound", m.bound), slog.String("summary", goroutineSummary()))
@@ -104,7 +107,9 @@ func summarizeProfile(text string) string {
 		if frame, ok := strings.CutPrefix(line, "#\t"); ok {
 			if first {
 				first = false
-				counts[frameFunction(frame)] += count
+				if fn := frameFunction(frame); fn != "" { // a truncated frame names no function
+					counts[fn] += count
+				}
 			}
 			continue
 		}

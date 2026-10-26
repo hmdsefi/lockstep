@@ -4,6 +4,7 @@
 package overload_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -104,7 +105,8 @@ func TestMonitorWarningCarriesTheSample(t *testing.T) {
 
 // profileOf12 is a debug-1 goroutine profile of twelve functions: one summed over two records,
 // two tied at 5, one upper-case name that sorts before the lower-case ones, labels lines, frames
-// that must not be credited (second frames) and a header.
+// that must not be credited (second frames), a header and a truncated frame that names no
+// function.
 const profileOf12 = `goroutine profile: total 38
 4 @ 0x1 0x2
 #	0x1	main.alpha+0x1d	/src/main.go:10
@@ -148,6 +150,9 @@ const profileOf12 = `goroutine profile: total 38
 
 1 @ 0x10
 #	0x10	main.Zulu+0x1	/src/main.go:130
+
+50 @ 0x11
+#	0x11
 `
 
 // AT-OVL-43: the summary holds the ten largest functions, each record's count credited to its
@@ -201,6 +206,37 @@ func TestMonitorSummaryOfTheRealProfile(t *testing.T) {
 	}
 	if n := len(strings.Split(summary, "; ")); n > 10 {
 		t.Errorf("summary has %d items; want at most 10", n)
+	}
+}
+
+// gatedHandler is a log handler that records like capture does and reports Warn as enabled only
+// while on is set.
+type gatedHandler struct {
+	slog.Handler
+	on *atomic.Bool
+}
+
+func (h gatedHandler) Enabled(_ context.Context, l slog.Level) bool {
+	return h.on.Load() && l >= slog.LevelWarn
+}
+
+// A logger with Warn disabled costs no profile dump, and the monitor still disarms.
+func TestMonitorSkipsTheProfileWhenWarnIsDisabled(t *testing.T) {
+	installGoroutines(t, 600)
+	var dumps atomic.Int64
+	t.Cleanup(overload.SetGoroutineProfile(func(io.Writer) error { dumps.Add(1); return nil }))
+	c, records := newCapture()
+	on := &atomic.Bool{}
+	m := overload.NewMonitor(500, slog.New(gatedHandler{c, on}))
+
+	m.Sample() // reaches the bound with Warn disabled
+	on.Store(true)
+	m.Sample() // still above the bound: disarmed, so silent
+	if n := dumps.Load(); n != 0 {
+		t.Errorf("the goroutine profile was written %d times; want never", n)
+	}
+	if n := len(records()); n != 0 {
+		t.Errorf("%d records; want none: the monitor disarms even when it does not log", n)
 	}
 }
 
