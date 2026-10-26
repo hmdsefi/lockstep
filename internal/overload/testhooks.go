@@ -28,10 +28,15 @@ func SetGoroutineProfile(write func(w io.Writer) error) (restore func()) {
 	return func() { goroutineProfileHook.Store(prev) }
 }
 
-// SetStack replaces the runtime.Stack call of GoroutineStack until restore is called. Tests only.
+// SetStack replaces the runtime.Stack call of GoroutineStack until restore is called. Installing
+// and restoring it also forget the buffer size of earlier dumps. Tests only.
 func SetStack(stack func(buf []byte, all bool) int) (restore func()) {
 	prev := stackHook.Swap(&stack)
-	return func() { stackHook.Store(prev) }
+	stackSize.Store(0)
+	return func() {
+		stackHook.Store(prev)
+		stackSize.Store(0)
+	}
 }
 
 // Uint64Value returns a metrics.Value of kind KindUint64 holding v, which a read hook needs

@@ -109,8 +109,9 @@ func (*System) sender()  {}
 // guardians and returns it. Turns of different actors can run in parallel on different workers;
 // the turns of one actor never overlap. WithWorkers, WithThroughput and WithEffectPool configure
 // the pools. The system also samples the live heap for memory admission (WithAdmission) and logs
-// each turn that runs longer than the watchdog timeout (WithWatchdog) at level Error, with the
-// stack of the goroutine running it. New panics with an error wrapping ErrInvalidOption if an
+// each turn that runs longer than the watchdog timeout at level Error, with the stack of the
+// goroutine running it. The watchdog is on by default, with DefaultWatchdogTimeout; WithWatchdog
+// sets the timeout or turns it off. New panics with an error wrapping ErrInvalidOption if an
 // option is nil or invalid.
 func New(opts ...Option) *System {
 	// The engine needs the node name and the pool settings before it starts its workers, so

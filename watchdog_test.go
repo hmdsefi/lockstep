@@ -5,7 +5,6 @@ package lockstep
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"runtime"
 	"slices"
@@ -25,18 +24,6 @@ const stuckMsg = "turn exceeds watchdog timeout"
 // watchdogCreator is the "created by" line of the watchdog's goroutine in a stack dump. Its top
 // frame names the wrapper of the go statement until the goroutine first runs.
 const watchdogCreator = "created by github.com/hmdsefi/lockstep/internal/overload.(*Watchdog).Start "
-
-// restoreStdLog restores the standard log package's output and flags when the test ends.
-// slog.SetDefault with a handler of its own redirects them, and restoring slog's default logger
-// does not undo that. Call it before captureDefaultLogger, so it runs after that restore.
-func restoreStdLog(t *testing.T) {
-	t.Helper()
-	w, f := log.Writer(), log.Flags()
-	t.Cleanup(func() {
-		log.SetOutput(w)
-		log.SetFlags(f)
-	})
-}
 
 // stuckRecords returns the records of recs with the stuck-turn message.
 func stuckRecords(recs []slogRecord) []slogRecord {
@@ -93,7 +80,6 @@ func watchdogRunning() bool {
 // row for internal/prodengine.
 func TestATOVL37StuckTurnReported(t *testing.T) {
 	verifyNoneAtEnd(t)
-	restoreStdLog(t)
 	records := captureDefaultLogger(t)
 	sys := newLocalSystem(t, WithNodeName("n1"), WithWatchdog(100*time.Millisecond))
 	entered, release := make(chan struct{}, 1), make(chan struct{})
@@ -147,7 +133,6 @@ func TestATOVL37StuckTurnReported(t *testing.T) {
 // that blocks 300 ms is not reported, and the actor is not failed.
 func TestATOVL41WatchdogOff(t *testing.T) {
 	verifyNoneAtEnd(t)
-	restoreStdLog(t)
 	records := captureDefaultLogger(t)
 	sys := newLocalSystem(t, WithWatchdog(0))
 	if sys.prodOvl.watchdog != nil || watchdogRunning() {
@@ -237,7 +222,6 @@ func TestOVL700WatchdogStopsInEngineContext(t *testing.T) {
 // OVL-510: a stuck turn of the guardians, which are not a cell, is logged with the user
 // guardian's address, and the running time is rounded down to milliseconds.
 func TestStuckTurnOfGuardians(t *testing.T) {
-	restoreStdLog(t)
 	records := captureDefaultLogger(t)
 	sys := newLocalSystem(t, WithNodeName("n1"), WithWatchdog(0))
 	turn := overload.Turn{Worker: 0, GoID: 1, Actor: &sys.guardians, Start: time.Now()}
