@@ -25,8 +25,8 @@ const (
 	DropOldest
 	// BlockSender makes an outside sender (a *System) wait until the mailbox has room, the System
 	// admits messages again (see WithAdmission) and the actor is not stuck (see WithWatchdog), or
-	// until its context ends. For a sender
-	// inside an actor, and in simulation, which cannot make a caller wait, it behaves as FailSend.
+	// until its context ends. For a sender inside an actor, and in simulation, which cannot make a
+	// caller wait, it behaves as FailSend.
 	BlockSender
 )
 

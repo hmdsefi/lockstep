@@ -284,16 +284,16 @@ func (s *System) offer(r routeRequest) outcome {
 // offerWaiting offers e, the message of the outside sender of r, to c's BlockSender mailbox and
 // waits while the mailbox is full, the system sheds, c is stuck or other senders wait, until the
 // entry is enqueued, the mailbox closes, or r.wait ends (MBX-070, MBX-075, MBX-090, OVL-520). shed
-// is admission's error for the message, errStuck, or nil. When the sender starts waiting it records lockstep.mailbox.full
-// action blocked, or for a shed message lockstep.overload event=shed dropped=none (OVL-120). When
-// the context ends first it returns the context's error and records the rejection: action
-// rejected, nothing more for a shed message that waited, and event=shed dropped=new for a shed
-// message that never waited (its context had ended already). The caller records the other
-// outcomes. While it waits the mailbox is listed in s.waiting (MBX-075): it is listed before the
-// offer, so a recheck that follows a change of admission cannot miss a sender that starts waiting
-// meanwhile. Every waiter's admit is s.admits and c not being stuck, so one queue's waiters are
-// admitted alike; the turn that clears c's mark calls Recheck on c's mailbox (OVL-530). The caller
-// holds no lock.
+// is admission's error for the message, errStuck, or nil. When the sender starts waiting it records
+// lockstep.mailbox.full action blocked, or for a shed message lockstep.overload event=shed
+// dropped=none (OVL-120). When the context ends first it returns the context's error and records
+// the rejection: action rejected, nothing more for a shed message that waited, and event=shed
+// dropped=new for a shed message that never waited (its context had ended already). The caller
+// records the other outcomes. While it waits the mailbox is listed in s.waiting (MBX-075): it is
+// listed before the offer, so a recheck that follows a change of admission cannot miss a sender
+// that starts waiting meanwhile. Every waiter's admit is s.admits and c not being stuck, so one
+// queue's waiters are admitted alike; the turn that clears c's mark calls Recheck on c's mailbox
+// (OVL-530). The caller holds no lock.
 func (s *System) offerWaiting(c actorCell, r routeRequest, e entry, shed error) (mailbox.Outcome, error) {
 	q := c.userQueue()
 	s.waiting.add(q)

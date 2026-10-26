@@ -66,71 +66,57 @@ func (s *System) stopOverload() {
 // runningTurns adapts (*prodengine.Engine).RunningTurns to the watchdog (OVL-500): the watchdog
 // reaches the engine only through it, so internal/prodengine and internal/overload do not import
 // each other (R38). It also marks the actors of the turns the watchdog reports (OVL-520). Only the
-// watchdog's goroutine calls running and markStuck, so the buffers need no lock.
+// watchdog's goroutine calls running and markStuck, so the buffer needs no lock.
 type runningTurns struct {
 	pe      *prodengine.Engine
 	scratch []prodengine.RunningTurn // reused by every poll
-	polled  []polledTurn             // the turns of the last poll, with their actors' turn counters
-}
-
-// polledTurn is a turn of the last poll: its worker and start, which identify it (OVL-500), and
-// the turn counter its actor had right after the snapshot, 0 for the guardians, which are not a
-// cell.
-type polledTurn struct {
-	worker int
-	start  time.Time
-	seq    uint64
 }
 
 // running appends the engine's turns in progress to dst as watchdog turns and returns the
-// extended slice. With each turn it keeps the actor's turn counter, read after the snapshot, for
-// markStuck: the Turn of OVL §4.2 has no field for it.
+// extended slice.
 func (r *runningTurns) running(dst []overload.Turn) []overload.Turn {
 	r.scratch = r.pe.RunningTurns(r.scratch[:0])
-	r.polled = r.polled[:0]
 	for _, t := range r.scratch {
 		dst = append(dst, overload.Turn(t)) // the same fields (SCH-270, OVL §4.2)
-		var seq uint64
-		if c, ok := t.Actor.(actorCell); ok {
-			seq = c.turnSeq()
-		}
-		r.polled = append(r.polled, polledTurn{worker: t.Worker, start: t.Start, seq: seq})
 	}
 	clear(r.scratch) // keep no actor alive until the next poll
 	return dst
 }
 
 // markStuck marks the actor of t, a turn of the last poll that the watchdog reports, stuck,
-// unless the turn has ended (OVL-520). The counter read with the poll belongs to t only if t was
-// still running when it was read, so a fresh snapshot must still hold t's (Worker, Start): t ran
-// from the first snapshot to the second, and one actor's turns never overlap, so the counter read
-// between them is t's. The cell then ignores the mark if t ends before it is stored. A turn of the
-// guardians is never marked. It takes only the engine's per-worker locks and stores an atomic:
-// it runs on the watchdog's goroutine and must not block.
+// unless the turn has ended (OVL-520). It reads the actor's turn counter and then takes a fresh
+// snapshot, which must still hold t's (Worker, Start): t ran from the poll's snapshot to the fresh
+// one, and one actor's turns never overlap, so the counter read between them is t's. The cell
+// marks only an odd counter, a turn inside RunTurn, and ignores the mark if t ends before it is
+// stored. A turn of the guardians is never marked. It takes only the engine's per-worker locks
+// and stores an atomic: it runs on the watchdog's goroutine and must not block.
+//
+// The counter is even while the engine has published t but RunTurn has not started yet, or has
+// returned and the engine has not withdrawn t yet. Such a turn is not marked, and since the
+// watchdog reports a turn once, it is never marked: a worker held for the whole timeout between
+// publishing a turn and starting RunTurn has its turn logged, but not isolated or failed.
 func (r *runningTurns) markStuck(t overload.Turn) {
 	c, ok := t.Actor.(actorCell)
 	if !ok {
 		return
 	}
-	same := func(worker int, start time.Time) bool { return worker == t.Worker && start.Equal(t.Start) }
-	i := slices.IndexFunc(r.polled, func(p polledTurn) bool { return same(p.worker, p.start) })
-	if i < 0 {
-		return
-	}
+	seq := c.turnSeq()
 	r.scratch = r.pe.RunningTurns(r.scratch[:0])
-	running := slices.ContainsFunc(r.scratch, func(p prodengine.RunningTurn) bool { return same(p.Worker, p.Start) })
+	running := slices.ContainsFunc(r.scratch, func(p prodengine.RunningTurn) bool {
+		return p.Worker == t.Worker && p.Start.Equal(t.Start)
+	})
 	clear(r.scratch)
 	if running {
-		c.markStuck(r.polled[i].seq, t.Start)
+		c.markStuck(seq, t.Start)
 	}
 }
 
-// onStuck reports a turn of t.Actor that has run for elapsed, at least the watchdog timeout, on
-// the watchdog's goroutine (OVL-510), before the adapter marks the actor (OVL-520): it logs OBS-060's "Stuck turn" event through the system's
-// logger with the actor's attributes in OBS-020's order and the stack of the turn's worker. A
-// turn of the guardians, which are not a cell, carries the user guardian's address. The address
-// is safe to read here: it is written before the actor's first turn, and the engine publishes the
-// turn under a lock that RunningTurns takes.
+// onStuck reports a turn of t.Actor that has run for elapsed, at least the watchdog timeout, on the
+// watchdog's goroutine (OVL-510), before the adapter marks the actor (OVL-520): it logs OBS-060's
+// "Stuck turn" event through the system's logger with the actor's attributes in OBS-020's order and
+// the stack of the turn's worker. A turn of the guardians, which are not a cell, carries the user
+// guardian's address. The address is safe to read here: it is written before the actor's first
+// turn, and the engine publishes the turn under a lock that RunningTurns takes.
 func (s *System) onStuck(t overload.Turn, elapsed, timeout time.Duration, stack string) {
 	a := t.Actor.Address()
 	s.log.LogAttrs(context.Background(), slog.LevelError, "turn exceeds watchdog timeout",

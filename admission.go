@@ -142,8 +142,8 @@ func sendOverloaded(to Address, err error) error {
 }
 
 // overloadReason returns the reason admission's error err names: its source's String (memory,
-// budget or pressure), or stuck for errStuck (OVL §8, OVL-520). An engine whose Admission breaks §4.3 by returning another error is named by
-// that error's text.
+// budget or pressure), or stuck for errStuck (OVL §8, OVL-520). An engine whose Admission breaks
+// §4.3 by returning another error is named by that error's text.
 func overloadReason(err error) string {
 	var ae *engine.AdmissionError
 	switch {
@@ -168,10 +168,9 @@ func (s *System) recordRefuse(e *overloadError) {
 	)
 }
 
-// recordShed emits lockstep.overload with event=shed (OVL §8) for the message of r that c's
-// mailbox treated as full because admission refused it with err, or because c is stuck (err is
-// errStuck, reason stuck, OVL-520). dropped is new, oldest, or none
-// for a BlockSender wait that starts.
+// recordShed emits lockstep.overload with event=shed (OVL §8) for the message of r that c's mailbox
+// treated as full because admission refused it with err, or because c is stuck (err is errStuck,
+// reason stuck, OVL-520). dropped is new, oldest, or none for a BlockSender wait that starts.
 func (s *System) recordShed(c actorCell, r routeRequest, err error, dropped string) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {

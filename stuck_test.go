@@ -141,11 +141,11 @@ func TestATOVL39StuckTurnFails(t *testing.T) {
 
 	g.open()
 	err := recv(t, decided)
-	if !errors.Is(err, ErrTimeout) {
-		t.Errorf("the decider got %v, want an error matching ErrTimeout", err)
+	if err == nil || !errors.Is(err, ErrTimeout) {
+		t.Fatalf("the decider got %v, want an error matching ErrTimeout", err)
 	}
 	prefix := "lockstep: actor " + pid.Address().String() + " stuck for "
-	if !strings.HasPrefix(err.Error(), "lockstep: actor ") || !strings.HasPrefix(err.Error(), prefix) {
+	if !strings.HasPrefix(err.Error(), prefix) {
 		t.Errorf("the decider got %q, want the prefix %q", err, prefix)
 	}
 	if running, perr := time.ParseDuration(strings.TrimSuffix(strings.TrimPrefix(err.Error(), prefix), ": "+ErrTimeout.Error())); perr != nil || running < stuckTimeout {
@@ -236,7 +236,12 @@ func TestStuckMarkIgnoresEndedTurn(t *testing.T) {
 	send(t, sys, pid, 2)
 	recv(t, g.entered)
 	waitUntil(t, "the second turn", func() bool { _, ok := turnOf(); return ok })
-	turns.markStuck(first) // the worker may be the same, the turn is not
+	// The counter now names the second turn: only the fresh snapshot, which no longer holds the
+	// first turn's (Worker, Start), keeps a late report of the first turn from marking it.
+	turns.markStuck(first)
+	if c.stuck() || c.stuckAt.Load() != nil {
+		t.Fatal("a report of an ended turn marked the turn in progress")
+	}
 	c.markStuck(firstSeq, first.Start)
 	if c.stuck() || c.stuckAt.Load() != nil {
 		t.Fatal("a mark with the counter of an ended turn was stored")
@@ -365,5 +370,51 @@ func TestStuckShedRecord(t *testing.T) {
 	)
 	if full := recordsOf(rec.Records(), "lockstep.mailbox.full"); len(full) != 0 {
 		t.Errorf("lockstep.mailbox.full records %q, want none", full)
+	}
+}
+
+// OVL-530: a stuck handler that then fails itself fails the incarnation once, with its own
+// failure: the supervisor's decider gets the panic, not the stuck failure.
+func TestStuckHandlerFailureWins(t *testing.T) {
+	verifyNoneAtEnd(t)
+	quietLogs(t)
+	decided := make(chan error, 4)
+	sys := newLocalSystem(t, WithWatchdog(stuckTimeout), WithGuardianStrategy(OneForOne(func(err error) Directive {
+		decided <- err
+		return DirectiveRestart
+	})))
+	g := newGate(t)
+	var builds atomic.Int32
+	pid, err := Spawn(sys, "stuck", func() Actor[int] {
+		builds.Add(1)
+		return &fnActor[int]{receive: func(_ *Context[int], n int) {
+			if n == 1 {
+				g.wait()
+				panic("boom")
+			}
+		}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	send(t, sys, pid, 1)
+	recv(t, g.entered)
+	c := cellOf(t, sys, pid)
+	waitUntil(t, "the actor marked stuck", c.stuck)
+
+	g.open()
+	err = recv(t, decided)
+	var pe *PanicError
+	if !errors.As(err, &pe) || errors.Is(err, ErrTimeout) {
+		t.Fatalf("the decider got %v, want the handler's panic and not the stuck failure", err)
+	}
+	waitUntil(t, "incarnation 2", func() bool { return builds.Load() == 2 })
+	if c.stuck() || c.stuckAt.Load() != nil {
+		t.Error("the mark is left after the stuck handler failed")
+	}
+	select {
+	case err := <-decided:
+		t.Errorf("a second failure: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

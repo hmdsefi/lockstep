@@ -12,8 +12,9 @@ import (
 // A stuck actor (OVL-520 to OVL-540). The watchdog's adapter marks a cell stuck when it reports a
 // turn of it (overload_prod.go); while the mark names the turn in progress, user messages to the
 // actor take the full branch of its mailbox's policy with errStuck as the reason. The turn clears
-// the mark itself: right after the handler during which it was marked, failing the incarnation,
-// or, for code that is not a handler of the live incarnation, without a failure.
+// the mark itself: when a handler of the live incarnation returns, failing the incarnation; when
+// a factory, Stopped or MemSize returns, without a failure; and at the end of the turn, a mark
+// that is left.
 //
 // The cell's turn counter tells the turns apart (OVL §11): RunTurn adds one when it starts and one
 // when it ends, so the counter is odd while a turn runs and names that turn. A mark carries the
