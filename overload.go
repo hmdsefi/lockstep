@@ -74,9 +74,11 @@ func WithWatchdog(d time.Duration) Option {
 // DefaultGoroutineWarning is the goroutine count above which a production System logs a warning.
 const DefaultGoroutineWarning = 10_000
 
-// WithGoroutineWarning sets the goroutine count that triggers a warning. 0 turns the warning off
-// (the count is still exported). A bound < 0 makes New panic with an error wrapping
-// ErrInvalidOption. Simulation ignores it.
+// WithGoroutineWarning sets the goroutine count at which a production System logs a warning: one
+// warning each time the process-wide count reaches the bound, with a summary of the functions
+// that hold the most goroutines. The count is checked once per second, and the warning is armed
+// again when it falls below the bound less a fifth of it. 0 turns the warning off. A bound < 0 makes
+// New panic with an error wrapping ErrInvalidOption. Simulation ignores it.
 func WithGoroutineWarning(bound int) Option {
 	return func(c *systemConfig) {
 		if bound < 0 {

@@ -33,9 +33,10 @@ func (s *System) startOverload(pe *prodengine.Engine, gate *overload.Gate, cfg *
 	log := s.log.With("node", s.node) // the system's events carry the node (OVL-340)
 
 	// Memory admission (OVL-300, OVL-310): the sampler ticks whether or not admission is on, and
-	// reads the metrics only when it is.
+	// reads the metrics only when it is. The goroutine monitor (OVL-600) runs on every 10th tick.
 	adm := cfg.admission
-	s.prodOvl.sampler = overload.NewSampler(gate, s.eng.Clock, adm.high, adm.low, adm.set, log, nil)
+	mon := overload.NewMonitor(cfg.goroutineWarning, log)
+	s.prodOvl.sampler = overload.NewSampler(gate, s.eng.Clock, adm.high, adm.low, adm.set, log, mon)
 	s.prodOvl.sampler.Start()
 
 	// Stuck-turn watchdog (OVL-500): its one goroutine polls the engine's running turns.

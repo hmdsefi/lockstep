@@ -28,9 +28,9 @@ type systemConfig struct {
 
 	guardian Strategy // the user guardian's strategy (SUP-370)
 
-	// The overload options (OVL §4.1). The cap and the estimates act on every engine, the admission
-	// thresholds only in a system New builds (OVL-300, OVL-230); the watchdog timeout and the
-	// goroutine bound are validated and kept for the features that read them.
+	// The overload options (OVL §4.1). The cap and the estimates act on every engine; the admission
+	// thresholds, the watchdog timeout and the goroutine bound act only in a system New builds,
+	// whose sampler, watchdog and goroutine monitor read them (OVL-300, OVL-500, OVL-600, OVL-230).
 	maxActors        int             // the actor cap (OVL-010)
 	admission        admissionConfig // WithAdmission's thresholds (OVL-350)
 	estimates        bool            // per-actor memory estimates are on (OVL-400)

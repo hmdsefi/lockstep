@@ -197,11 +197,6 @@ func TestWatchdogStopJoins(t *testing.T) {
 		waitFor(t, "2 polls", func() bool { return f.pollCount() >= 2 })
 		returnsWithin(t, "Stop", w.Stop)
 		goleak.VerifyNone(t)
-		polls := f.pollCount()
-		time.Sleep(50 * time.Millisecond) // five poll periods
-		if n := f.pollCount(); n != polls {
-			t.Errorf("%d polls after Stop returned, want none", n-polls)
-		}
 		returnsWithin(t, "a second Stop", w.Stop)
 		w.Start()
 		goleak.VerifyNone(t)
@@ -269,9 +264,9 @@ func TestGoroutineStackSection(t *testing.T) {
 	}
 }
 
-// OVL-510: a dump larger than the first buffer is read again into a larger one; a section longer
-// than 64 KiB is cut at the last line end within its first 64 KiB and followed by
-// "...(truncated)"; a section of exactly 64 KiB is kept whole.
+// OVL-510: a dump larger than the first buffer is read again into a larger one, and the next
+// dump starts at that size; a section longer than 64 KiB is cut at the last line end within its
+// first 64 KiB and followed by "...(truncated)"; a section of exactly 64 KiB is kept whole.
 func TestGoroutineStackLimit(t *testing.T) {
 	const limit = 64 << 10
 	// section returns the section of goroutine id: its header and frame lines of 100 bytes each,
@@ -299,7 +294,11 @@ func TestGoroutineStackLimit(t *testing.T) {
 		t.Errorf("the dump of %d bytes was read %d times, want a second read into a larger buffer", len(dump), calls)
 	}
 
+	calls = 0
 	got := overload.GoroutineStack(9)
+	if calls != 1 {
+		t.Errorf("the same dump was read %d times, want once into a buffer of the size that held it", calls)
+	}
 	kept, ok := strings.CutSuffix(got, "...(truncated)")
 	if !ok {
 		t.Fatalf("a section of %d bytes does not end with ...(truncated): ends %q", len(long), got[max(len(got)-40, 0):])

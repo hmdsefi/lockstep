@@ -4,6 +4,7 @@
 package overload
 
 import (
+	"io"
 	"runtime/metrics"
 	"unsafe"
 )
@@ -14,10 +15,28 @@ func SetReadMetrics(read func([]metrics.Sample)) (restore func()) {
 	return func() { readHook.Store(prev) }
 }
 
-// SetStack replaces the runtime.Stack call of GoroutineStack until restore is called. Tests only.
+// SetNumGoroutine replaces the monitor's runtime.NumGoroutine until restore is called. Tests only.
+func SetNumGoroutine(num func() int) (restore func()) {
+	prev := numGoroutineHook.Swap(&num)
+	return func() { numGoroutineHook.Store(prev) }
+}
+
+// SetGoroutineProfile replaces the monitor's write of the goroutine profile at debug 1 until
+// restore is called. Tests only.
+func SetGoroutineProfile(write func(w io.Writer) error) (restore func()) {
+	prev := goroutineProfileHook.Swap(&write)
+	return func() { goroutineProfileHook.Store(prev) }
+}
+
+// SetStack replaces the runtime.Stack call of GoroutineStack until restore is called. Installing
+// and restoring it also forget the buffer size of earlier dumps. Tests only.
 func SetStack(stack func(buf []byte, all bool) int) (restore func()) {
 	prev := stackHook.Swap(&stack)
-	return func() { stackHook.Store(prev) }
+	stackSize.Store(0)
+	return func() {
+		stackHook.Store(prev)
+		stackSize.Store(0)
+	}
 }
 
 // Uint64Value returns a metrics.Value of kind KindUint64 holding v, which a read hook needs
