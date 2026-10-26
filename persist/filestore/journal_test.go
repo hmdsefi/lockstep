@@ -777,7 +777,9 @@ func TestPER370RecoverScan(t *testing.T) {
 		if _, err := s.Recover(context.Background(), "c-1"); !errors.Is(err, boom) {
 			t.Fatalf("Recover = %v, want the sync error", err)
 		}
-		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 2}) // truncated already, nothing to repair
+		// Repaired is 0: the first call's truncation happened before its Sync failed, so the
+		// file now ends at the last valid record.
+		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 2})
 	})
 }
 
@@ -929,28 +931,75 @@ func TestRecoverSyncsWhatItReports(t *testing.T) {
 		checkCalls(t, "syncs", syncCalls(r.calls())[2:], []string{"Sync " + seg1, "SyncDir journal/id-c-1", "SyncDir journal"})
 	})
 
+	// With no record in the last segment, or no segment, Recover syncs nothing but the
+	// repair of a torn tail. Whether the directory entries are durable is unknown, and the next
+	// Write may fill the empty segment or create the first one in the existing directory: the
+	// first successful Commit syncs both directories.
 	for _, tc := range []struct {
-		name string
-		segs map[string][]byte
+		name    string
+		segs    map[string][]byte
+		next    uint64   // the seq of the next Write, also the segment it goes to
+		recover []string // syncs of Recover
+		twice   bool     // Recover twice: the second commits the loaded state, then scans again
+		torn    int64    // Repaired of the first Recover
 	}{
-		{"missing journal", nil},
-		{"empty directory", map[string][]byte{"journal/id-c-1/foo": nil}},
-		{"empty last segment", map[string][]byte{seg1: r1, seg3: nil}},
-		{"torn only record", map[string][]byte{seg1: r1[:7]}},
+		{name: "missing journal", next: 1},
+		{name: "empty directory", segs: map[string][]byte{"journal/id-c-1/foo": nil}, next: 1},
+		{name: "empty last segment", segs: map[string][]byte{seg1: r1, seg3: nil}, next: 3},
+		{name: "empty last segment, loaded", segs: map[string][]byte{seg1: r1, seg3: nil}, next: 3, twice: true,
+			recover: []string{"SyncDir journal/id-c-1", "SyncDir journal"}},
+		{name: "empty only segment", segs: map[string][]byte{seg1: nil}, next: 1},
+		{name: "torn only record", segs: map[string][]byte{seg1: r1[:7]}, next: 1, torn: 7, recover: []string{"Sync " + seg1}},
 	} {
 		t.Run("no record to sync: "+tc.name, func(t *testing.T) {
 			s, r, _ := fresh(t, tc.segs)
-			if _, err := s.Recover(ctx, "c-1"); err != nil {
-				t.Fatal(err)
+			last := persist.Bounds{First: 1, Last: tc.next - 1}
+			mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: tc.next - 1, Repaired: tc.torn})
+			if tc.twice {
+				mustRecover(t, s, "c-1", last)
 			}
 			syncs := syncCalls(r.calls())[2:] // after Sync FORMAT.tmp and SyncDir . of the initialization
-			if tc.name == "torn only record" {
-				checkCalls(t, "syncs", syncs, []string{"Sync " + seg1})
-				return
-			}
-			checkCalls(t, "syncs", syncs, nil)
+			checkCalls(t, "syncs of Recover", syncs, tc.recover)
+
+			mustWrite(t, s, "c-1", ev(tc.next, "n"))
+			m := r.mark()
+			mustCommit(t, s, "c-1")
+			seg := segOf("c-1", tc.next)
+			checkCalls(t, "first commit", r.since(m), []string{
+				"Open " + seg, "Sync " + seg, "Close " + seg, "SyncDir journal/id-c-1", "SyncDir journal",
+			})
+			mustWrite(t, s, "c-1", ev(tc.next+1, "n"))
+			m = r.mark()
+			mustCommit(t, s, "c-1")
+			checkCalls(t, "second commit", r.since(m), []string{"Open " + seg, "Sync " + seg, "Close " + seg})
 		})
 	}
+
+	t.Run("failed first commit keeps the directory syncs", func(t *testing.T) {
+		s, r, _ := fresh(t, map[string][]byte{seg1: r1, seg3: nil})
+		boom := errors.New("injected")
+		r.fail("SyncDir", "journal", nth(1), boom)
+		mustRecover(t, s, "c-1", persist.Bounds{First: 1, Last: 2})
+		mustWrite(t, s, "c-1", ev(3, "c"))
+		if err := s.Commit(ctx, "c-1"); !errors.Is(err, boom) {
+			t.Fatalf("Commit = %v, want the SyncDir error", err)
+		}
+		mustWrite(t, s, "c-1", ev(3, "c"))
+		m := r.mark()
+		mustCommit(t, s, "c-1")
+		checkCalls(t, "commit", r.since(m), []string{
+			"Open " + seg3, "Sync " + seg3, "Close " + seg3, "SyncDir journal/id-c-1", "SyncDir journal",
+		})
+	})
+
+	t.Run("a failed load names the operation", func(t *testing.T) {
+		s, r, _ := fresh(t, map[string][]byte{seg1: r1})
+		boom := errors.New("injected")
+		r.fail("ReadDir", "journal/id-c-1", nth(1), boom)
+		if err := s.Write(ctx, "c-1", ev(3, "c")); !errors.Is(err, boom) || err.Error() != "filestore: load c-1: injected" {
+			t.Fatalf("Write = %v", err)
+		}
+	})
 
 	for _, failing := range []struct{ method, name string }{
 		{"Sync", seg3}, {"SyncDir", "journal/id-c-1"}, {"SyncDir", "journal"},

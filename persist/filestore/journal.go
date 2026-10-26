@@ -54,7 +54,9 @@ type segment struct {
 
 func (j *journal) segPath(seq uint64) string { return j.dir + "/" + seqName(seq, segExt) }
 
-// state returns the state of id, creating it on first use. The caller holds id's lock.
+// state returns the state of id, creating it on first use. The caller holds id's lock. A state
+// lives as long as the Store: its journal part could be dropped and rebuilt by a scan, but its
+// unusable error must persist for the Store's lifetime (PER-360).
 func (s *Store) state(id string) *idState {
 	s.statesMu.Lock()
 	defer s.statesMu.Unlock()
@@ -98,7 +100,7 @@ func (s *Store) loadJournal(id string, st *idState) error {
 	if st.journal != nil {
 		return nil
 	}
-	j, _, err := s.scan(id, true)
+	j, _, err := s.scan(id, "load", true)
 	if err != nil {
 		return err
 	}
@@ -125,7 +127,7 @@ func (s *Store) Recover(ctx context.Context, id string) (persist.Bounds, error) 
 		}
 		st.journal = nil
 	}
-	j, b, err := s.scan(id, !loaded)
+	j, b, err := s.scan(id, "recover", !loaded)
 	if err != nil {
 		return persist.Bounds{}, err
 	}
@@ -357,10 +359,17 @@ func closeFile(f File, err *error) {
 // journal directory, since an earlier process may have written them without a commit. Earlier
 // segments are not synced: a segment is followed by a new one only after a Write, and with one
 // Write per Commit the Commit of the earlier batch synced it.
-func (s *Store) scan(id string, durable bool) (*journal, persist.Bounds, error) {
+//
+// Whether the directory entries of an existing ID directory are durable is unknown to a scan.
+// If the directory holds no segment, or its last segment is empty after the scan, the next
+// Write may fill that segment or create the first one without creating a directory; so the
+// returned state asks the first successful Commit to sync the ID's directory and the journal
+// directory, as if both were created since the last commit. An I/O error is reported as
+// "filestore: <op> <id>: …".
+func (s *Store) scan(id, op string, durable bool) (*journal, persist.Bounds, error) {
 	j, b, err := s.scanDir(journalDir+"/"+idDirName(id), durable)
 	if err != nil && !errors.Is(err, ErrCorrupt) {
-		err = fmt.Errorf("filestore: recover %s: %w", id, err)
+		err = fmt.Errorf("filestore: %s %s: %w", op, id, err)
 	}
 	return j, b, err
 }
@@ -384,6 +393,7 @@ func (s *Store) scanDir(dir string, durable bool) (*journal, persist.Bounds, err
 		}
 	}
 	if len(j.segs) == 0 {
+		j.entriesChanged, j.dirCreated = true, true
 		return j, persist.Bounds{First: 1}, nil
 	}
 	first, last := j.segs[0], j.segs[len(j.segs)-1]
@@ -396,7 +406,9 @@ func (s *Store) scanDir(dir string, durable bool) (*journal, persist.Bounds, err
 	if err != nil {
 		return nil, persist.Bounds{}, err
 	}
-	if durable && last.size > 0 {
+	if last.size == 0 {
+		j.entriesChanged, j.dirCreated = true, true
+	} else if durable {
 		if err := s.fs.SyncDir(dir); err != nil {
 			return nil, persist.Bounds{}, err
 		}
@@ -643,6 +655,9 @@ func (s *Store) readSegment(j *journal, i int, next, from uint64, max int, out [
 	last := i == len(j.segs)-1
 	limit, stop := size, j.segs[min(i+1, len(j.segs)-1)].seq
 	if last {
+		if size < seg.committed { // the file lost committed bytes behind the Store
+			return nil, 0, corruptAt(name, size, reasonIncomplete)
+		}
 		limit = seg.committed
 	}
 	r := &segReader{f: f, size: limit}
@@ -689,10 +704,11 @@ func (s *Store) DeleteEvents(ctx context.Context, id string, to uint64) error {
 	}
 	j := st.journal
 	// Segment i holds only events below its successor's name, so it goes when that name is at
-	// most to+1.
+	// most to+1. It stays while its successor holds no committed data: after a crash, the
+	// successor may be gone and the committed events with it.
 	removed := 0
 	var rerr error
-	for removed+1 < len(j.segs) && j.segs[removed+1].seq-1 <= to {
+	for removed+1 < len(j.segs) && j.segs[removed+1].seq-1 <= to && j.segs[removed+1].committed > 0 {
 		if rerr = s.fs.Remove(j.segPath(j.segs[removed].seq)); rerr != nil {
 			break
 		}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -205,6 +204,41 @@ func TestPER390DeleteEventsEdges(t *testing.T) {
 	if _, err := s.Read(ctx, "", 1, 1); !errors.Is(err, persist.ErrInvalidID) {
 		t.Fatalf("Read with an empty id: %v", err)
 	}
+}
+
+// A segment stays while its successor holds no committed data: after a crash the successor may
+// be gone, and with it the committed events.
+func TestPER390DeleteEventsKeepsCommittedTail(t *testing.T) {
+	ctx := context.Background()
+	// With a segment size of 1 every batch gets its own segment.
+	s2, r2, dir2 := newJournal(t, WithSegmentSize(1))
+	mustRecover(t, s2, "c-1", persist.Bounds{First: 1})
+	mustWrite(t, s2, "c-1", ev(1, "e1", "e2"))
+	mustCommit(t, s2, "c-1")
+	mustWrite(t, s2, "c-1", ev(3, "e3")) // creates seg(3), uncommitted
+
+	m := r2.mark()
+	if err := s2.DeleteEvents(ctx, "c-1", 2); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range r2.since(m) {
+		if strings.HasPrefix(c, "Remove") {
+			t.Fatalf("DeleteEvents(2) called %q with seg(3) uncommitted", c)
+		}
+	}
+	if fileSize(t, dir2, segOf("c-1", 1)) <= 0 {
+		t.Fatal("seg(1) was removed")
+	}
+
+	// Once the successor is committed the segment goes.
+	mustCommit(t, s2, "c-1")
+	if err := s2.DeleteEvents(ctx, "c-1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if fileSize(t, dir2, segOf("c-1", 1)) >= 0 {
+		t.Fatal("seg(1) was not removed after the commit")
+	}
+	mustRecover(t, s2, "c-1", persist.Bounds{First: 3, Last: 3})
 }
 
 func TestPER390DeleteEventsFailure(t *testing.T) {
@@ -492,7 +526,7 @@ func TestPER330ReadFilesClosed(t *testing.T) {
 	}
 
 	t.Run("short file", func(t *testing.T) {
-		// The file is shorter than the committed size: reported, not a panic or a hang.
+		// The file is shorter than the committed size: reported as corruption.
 		s, r, dir := newJournal(t, WithSegmentSize(1000))
 		mustRecover(t, s, "c-1", persist.Bounds{First: 1})
 		mustWrite(t, s, "c-1", ev(1, "e1"))
@@ -501,8 +535,9 @@ func TestPER330ReadFilesClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := s.Read(ctx, "c-1", 1, 1)
-		if !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("Read: %v, want one wrapping io.ErrUnexpectedEOF", err)
+		corruptReason(t, err, "incomplete record")
+		if !strings.Contains(err.Error(), "at offset 5:") {
+			t.Fatalf("Read: %v, want offset 5", err)
 		}
 		r.checkClosed(t)
 	})
