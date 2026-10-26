@@ -5,6 +5,7 @@ package filestore
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 
@@ -70,23 +71,61 @@ func seal(rec []byte) []byte {
 	return rec
 }
 
+// Reasons of an invalid record, as recovery reports them (PER-370). A length outside its range
+// is reported as "bad length <L>".
+const (
+	reasonIncomplete = "incomplete record"
+	reasonChecksum   = "checksum mismatch"
+	reasonMalformed  = "malformed payload"
+)
+
+// invalidRecord is the error of a record that is not valid. It wraps ErrCorrupt. reason is the
+// short cause a scan reports; detail describes the failure.
+type invalidRecord struct{ reason, detail string }
+
+func (e *invalidRecord) Error() string { return ErrCorrupt.Error() + ": " + e.detail }
+func (e *invalidRecord) Unwrap() error { return ErrCorrupt }
+
+func invalid(reason, format string, args ...any) error {
+	return &invalidRecord{reason: reason, detail: fmt.Sprintf(format, args...)}
+}
+
+// reasonOf returns the reason of an error from the record parsers.
+func reasonOf(err error) string {
+	var inv *invalidRecord
+	if errors.As(err, &inv) {
+		return inv.reason
+	}
+	return err.Error()
+}
+
+// headerLen returns the payload length that the header at the start of b declares. The header
+// must be complete and the length in [minLen, maxLen]; a failure wraps ErrCorrupt.
+func headerLen(b []byte, minLen, maxLen uint32) (uint32, error) {
+	if len(b) < headerSize {
+		return 0, invalid(reasonIncomplete, "incomplete header (%d of %d bytes)", len(b), headerSize)
+	}
+	l := binary.LittleEndian.Uint32(b[0:])
+	if l < minLen || l > maxLen {
+		return 0, invalid(fmt.Sprintf("bad length %d", l), "record length %d out of range [%d, %d]", l, minLen, maxLen)
+	}
+	return l, nil
+}
+
 // payloadOf returns the payload of the record at the start of b and the record's size. It
 // applies the checks every record shares, in order: the header is complete, the length is in
 // [minLen, maxLen], the payload is complete, the checksum matches. A failure wraps ErrCorrupt.
 func payloadOf(b []byte, minLen, maxLen uint32) (payload []byte, size int, err error) {
-	if len(b) < headerSize {
-		return nil, 0, fmt.Errorf("%w: incomplete header (%d of %d bytes)", ErrCorrupt, len(b), headerSize)
-	}
-	l := binary.LittleEndian.Uint32(b[0:])
-	if l < minLen || l > maxLen {
-		return nil, 0, fmt.Errorf("%w: record length %d out of range [%d, %d]", ErrCorrupt, l, minLen, maxLen)
+	l, err := headerLen(b, minLen, maxLen)
+	if err != nil {
+		return nil, 0, err
 	}
 	if len(b)-headerSize < int(l) { // l is at most maxLen, so it fits an int
-		return nil, 0, fmt.Errorf("%w: incomplete payload (%d of %d bytes)", ErrCorrupt, len(b)-headerSize, l)
+		return nil, 0, invalid(reasonIncomplete, "incomplete payload (%d of %d bytes)", len(b)-headerSize, l)
 	}
 	payload = b[headerSize : headerSize+int(l)]
 	if crc32.Checksum(payload, castagnoli) != binary.LittleEndian.Uint32(b[4:]) {
-		return nil, 0, fmt.Errorf("%w: checksum mismatch", ErrCorrupt)
+		return nil, 0, invalid(reasonChecksum, "checksum mismatch")
 	}
 	return payload, headerSize + int(l), nil
 }
@@ -105,26 +144,26 @@ func parseJournalRecord(b []byte) ([]persist.Event, int, error) {
 	count := binary.LittleEndian.Uint32(payload[8:])
 	body := payload[journalFixed:]
 	if count == 0 {
-		return nil, 0, fmt.Errorf("%w: batch count 0", ErrCorrupt)
+		return nil, 0, invalid(reasonMalformed, "batch count 0")
 	}
 	if uint64(count)*entryLenSize > uint64(len(body)) {
-		return nil, 0, fmt.Errorf("%w: %d entries do not fit in %d bytes (entry lengths)", ErrCorrupt, count, len(body))
+		return nil, 0, invalid(reasonMalformed, "%d entries do not fit in %d bytes (entry lengths)", count, len(body))
 	}
 	events := make([]persist.Event, 0, count)
 	for i := range count {
 		if len(body) < entryLenSize {
-			return nil, 0, fmt.Errorf("%w: entry %d is cut off (entry lengths)", ErrCorrupt, i)
+			return nil, 0, invalid(reasonMalformed, "entry %d is cut off (entry lengths)", i)
 		}
 		n := binary.LittleEndian.Uint32(body)
 		body = body[entryLenSize:]
 		if uint64(n) > uint64(len(body)) {
-			return nil, 0, fmt.Errorf("%w: entry %d of %d bytes exceeds the payload (entry lengths)", ErrCorrupt, i, n)
+			return nil, 0, invalid(reasonMalformed, "entry %d of %d bytes exceeds the payload (entry lengths)", i, n)
 		}
 		events = append(events, persist.Event{Seq: first + uint64(i), Data: body[:n:n]})
 		body = body[n:]
 	}
 	if len(body) != 0 {
-		return nil, 0, fmt.Errorf("%w: %d bytes after the last entry (entry lengths)", ErrCorrupt, len(body))
+		return nil, 0, invalid(reasonMalformed, "%d bytes after the last entry (entry lengths)", len(body))
 	}
 	return events, size, nil
 }

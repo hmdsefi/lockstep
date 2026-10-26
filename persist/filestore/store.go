@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"os"
 	"sync"
+
+	"github.com/hmdsefi/lockstep/persist"
 )
 
 const (
@@ -45,6 +47,11 @@ const (
 	snapshotsDir  = "snapshots"
 )
 
+var (
+	_ persist.Journal       = (*Store)(nil)
+	_ persist.SnapshotStore = (*Store)(nil)
+)
+
 // Option configures a Store.
 type Option func(*settings)
 
@@ -72,6 +79,9 @@ type Store struct {
 
 	locksMu sync.Mutex
 	locks   map[string]*idLock
+
+	statesMu sync.Mutex
+	states   map[string]*idState // only indexed, never ranged
 }
 
 // idLock is the lock of one persistence ID. refs counts the callers that hold it or wait for it.
@@ -169,8 +179,8 @@ func (s *Store) readFormat() (content string, err error) {
 // A leftover FORMAT.tmp of an earlier attempt is truncated.
 func (s *Store) writeFormat() error {
 	const tmp = formatName + tmpExt
-	if err := s.writeFile(tmp, formatContent); err != nil {
-		return err
+	if err := s.createSynced(tmp, []byte(formatContent)); err != nil {
+		return fmt.Errorf("filestore: %w", err)
 	}
 	if err := s.fs.Rename(tmp, formatName); err != nil {
 		return fmt.Errorf("filestore: %w", err)
@@ -178,28 +188,22 @@ func (s *Store) writeFormat() error {
 	return nil
 }
 
-// writeFile creates name with the given content, syncs it and closes it.
-func (s *Store) writeFile(name, content string) (err error) {
+// createSynced creates name with the given content, syncs it and closes it. A file that exists
+// is truncated. The file is closed on every path, and the first error is returned.
+func (s *Store) createSynced(name string, content []byte) (err error) {
 	f, err := s.fs.Create(name)
 	if err != nil {
-		return fmt.Errorf("filestore: %w", err)
+		return err
 	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("filestore: %w", cerr)
-		}
-	}()
-	n, err := f.WriteAt([]byte(content), 0)
+	defer closeFile(f, &err)
+	n, err := f.WriteAt(content, 0)
 	if err == nil && n != len(content) {
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		return fmt.Errorf("filestore: %w", err)
+		return err
 	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("filestore: %w", err)
-	}
-	return nil
+	return f.Sync()
 }
 
 // lockID takes the lock of persistence ID id and returns the function that releases it. Calls
