@@ -91,10 +91,11 @@ func (r *runningTurns) running(dst []overload.Turn) []overload.Turn {
 // stored. A turn of the guardians is never marked. It takes only the engine's per-worker locks
 // and stores an atomic: it runs on the watchdog's goroutine and must not block.
 //
-// The counter is even while the engine has published t but RunTurn has not started yet, or has
-// returned and the engine has not withdrawn t yet. Such a turn is not marked, and since the
-// watchdog reports a turn once, it is never marked: a worker held for the whole timeout between
-// publishing a turn and starting RunTurn has its turn logged, but not isolated or failed.
+// The counter is even while the engine has published t but RunTurn has not called beginTurn yet
+// (the engine's prologue or RunTurn's hold check), or after endTurn until the engine withdraws t.
+// Such a turn is not marked, and since the watchdog reports a turn once, it is never marked: a
+// worker held for the whole timeout between publishing a turn and starting RunTurn has its turn
+// logged, but not isolated or failed.
 func (r *runningTurns) markStuck(t overload.Turn) {
 	c, ok := t.Actor.(actorCell)
 	if !ok {
