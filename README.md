@@ -413,4 +413,5 @@ lockstep is licensed under the [Mozilla Public License 2.0](LICENSE).
   something else.
 - [Architecture](docs/architecture.md): the runtime, its two engines, and how simulation maps onto
   faultline.
-- [The Raft demo](examples/raft/README.md): a larger lockstep program and its simulation tests.
+- [The actor model](docs/actor-model.md): where actors came from, how they work, and what lockstep
+  adds.

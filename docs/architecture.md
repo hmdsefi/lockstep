@@ -2,7 +2,8 @@
 
 This page explains how lockstep is built: its parts, how a message moves through them, and
 why the same actor code can run in your program and in a seeded simulation. To start using
-lockstep, read the [README](../README.md) first.
+lockstep, read the [README](../README.md) first. For the ideas behind actors and where they came
+from, read [The actor model](actor-model.md).
 
 ## The parts
 
@@ -13,26 +14,15 @@ code: the production engine behind `lockstep.New()`, and the simulation engine i
 `lockstep/sim`, which runs on [faultline](https://github.com/hmdsefi/faultline). A third engine,
 which runs every turn on one goroutine, exists only for the project's own tests.
 
-```mermaid
-flowchart LR
-    accTitle: lockstep's parts and how they depend on each other
-    accDescr: Your actors use the lockstep runtime. The runtime runs on the engine seam, which two engines implement for your code: the production engine used by lockstep.New and the simulation engine in lockstep/sim. The simulation engine runs on faultline. lockstep-vet checks your actor code.
-    actors["Your actors"]
-    runtime["Runtime: package lockstep"]
-    seam["Engine seam"]
-    production["Production engine: lockstep.New"]
-    simengine["Simulation engine: lockstep/sim"]
-    faultline["faultline kernel"]
-    vet["lockstep-vet analyzer"]
-    actors --> runtime
-    runtime --> seam
-    production --> seam
-    simengine --> seam
-    simengine --> faultline
-    vet -. checks .-> actors
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/lockstep-parts-dark.svg">
+    <img alt="lockstep's parts: your actors call the runtime in package lockstep, with systems and PIDs, mailboxes, asks and replies, supervision, timers and effects. The runtime talks only to the engine seam, an internal interface with Scheduler, Clock, Effects, Entropy, Transport and Tracer. The production engine behind lockstep.New() and the simulation engine behind sim.Simulate implement the seam, and the simulation engine runs on the faultline kernel. lockstep-vet checks your actor code." src="assets/lockstep-parts-light.svg">
+  </picture>
+</p>
 
-Your actors never see which engine runs them.
+Your actors never see which engine runs them: the runtime reaches an engine only through the
+seam.
 
 ## Nondeterminism goes through the runtime
 
@@ -88,6 +78,16 @@ When the user mailbox is full, its policy decides what happens. `FailSend`, the 
 sender outside the system wait for room; for a sender inside an actor, and in simulation, it acts
 as `FailSend`.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/message-path-dark.svg">
+    <img alt="How a message reaches Receive: a sender calls Send(from, pid, msg), and the message goes into the actor's user mailbox, bounded at 1024 by default; when it is full, FailSend makes Send return ErrMailboxFull. The actor's system queue holds Stop, Terminated and ChildFailed and is never full. A turn processes the system queue first, then user messages up to the budget, 32 on the production engine and 1 in simulation, and Receive(ctx, msg) handles one message at a time. A footer says messages from one sender to one receiver arrive in send order." src="assets/message-path-light.svg">
+  </picture>
+</p>
+
+A message waits in one of two queues, and a turn always drains the system queue before it takes
+user messages.
+
 Messages from one sender to one receiver arrive in send order, on one node and across nodes.
 There is no order across different senders. A message to an actor that has stopped becomes a
 *dead letter*: it is traced and counted, and `Send` returns nil, because the sender cannot know
@@ -132,6 +132,16 @@ parent fails with the child's error). `OneForOne` applies the directive to the f
 virtual time. Past the limit, the directive becomes escalate. Watchers registered with `Watch`
 receive a `Terminated` signal when the actor stops for good.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/supervision-restart-dark.gif">
+    <img alt="Animation of a supervision tree: the /user guardian, a supervisor named payments with OneForOne, and three workers. worker-2 panics on a message; the strategy picks restart while worker-1 and worker-3 keep counting. worker-2's Stopped hook runs, a 10 ms backoff passes, and the factory builds fresh state, so its count goes from 41 to 0. The PID and mailbox survive, so the next message reaches the new incarnation. Past 10 restarts a minute, the directive becomes escalate." src="assets/supervision-restart-light.gif">
+  </picture>
+</p>
+
+A restart replaces the failed actor's state and keeps its PID and mailbox, so the actors that send
+to it carry on without a new address.
+
 ## Effects
 
 An effect is a value with a stable `Name()` and a `Run(ctx)` method that does the real work.
@@ -149,6 +159,16 @@ The engines run effects in different ways:
   a handler per effect name with `s.HandleEffect`. The handler returns a value, an error and a
   simulated latency, and can draw them from the run's seeded random stream. An effect with no
   handler fails the seed.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/effect-round-trip-dark.svg">
+    <img alt="An effect's round trip: in Receive(ctx, Buy), lockstep.Do(ctx, Charge{...}, done) returns an EffectID at once. On the production engine, Charge.Run(ctx) does the real I/O on a bounded pool of 64 running and 1024 waiting; past that, done gets ErrOverloaded. In simulation, Run is never called and the handler registered with s.HandleEffect("payment.charge", h) returns a value, an error and a latency. done(v, err) builds a charged message, which the mailbox never refuses, and a later turn handles it in Receive(ctx, charged). After 30 s by default, done gets ErrTimeout, and a stop or restart cancels pending effects." src="assets/effect-round-trip-light.svg">
+  </picture>
+</p>
+
+The actor never waits for an effect: the result comes back as a message, whichever engine produced
+it.
 
 ## The production engine
 
@@ -170,6 +190,15 @@ that configure the pool.
 The production engine reads the wall clock and seeds each actor's random stream from
 `crypto/rand`. It has no transport to other processes, so actors on different nodes talk only in
 simulation.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/engines-dark.svg">
+    <img alt="Two engines side by side. The production engine behind lockstep.New() has a global queue and workers with local queues; workers 1 and 2 run turns of actors A and B, and idle worker 3 steals half of worker 1's local queue. The simulation engine behind sim.Simulate has one kernel event queue ordered by virtual time, where the seed orders events at the same time. A table compares them: turns run in parallel on N workers or one at a time as kernel events; the turn budget is 32 messages by default or 1; time is the wall clock or virtual time with a clock per node; randomness is seeded from crypto/rand or derived from the seed; effects run on a bounded pool or in handlers from s.HandleEffect; a rerun has new timings, while a seed replays exactly." src="assets/engines-light.svg">
+  </picture>
+</p>
+
+Both engines run the same turns; they differ in who picks the next one and what time it is.
 
 ## The simulation engine
 
@@ -193,6 +222,16 @@ Every runtime decision also emits a kernel record named `lockstep.<event>`, such
 `lockstep.send`, `lockstep.turn` or `lockstep.restart`. faultline writes them to `trace.jsonl` and
 hashes them into the run's trace hash, so a replay that matches the hash made the same decisions
 in the same order.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/sim-replay-dark.gif">
+    <img alt="Animation of the README counter test on seed 0x870af07a512d3866, drawn from its trace. c1 sends Add to the counter on n1 every 250 ms of virtual time and the total reaches 19. faultline crashes n1 at 4.866 s, the 20th Add is dropped while n1 is down, and n1 restarts at 5.710 s with a new counter whose total is 0. At 9 s c1 asks for the total and gets 0, and the final check "every add counted" fails at 10 s with trace hash 0x56d752b8033ec3c3. Running FAULTLINE_SEED=0x870af07a512d3866 go test again replays the same 183 trace records with the same hash and the same failure." src="assets/sim-replay-light.gif">
+  </picture>
+</p>
+
+The seed fixes every crash time, latency and delivery order, so running the seed again replays the
+failure record for record.
 
 ### Faults
 
