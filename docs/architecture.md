@@ -262,8 +262,38 @@ so supervision keeps working at the cap.
 In simulation, `sim.Options.Budget` caps live actors and their estimated memory in bytes, and
 `s.Pressure` turns memory pressure on and off. While either applies, `Spawn` returns
 `ErrOverloaded`, sends to user actors are refused as if their mailboxes were full, and actors that
-called `ctx.SubscribeOverload` receive an `Overloaded` signal. The production engine does not read
-the live heap, so `WithAdmission` has no effect there; see [Limitations](../README.md#limitations).
+called `ctx.SubscribeOverload` receive an `Overloaded` signal. Simulation reads no host state, so
+`WithAdmission`, `WithWatchdog`, and `WithGoroutineWarning` have no effect there and the same seed
+still replays the same run.
+
+The production engine takes its overload from the live heap. A sampler runs on the engine's clock
+every 100 ms and reads the live heap, and `New` takes the first sample before it returns. Without
+`WithAdmission`, admission stops at 90% of the Go memory limit and resumes at 80%, and with no
+limit set memory never refuses. `WithAdmission(high, low)` sets absolute byte thresholds, and
+`WithAdmission(0, 0)` turns memory admission off. While admission is stopped, the system behaves
+as it does in simulation: `Spawn` returns `ErrOverloaded`, each mailbox policy applies to user
+messages as if the mailbox were full, and subscribers receive `Overloaded`. Restarts, system
+messages, replies, timer messages, and effect results are not refused. The system logs the change
+as `admission refusing` at Warn and `admission resumed` at Info.
+
+A watchdog goroutine finds stuck turns. It has its own goroutine so that it keeps running when every
+worker is stuck. It polls the production engine for the turns in progress, and reports each turn
+that has run for `WithWatchdog`'s timeout (5 seconds by default) once, at Error, with the actor's
+path and the stack of the worker goroutine. The actor is then stuck: user messages to it get its
+mailbox policy as if the mailbox were full, while system messages such as `Stop` still queue, and a
+`Stop` that queued while the turn was stuck stops the actor after the turn returns, without a
+restart. Otherwise, when the turn returns, the incarnation fails with an error that matches
+`ErrTimeout`, and its supervisor decides what happens next. lockstep cannot preempt a turn, so a
+turn that never returns keeps its worker, and `Shutdown` with a deadline returns the context's
+error.
+
+The sampler tick also counts the process's goroutines once a second. When the count reaches
+`WithGoroutineWarning`'s bound (10,000 by default), the system logs one Warn with the count and the
+ten functions that hold the most goroutines, and it warns again only after the count falls below
+80% of the bound. All of these events go to the logger `slog.Default()` returned when `New` ran,
+with the `node` attribute. [Protect the production engine from
+overload](../README.md#protect-the-production-engine-from-overload) lists the options and their
+defaults.
 
 ## Static analysis
 

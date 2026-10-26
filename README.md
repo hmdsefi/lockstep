@@ -41,6 +41,9 @@ lockstep includes:
 - **A pooled production engine.** `lockstep.New()` runs actors on a fixed pool of worker
   goroutines, so turns of different actors run in parallel while each actor handles one message at
   a time.
+- **Overload protection** in the production engine: new actors and user messages are refused while
+  the live heap is near its memory limit, a turn that runs too long is reported and its actor
+  isolated, and a growing goroutine count is logged.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
@@ -173,6 +176,83 @@ if err != nil {
 
 The options apply only to `lockstep.New()`. Simulation checks the values and then ignores them:
 every turn there processes one message, in an order the seed decides.
+
+## Protect the production engine from overload
+
+`lockstep.New()` stops accepting new actors and user messages while the live heap is near its
+limit, reports a turn that runs too long, and warns when the process has too many goroutines. Three
+options tune this, and each has a default:
+
+- `WithAdmission(high, low)` sets the memory thresholds in bytes.
+- `WithWatchdog(d)` sets how long a turn may run before it counts as stuck.
+- `WithGoroutineWarning(n)` sets the goroutine count that triggers a warning.
+
+```go
+sys := lockstep.New(
+	lockstep.WithAdmission(768<<20, 640<<20),
+	lockstep.WithWatchdog(2*time.Second),
+	lockstep.WithGoroutineWarning(50_000),
+)
+```
+
+### Memory admission
+
+`New` samples the live heap before it returns and then every 100 ms. Without `WithAdmission`, the
+thresholds follow the Go memory limit (`debug.SetMemoryLimit` or `GOMEMLIMIT`): admission stops
+when the heap reaches 90% of the limit and resumes when it falls to 80%. With no memory limit set,
+memory never refuses work. `WithAdmission(high, low)` replaces the limit with absolute byte
+thresholds and needs `0 < low < high`. `WithAdmission(0, 0)` turns memory admission off, even when
+a limit is set.
+
+While admission is stopped:
+
+- `Spawn` returns an error that matches `ErrOverloaded`. Restarts of existing actors are not
+  refused.
+- Each `Send` and `Ask` to a user actor is treated as if the target's mailbox were full, so the
+  mailbox policy decides. Under `FailSend`, the error matches both `ErrOverloaded` and
+  `ErrMailboxFull`. System messages, replies, timer messages, and effect results are not refused.
+- Actors that called `ctx.SubscribeOverload` receive an `Overloaded` signal when admission stops
+  and another when it resumes.
+
+The system logs the change: `admission refusing` at Warn when it stops and `admission resumed` at
+Info when it resumes.
+
+### Stuck turns
+
+A turn that never returns holds its worker, and the actor behind it stops answering. One watchdog
+goroutine reports every turn that has run for at least the timeout. The default,
+`DefaultWatchdogTimeout`, is 5 seconds, and `WithWatchdog(0)` turns the watchdog off.
+
+The report is one log line at Error with the actor's path and the stack of the worker goroutine
+that runs the turn. From then until the turn returns, the actor counts as stuck. User messages to
+it get its mailbox policy as if the mailbox were full, and under `FailSend` the error matches
+`ErrMailboxFull`. System messages, such as `Stop`, still queue, and a `Stop` that queued while the
+turn was stuck stops the actor after the turn returns, without a restart. Otherwise, when the turn
+returns, the incarnation fails with an error that matches `ErrTimeout`, and its supervisor decides
+whether to restart, stop, or escalate.
+
+lockstep cannot preempt a turn. A turn that never returns keeps its worker, and `Shutdown` with a
+deadline returns the context's error when the deadline passes.
+
+### Goroutine count
+
+Once a second, the system counts the goroutines of the whole process, not only lockstep's. When the
+count reaches the bound from `WithGoroutineWarning(n)`, the system logs one warning at Warn with
+the count and a summary of the ten functions that hold the most goroutines. The default,
+`DefaultGoroutineWarning`, is 10,000, and `WithGoroutineWarning(0)` turns the warning off. After a
+warning, the next one waits until the count falls below 80% of the bound and reaches it again.
+
+### Logs and invalid values
+
+These events go to the logger that `slog.Default()` returned when `New` ran, each with a `node`
+attribute, so set the default logger before you call `New`. A negative watchdog timeout or goroutine
+bound, or a non-zero `WithAdmission` pair other than `0 < low < high`, makes `New` panic with an
+error that wraps `ErrInvalidOption`.
+
+Simulation checks these values and then ignores them. It stays deterministic, and overload there
+comes from `sim.Options.Budget` and `s.Pressure`, described in
+[Architecture](docs/architecture.md#overload). The actor cap, `WithMaxActors`, applies in both
+engines.
 
 ## Deterministic simulation testing: the same actor under faults
 
@@ -390,10 +470,9 @@ github.com/hmdsefi/lockstep          actor runtime
 ## Limitations
 
 lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
-`lockstep.New()` does not read the live heap: `WithAdmission`, `WithWatchdog`, and
-`WithGoroutineWarning` are accepted and have no effect on it. The actor cap (`WithMaxActors`)
-applies everywhere. There is no remoting, clustering, persistence, or OpenTelemetry support, so
-actors on different nodes talk only in simulation.
+It cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not
+free the worker. There is no remoting, clustering, persistence, or OpenTelemetry support, so actors
+on different nodes talk only in simulation.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
