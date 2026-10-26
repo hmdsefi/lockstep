@@ -58,10 +58,10 @@ func must(err error) {
 	}
 }
 
-// PER-500, the Volume part of AT-PER-44: Volume returns one FS per node over its simdisk volume, mapping x to /x and
-// . to /; Info comes from simdisk, simdisk's errors pass through, a handle crashed away reports
-// its size as closed, the Volume's own name check uses the FS method name, and an unknown node
-// panics.
+// PER-500, the Volume part of AT-PER-44: Volume returns one FS per node over its simdisk volume,
+// mapping x to /x and . to /; Info comes from simdisk, simdisk's errors pass through, a handle
+// crashed away reports its size as closed, the Volume's own name check uses the FS method name, and
+// an unknown node panics.
 func TestPER500VolumeMapping(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -198,9 +198,9 @@ var (
 	})
 )
 
-// PER-510, the Volume part of AT-PER-45: a volume used from another node's event, or outside any node event, fails
-// the seed with check lockstep/misuse after a lockstep.misuse record, and the call returns a
-// *fs.PathError with fs.ErrPermission without touching the volume.
+// PER-510, the Volume part of AT-PER-45: a volume used from another node's event, or outside any
+// node event, fails the seed with check lockstep/misuse after a lockstep.misuse record, and the
+// call returns a *fs.PathError with fs.ErrPermission without touching the volume.
 func TestPER510VolumeMisuse(t *testing.T) {
 	for _, tc := range []struct {
 		name, scenario, marker, message string
@@ -358,9 +358,9 @@ var (
 // leakFile matches the leak failure of file /a of n1's /user/a in incarnation 1.
 var leakFile = regexp.MustCompile(`^lockstep: leak: lockstep://n1/user/a#[0-9a-f]+ \(incarnation 1\): file /a on node n1 still open$`)
 
-// PER-540, SIM-290 (c), the Volume part of AT-PER-48: a file still open when the incarnation that opened it ends by
-// restart or stop fails the seed with check lockstep/leak, files in path order, after the
-// lockstep.leak records of every such file.
+// PER-540, SIM-290 (c), the Volume part of AT-PER-48: a file still open when the incarnation that
+// opened it ends by restart or stop fails the seed with check lockstep/leak, files in path order,
+// after the lockstep.leak records of every such file.
 func TestPER540FileLeak(t *testing.T) {
 	t.Run("restart", func(t *testing.T) {
 		a, _ := failingSeedArtifact(t, "per540-restart")

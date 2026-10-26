@@ -128,9 +128,9 @@ func (v *volume) allowed(op, name string) error {
 	return &fs.PathError{Op: op, Path: name, Err: fs.ErrPermission}
 }
 
-// enter checks a call of the FS method op with name: the event (PER-510), then the name, which
-// must satisfy fs.ValidPath and contain no backslash (PER-500). It samples the latency of class class and returns the
-// volume path of name.
+// enter checks a call of the FS method op with name: the event (PER-510), then the name, which must
+// satisfy fs.ValidPath and contain no backslash (PER-500). It samples the latency of class class
+// and returns the volume path of name.
 func (v *volume) enter(op, name string, class simdisk.Op) (string, error) {
 	if err := v.allowed(op, name); err != nil {
 		return "", err
