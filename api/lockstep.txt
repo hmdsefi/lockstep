@@ -57,8 +57,10 @@ pkg github.com/hmdsefi/lockstep, func Spawn[M any](Spawner, string, func() Actor
 pkg github.com/hmdsefi/lockstep, func Stop(Sender, Address) error
 pkg github.com/hmdsefi/lockstep, func Unwatch[M any](*Context[M], Address)
 pkg github.com/hmdsefi/lockstep, func Watch[M any](*Context[M], Address) error
+pkg github.com/hmdsefi/lockstep, func WithActorThroughput(int) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithAdmission(uint64, uint64) Option
 pkg github.com/hmdsefi/lockstep, func WithDefaultMailbox(int, MailboxPolicy) Option
+pkg github.com/hmdsefi/lockstep, func WithEffectPool(int, int) Option
 pkg github.com/hmdsefi/lockstep, func WithEffectTimeout(time.Duration) EffectOption
 pkg github.com/hmdsefi/lockstep, func WithGoroutineWarning(int) Option
 pkg github.com/hmdsefi/lockstep, func WithGuardianStrategy(Strategy) Option
@@ -67,8 +69,10 @@ pkg github.com/hmdsefi/lockstep, func WithMaxActors(int) Option
 pkg github.com/hmdsefi/lockstep, func WithMemoryEstimates() Option
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
+pkg github.com/hmdsefi/lockstep, func WithThroughput(int) Option
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, func WithWatchdog(time.Duration) Option
+pkg github.com/hmdsefi/lockstep, func WithWorkers(int) Option
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) After(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelEffect(EffectID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
