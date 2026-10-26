@@ -24,6 +24,9 @@ type idState struct {
 	// journal is the loaded journal state; nil until the scan of PER-370 has run, and again
 	// after a scan failed or Recover dropped it.
 	journal *journal
+	// snapDirUnsynced is set when a Save created the ID's snapshot directory and no SyncDir of
+	// the snapshots directory has succeeded since, so the next successful Save syncs it.
+	snapDirUnsynced bool
 }
 
 // journal is the in-memory state of one ID's journal (PER §5.10). "Since the last commit" means

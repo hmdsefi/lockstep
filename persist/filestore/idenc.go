@@ -59,7 +59,7 @@ func seqName(seq uint64, ext string) string {
 
 // parseSeqName reverses seqName. It reports false for any other name, so a directory scan can
 // ignore entries it does not own.
-func parseSeqName(name, ext string) (uint64, bool) { //nolint:unparam // ext is snapExt for snapshot names
+func parseSeqName(name, ext string) (uint64, bool) {
 	digits, ok := strings.CutSuffix(name, ext)
 	if !ok || len(digits) != seqDigits {
 		return 0, false
