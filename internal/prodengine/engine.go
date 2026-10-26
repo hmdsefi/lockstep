@@ -70,12 +70,17 @@ type Engine struct {
 	cfg      Config
 	s        scheduler // the bundle's Scheduler (sched.go)
 	stopOnce sync.Once
+
+	// tmu guards timers. AfterFunc checks the closing mark and registers a timer in one critical
+	// section, so a Stop that marks closing and then locks tmu sees every timer that was armed.
+	tmu    sync.Mutex
+	timers map[*timer]struct{} // pending timers (timer.go); its length is the pending count
 }
 
 // New validates cfg, applies defaults, starts exactly cfg.Workers worker goroutines and
 // returns the engine. It starts no other goroutine.
 func New(cfg Config) *Engine {
-	e := &Engine{cfg: withDefaults(cfg)}
+	e := &Engine{cfg: withDefaults(cfg), timers: make(map[*timer]struct{})}
 	e.s.start(e.cfg.Workers, e.cfg.Throughput)
 	return e
 }
