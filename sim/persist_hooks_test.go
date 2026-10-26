@@ -558,8 +558,8 @@ func TestPER160InternalEffectCancelled(t *testing.T) {
 	// restart, so some seeds end the incarnation first (the effect is cancelled) and others
 	// deliver the completion to the failed incarnation (it keeps it, and the restart drops it).
 	// Done runs in neither.
-	cancelled := 0
 	t.Run("inject fail", func(t *testing.T) {
+		cancelled := 0
 		sim.Simulate(t, fullTrace(48), func(s *sim.Sim) {
 			w, tt := s.World(), s.World().T()
 			p := setup(s)
@@ -597,11 +597,11 @@ func TestPER160InternalEffectCancelled(t *testing.T) {
 				tt.Errorf("%d lockstep/effect events, want 1 or 2", ran(recs, p.n1, "lockstep/effect"))
 			}
 		})
+		if cancelled == 0 {
+			t.Error("no seed ended the incarnation before the completion event: outcome=cancelled is untested")
+		}
+		t.Logf("%d of 48 seeds ended the incarnation before the completion event", cancelled)
 	})
-	if cancelled == 0 {
-		t.Error("no seed ended the incarnation before the completion event: outcome=cancelled is untested")
-	}
-	t.Logf("%d of 48 seeds ended the incarnation before the completion event", cancelled)
 
 	t.Run("crash before run", func(t *testing.T) {
 		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
