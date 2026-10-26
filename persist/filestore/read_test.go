@@ -26,20 +26,20 @@ func seqsOf(events []persist.Event) []uint64 {
 	return seqs
 }
 
-// mustRead reads and checks the sequence numbers and data of the result: the event with
+// mustRead reads from "c-1" and checks the sequence numbers and data of the result: the event with
 // sequence number n carries the data "e<n>".
-func mustRead(t *testing.T, s *Store, id string, from uint64, max int, want ...uint64) {
+func mustRead(t *testing.T, s *Store, from uint64, max int, want ...uint64) {
 	t.Helper()
-	got, err := s.Read(context.Background(), id, from, max)
+	got, err := s.Read(context.Background(), "c-1", from, max)
 	if err != nil {
-		t.Fatalf("Read(%q, %d, %d): %v", id, from, max, err)
+		t.Fatalf("Read(%d, %d): %v", from, max, err)
 	}
 	if fmt.Sprint(seqsOf(got)) != fmt.Sprint(want) {
-		t.Fatalf("Read(%q, %d, %d) seqs = %v, want %v", id, from, max, seqsOf(got), want)
+		t.Fatalf("Read(%d, %d) seqs = %v, want %v", from, max, seqsOf(got), want)
 	}
 	for _, e := range got {
 		if string(e.Data) != fmt.Sprintf("e%d", e.Seq) {
-			t.Fatalf("Read(%q, %d, %d): event %d has data %q", id, from, max, e.Seq, e.Data)
+			t.Fatalf("Read(%d, %d): event %d has data %q", from, max, e.Seq, e.Data)
 		}
 	}
 }
@@ -74,7 +74,7 @@ func TestATPER37Read(t *testing.T) {
 	}
 	writeFive(t, s)
 
-	mustRead(t, s, "c-1", 2, 3, 2, 3, 4)
+	mustRead(t, s, 2, 3, 2, 3, 4)
 
 	// Bytes appended behind the Store: a fresh Store sees them.
 	f, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(segOf("c-1", 2))), os.O_WRONLY|os.O_APPEND, 0)
@@ -94,8 +94,8 @@ func TestATPER37Read(t *testing.T) {
 	_, err = s.Read(context.Background(), "c-1", 1, 5)
 	corruptReason(t, err, "trailing bytes")
 	// Reads that stop before the damaged segment ends are not affected.
-	mustRead(t, s, "c-1", 1, 1, 1)
-	mustRead(t, s, "c-1", 3, 3, 3, 4, 5)
+	mustRead(t, s, 1, 1, 1)
+	mustRead(t, s, 3, 3, 3, 4, 5)
 
 	_, err = s.Read(context.Background(), "c-1", 1, 0)
 	if !errors.Is(err, fs.ErrInvalid) {
@@ -130,7 +130,7 @@ func TestATPER38DeleteEvents(t *testing.T) {
 	}
 	mustRecover(t, s, "c-1", persist.Bounds{First: 4, Last: 5})
 	committedOnReopen(t, dir, "c-1", persist.Bounds{First: 4, Last: 5})
-	mustRead(t, s, "c-1", 4, 9, 4, 5)
+	mustRead(t, s, 4, 9, 4, 5)
 
 	m = r.mark()
 	if err := s.DeleteEvents(context.Background(), "c-1", 9); err != nil {
@@ -144,7 +144,7 @@ func TestATPER38DeleteEvents(t *testing.T) {
 		t.Fatal("seg(5) was removed")
 	}
 	mustRecover(t, s, "c-1", persist.Bounds{First: 5, Last: 5})
-	mustRead(t, s, "c-1", 5, 1, 5)
+	mustRead(t, s, 5, 1, 5)
 
 	// Nothing left to remove: no call, no error.
 	m = r.mark()
@@ -230,7 +230,7 @@ func TestPER390DeleteEventsFailure(t *testing.T) {
 		if fileSize(t, dir, segOf("c-1", 1)) >= 0 || fileSize(t, dir, segOf("c-1", 2)) < 0 {
 			t.Fatal("the failed removal left the wrong segments")
 		}
-		mustRead(t, s, "c-1", 2, 9, 2, 3, 4, 5)
+		mustRead(t, s, 2, 9, 2, 3, 4, 5)
 		// The next call goes on where the failed one stopped.
 		if err := s.DeleteEvents(ctx, "c-1", 3); err != nil {
 			t.Fatal(err)
@@ -245,7 +245,7 @@ func TestPER390DeleteEventsFailure(t *testing.T) {
 		if err := s.DeleteEvents(ctx, "c-1", 3); !errors.Is(err, boom) {
 			t.Fatalf("DeleteEvents: %v, want boom", err)
 		}
-		mustRead(t, s, "c-1", 4, 9, 4, 5)
+		mustRead(t, s, 4, 9, 4, 5)
 		// The next commit repeats the directory sync.
 		m := r.mark()
 		mustCommit(t, s, "c-1")
@@ -268,7 +268,7 @@ func TestPER380ReadBounds(t *testing.T) {
 				t.Fatalf("Read(from %d): %v, want one wrapping ErrMissingEvents", from, err)
 			}
 		}
-		mustRead(t, s, "c-1", 4, 5, 4, 5)
+		mustRead(t, s, 4, 5, 4, 5)
 		// An ID without events has First == 1.
 		if _, err := s.Read(ctx, "none", 0, 1); !errors.Is(err, persist.ErrMissingEvents) {
 			t.Fatalf("Read(from 0) on an empty ID: %v", err)
@@ -288,8 +288,8 @@ func TestPER380ReadBounds(t *testing.T) {
 		if got != nil || err != nil {
 			t.Fatalf("Read on an empty ID = %v, %v, want nil, nil", got, err)
 		}
-		mustRead(t, s, "c-1", 5, 5, 5)
-		mustRead(t, s, "c-1", 1, 1<<30, 1, 2, 3, 4, 5)
+		mustRead(t, s, 5, 5, 5)
+		mustRead(t, s, 1, 1<<30, 1, 2, 3, 4, 5)
 	})
 
 	t.Run("uncommitted events", func(t *testing.T) {
@@ -301,10 +301,10 @@ func TestPER380ReadBounds(t *testing.T) {
 		mustWrite(t, s, "c-1", ev(3, "e3"))
 		mustCommit(t, s, "c-1")
 		mustWrite(t, s, "c-1", ev(4, "e4", "e5"))
-		mustRead(t, s, "c-1", 1, 10, 1, 2, 3)
-		mustRead(t, s, "c-1", 4, 10)
+		mustRead(t, s, 1, 10, 1, 2, 3)
+		mustRead(t, s, 4, 10)
 		mustCommit(t, s, "c-1")
-		mustRead(t, s, "c-1", 2, 10, 2, 3, 4, 5)
+		mustRead(t, s, 2, 10, 2, 3, 4, 5)
 
 		// Uncommitted events in a segment that is not the last one.
 		s2, _, _ := newJournal(t, WithSegmentSize(1))
@@ -314,9 +314,9 @@ func TestPER380ReadBounds(t *testing.T) {
 		for i := uint64(2); i <= 4; i++ {
 			mustWrite(t, s2, "c-1", ev(i, fmt.Sprintf("e%d", i)))
 		}
-		mustRead(t, s2, "c-1", 1, 10, 1)
+		mustRead(t, s2, 1, 10, 1)
 		mustCommit(t, s2, "c-1")
-		mustRead(t, s2, "c-1", 1, 10, 1, 2, 3, 4)
+		mustRead(t, s2, 1, 10, 1, 2, 3, 4)
 	})
 
 	t.Run("batches", func(t *testing.T) {
@@ -327,10 +327,10 @@ func TestPER380ReadBounds(t *testing.T) {
 		mustWrite(t, s, "c-1", ev(6, "e6"))
 		mustCommit(t, s, "c-1")
 		// from in the middle of a batch, and max cutting a batch.
-		mustRead(t, s, "c-1", 2, 2, 2, 3)
-		mustRead(t, s, "c-1", 5, 9, 5, 6)
-		mustRead(t, s, "c-1", 3, 1, 3)
-		mustRead(t, s, "c-1", 1, 6, 1, 2, 3, 4, 5, 6)
+		mustRead(t, s, 2, 2, 2, 3)
+		mustRead(t, s, 5, 9, 5, 6)
+		mustRead(t, s, 3, 1, 3)
+		mustRead(t, s, 1, 6, 1, 2, 3, 4, 5, 6)
 	})
 
 	t.Run("renamed next segment", func(t *testing.T) {
@@ -354,9 +354,9 @@ func TestPER380ReadBounds(t *testing.T) {
 		_, err = s.Read(ctx, "c-1", 1, 5)
 		corruptReason(t, err, "seq 4, expected 3")
 		// A read that starts behind the gap works.
-		mustRead(t, s, "c-1", 4, 5, 4, 5)
+		mustRead(t, s, 4, 5, 4, 5)
 		// A read that stops before the gap works.
-		mustRead(t, s, "c-1", 1, 2, 1, 2)
+		mustRead(t, s, 1, 2, 1, 2)
 	})
 
 	t.Run("damaged record", func(t *testing.T) {
@@ -371,7 +371,7 @@ func TestPER380ReadBounds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(name, flipped(b, headerSize+1), 0o644); err != nil {
+		if err := os.WriteFile(name, flipped(b, headerSize+1), 0o600); err != nil { //nolint:gosec // a path below t.TempDir()
 			t.Fatal(err)
 		}
 		s, err = Open(dir, WithSegmentSize(1))
@@ -380,11 +380,11 @@ func TestPER380ReadBounds(t *testing.T) {
 		}
 		_, err = s.Read(ctx, "c-1", 1, 5)
 		corruptReason(t, err, "checksum mismatch")
-		mustRead(t, s, "c-1", 3, 5, 3, 4, 5)
+		mustRead(t, s, 3, 5, 3, 4, 5)
 
 		// A record whose first sequence number is wrong.
 		wrong := jrec(t, 7, "e2")
-		if err := os.WriteFile(name, wrong, 0o644); err != nil {
+		if err := os.WriteFile(name, wrong, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		s, err = Open(dir, WithSegmentSize(1))
@@ -430,9 +430,8 @@ func TestPER380ReadBounds(t *testing.T) {
 				first[i].Data[:cap(first[i].Data)][j] = 'X'
 			}
 		}
-		first = append(first[:1], persist.Event{})
-		mustRead(t, s, "c-1", 1, 3, 1, 2, 3)
-		mustRead(t, s, "c-1", 2, 1, 2)
+		mustRead(t, s, 1, 3, 1, 2, 3)
+		mustRead(t, s, 2, 1, 2)
 	})
 }
 
@@ -450,12 +449,12 @@ func TestPER380ReadStartsAtSegment(t *testing.T) {
 		for q := from; q <= 12 && len(want) < 4; q++ {
 			want = append(want, q)
 		}
-		mustRead(t, s, "c-1", from, 4, want...)
+		mustRead(t, s, from, 4, want...)
 	}
 	// Segments before the start are not opened: batches of two events fill a segment, so the
 	// segments are named 1, 3, 5, 7, 9 and 11.
 	m := r.mark()
-	mustRead(t, s, "c-1", 12, 1, 12)
+	mustRead(t, s, 12, 1, 12)
 	for _, c := range r.since(m) {
 		if strings.HasPrefix(c, "Open ") && !strings.HasSuffix(c, "/"+seqName(11, segExt)) {
 			t.Fatalf("Read(12) opened %q", c)
@@ -488,7 +487,7 @@ func TestPER330ReadFilesClosed(t *testing.T) {
 			}
 			r.checkClosed(t)
 			// The rule fired once: the store still works.
-			mustRead(t, s, "c-1", 1, 5, 1, 2, 3, 4, 5)
+			mustRead(t, s, 1, 5, 1, 2, 3, 4, 5)
 		})
 	}
 
@@ -530,9 +529,9 @@ func TestPER380ReadLoadsJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustRead(t, s2, "c-1", 2, 3, 2, 3, 4)
+	mustRead(t, s2, 2, 3, 2, 3, 4)
 	mustWrite(t, s2, "c-1", ev(6, "e6"))
-	mustRead(t, s2, "c-1", 5, 9, 5)
+	mustRead(t, s2, 5, 9, 5)
 	mustCommit(t, s2, "c-1")
-	mustRead(t, s2, "c-1", 5, 9, 5, 6)
+	mustRead(t, s2, 5, 9, 5, 6)
 }
