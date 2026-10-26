@@ -640,6 +640,9 @@ func (s *Store) readSegment(j *journal, i int, next, from uint64, max int, out [
 	last := i == len(j.segs)-1
 	limit, stop := size, j.segs[min(i+1, len(j.segs)-1)].seq
 	if last {
+		if size < seg.committed { // the file lost committed bytes behind the Store
+			return nil, 0, corruptAt(name, size, reasonIncomplete)
+		}
 		limit = seg.committed
 	}
 	r := &segReader{f: f, size: limit}
@@ -686,10 +689,11 @@ func (s *Store) DeleteEvents(ctx context.Context, id string, to uint64) error {
 	}
 	j := st.journal
 	// Segment i holds only events below its successor's name, so it goes when that name is at
-	// most to+1.
+	// most to+1. It stays while its successor holds no committed data: after a crash, the
+	// successor may be gone and the committed events with it.
 	removed := 0
 	var rerr error
-	for removed+1 < len(j.segs) && j.segs[removed+1].seq-1 <= to {
+	for removed+1 < len(j.segs) && j.segs[removed+1].seq-1 <= to && j.segs[removed+1].committed > 0 {
 		if rerr = s.fs.Remove(j.segPath(j.segs[removed].seq)); rerr != nil {
 			break
 		}
