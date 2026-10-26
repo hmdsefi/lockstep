@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
+	"github.com/hmdsefi/lockstep/internal/supervise"
 )
 
 // pauseMsg is message n of sender from in TestPauseUserProduction.
@@ -185,4 +186,33 @@ func recoverOf(f func()) (v any) {
 	defer func() { v = recover() }()
 	f()
 	return nil
+}
+
+// PER §4.3: the closed-queue branch of hooks.Signal. The final stop removes the actor from the
+// registry before it closes the queues (SUP-060 steps 4 and 5), so hooks.Signal reaches a closed
+// cell only when it resolved the cell just before that removal, in a race with the stop; no
+// deterministic schedule produces it. The test checks the branch on the cell itself: after the
+// final stop, offerSystem takes nothing and reports false, and hooks.Signal reports false too.
+func TestHooksSignalClosedCell(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	pid, _ := spawnProbe[any](t, sys, "gone", nil)
+	eng.RunUntilIdle()
+	c := cellOf(t, sys, pid)
+	if err := Stop(sys, pid.Address()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	eng.RunUntilIdle()
+	if st, _ := c.lifecycle(); st != supervise.Stopped {
+		t.Fatalf("the probe is %v after its stop, want stopped", st)
+	}
+
+	if hooks.Signal(sys, pid.addr.engine(), Terminated{}) {
+		t.Error("hooks.Signal to the stopped probe reported true")
+	}
+	if c.offerSystem(signalMsg{sig: Terminated{}, direct: true}, nil) {
+		t.Error("offerSystem on the closed cell reported true")
+	}
+	if n := c.sysq.Len(); n != 0 {
+		t.Errorf("the closed system queue holds %d messages, want 0", n)
+	}
 }

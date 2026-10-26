@@ -137,14 +137,14 @@ func TestATMBX28PausedDelivery(t *testing.T) {
 	})
 }
 
-// PER-250: pausing twice is pausing once, so one resume delivers again; resuming twice is
-// resuming once, so one pause stops delivery again; and the incarnation after a failure starts
-// unpaused.
+// PER-250: pausing twice is pausing once, so a single resume delivers again; resuming twice is
+// resuming once, so a single pause stops delivery again; and the incarnation after a failure
+// starts unpaused.
 func TestPER250PauseUserIdempotent(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []int
-		starts := 0
+		starts, signals := 0, 0
 		var a lockstep.PID[PMsg]
 		s.Node("n1", func(sys *lockstep.System) {
 			a = spawnControlled(sys, "a", &controlled[PMsg]{
@@ -158,68 +158,85 @@ func TestPER250PauseUserIdempotent(t *testing.T) {
 				receive: func(ctx *lockstep.Context[PMsg], m PMsg) {
 					got = append(got, m.N)
 					if m.N == 3 || m.N == 4 {
-						hooks.Control(ctx).PauseUser(true) // one pause after the double resume
+						hooks.Control(ctx).PauseUser(true) // a single pause
 					}
 				},
 				signal: func(ctx *lockstep.Context[PMsg], _ lockstep.Signal) {
+					signals++
 					hooks.Control(ctx).PauseUser(false)
-					hooks.Control(ctx).PauseUser(false)
+					if signals >= 2 {
+						hooks.Control(ctx).PauseUser(false) // resuming twice from the second signal on
+					}
 				},
 			})
 		})
 		w.RunFor(time.Millisecond)
 		sys := s.System("n1")
+		expect := func(when string, want ...int) {
+			tt.Helper()
+			w.RunFor(time.Second)
+			if !slices.Equal(got, want) {
+				tt.Fatalf("%s: Receive got %v, want %v", when, got, want)
+			}
+		}
 
 		sendPMsgs(tt, s, a, 1, 2, 3)
-		w.RunFor(time.Second)
-		if len(got) != 0 {
-			tt.Fatalf("Receive got %v after two pauses, want nothing", got)
-		}
+		expect("after two pauses")
 		hooks.Signal(sys, engineAddr(a.Address()), wake())
-		w.RunFor(time.Second)
-		if !slices.Equal(got, []int{1, 2, 3}) {
-			tt.Fatalf("after one resume, Receive got %v, want [1 2 3]", got)
-		}
+		expect("after one resume following two pauses", 1, 2, 3)
 
+		// m3 paused once more.
 		sendPMsgs(tt, s, a, 4)
-		w.RunFor(time.Second)
-		if !slices.Equal(got, []int{1, 2, 3}) {
-			tt.Fatalf("after two resumes and one pause, Receive got %v, want [1 2 3]", got)
-		}
+		expect("after one pause", 1, 2, 3)
 		hooks.Signal(sys, engineAddr(a.Address()), wake())
-		w.RunFor(time.Second)
-		if !slices.Equal(got, []int{1, 2, 3, 4}) {
-			tt.Fatalf("after the second resume, Receive got %v, want [1 2 3 4]", got)
-		}
+		expect("after a double resume", 1, 2, 3, 4)
 
-		// m4 left the incarnation paused; the next one starts unpaused without a PauseUser call.
+		// m4 paused once after the double resume: delivery stops again.
+		sendPMsgs(tt, s, a, 5)
+		expect("after one pause following two resumes", 1, 2, 3, 4)
+
+		// The next incarnation starts unpaused without a PauseUser call: it gets m5, still queued,
+		// and m6.
 		if err := s.InjectFail(a.Address(), errors.New("boom")); err != nil {
 			tt.Fatalf("InjectFail: %v", err)
 		}
 		w.RunFor(time.Second)
-		sendPMsgs(tt, s, a, 5)
-		w.RunFor(time.Second)
-		if starts != 2 || !slices.Equal(got, []int{1, 2, 3, 4, 5}) {
-			tt.Errorf("after the restart: %d starts, Receive got %v; want 2 and [1 2 3 4 5]", starts, got)
+		sendPMsgs(tt, s, a, 6)
+		expect("after the restart", 1, 2, 3, 4, 5, 6)
+		if starts != 2 {
+			tt.Errorf("%d starts, want 2", starts)
 		}
 	})
 }
 
 // PER §4.3: hooks.Signal queues a signal on the system queue of a live actor, in arrival order
-// with the signals the runtime queues, and reports false, changing nothing, for a stopped actor
-// and for an address with no actor.
+// with the signals the runtime queues, whether those arrive after or before it, and reports false,
+// changing nothing, for a stopped actor and for an address with no actor.
 func TestHooksSignal(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var sigs []string
 		var watcher lockstep.PID[PMsg]
 		var x lockstep.PID[Deposit]
+		third := lockstep.Terminated{Addr: lockstep.PIDAt[PMsg]("n1", "/user/third").Address()}
+		fourth := lockstep.Terminated{Addr: lockstep.PIDAt[PMsg]("n1", "/user/fourth").Address()}
 		s.Node("n1", func(sys *lockstep.System) {
 			x = spawn(sys, "x", &actor[Deposit]{})
 			watcher = spawnControlled(sys, "w", &controlled[PMsg]{
 				started: func(ctx *lockstep.Context[PMsg]) {
 					if err := lockstep.Watch(ctx, x.Address()); err != nil {
 						panic(err)
+					}
+				},
+				// Watching the stopped x queues the runtime's Terminated{x, NoActor} before Watch
+				// returns (SUP-335), so it is on the system queue ahead of the two hook signals.
+				receive: func(ctx *lockstep.Context[PMsg], _ PMsg) {
+					if err := lockstep.Watch(ctx, x.Address()); err != nil {
+						panic(err)
+					}
+					self := engineAddr(ctx.Self().Address())
+					if !hooks.Signal(sys, self, third) || !hooks.Signal(sys, self, fourth) {
+						panic("hooks.Signal to the running watcher reported false")
 					}
 				},
 				signal: func(_ *lockstep.Context[PMsg], sig lockstep.Signal) {
@@ -263,7 +280,13 @@ func TestHooksSignal(t *testing.T) {
 			tt.Errorf("hooks.Signal to no live actor added records %v", recs[before:])
 		}
 		if want := []string{"/user/first", "/user/second", "/user/x"}; !slices.Equal(sigs, want) {
-			tt.Errorf("the watcher's Signal got %q afterwards, want %q", sigs, want)
+			tt.Fatalf("the watcher's Signal got %q afterwards, want %q", sigs, want)
+		}
+
+		sendPMsgs(tt, s, watcher, 1)
+		w.RunFor(time.Second)
+		if want := []string{"/user/first", "/user/second", "/user/x", "/user/x", "/user/third", "/user/fourth"}; !slices.Equal(sigs, want) {
+			tt.Errorf("with the runtime's Terminated queued first, the watcher's Signal got %q, want %q", sigs, want)
 		}
 	})
 }
