@@ -82,6 +82,24 @@ func (e *Engine) runTimer(t *timer) {
 	t.fn()
 }
 
+// stopTimers stops every pending timer (SCH-200 step 2): it wins each timer's state from
+// pending to cancelled, stops its runtime timer and empties the pending set, so the pending count
+// falls to 0 (SCH-140). The caller marked the engine closing first, so an AfterFunc either
+// registered its timer before stopTimers locks tmu and is stopped here, or sees the mark and arms
+// nothing. A timer whose callback already started, or whose Cancel already won, leaves the set
+// here too: runTimer checks the mark after its state change, and a callback that passed that
+// check before the mark runs on a worker, which Stop waits for.
+func (e *Engine) stopTimers() {
+	e.tmu.Lock()
+	for t := range e.timers {
+		if t.state.CompareAndSwap(timerPending, timerCancelled) {
+			t.rt.Stop()
+		}
+	}
+	clear(e.timers)
+	e.tmu.Unlock()
+}
+
 // removeTimer drops t from the pending set; the pending count falls by one (SCH-140).
 func (e *Engine) removeTimer(t *timer) {
 	e.tmu.Lock()

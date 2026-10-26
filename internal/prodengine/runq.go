@@ -160,10 +160,11 @@ const globalMinCap = 16
 // globalQueue is the engine's global run queue (SCH-060, SCH-115): a mutex-protected FIFO ring of
 // entries that doubles when full and never shrinks. The zero value is an empty queue.
 type globalQueue struct {
-	mu   sync.Mutex
-	buf  []globalEntry
-	head int // index of the oldest entry
-	n    int // number of entries
+	mu     sync.Mutex
+	buf    []globalEntry
+	head   int  // index of the oldest entry
+	n      int  // number of entries
+	closed bool // set by close; pushes then drop their entries
 }
 
 // len returns the number of entries.
@@ -173,27 +174,40 @@ func (g *globalQueue) len() int {
 	return g.n
 }
 
-// pushTurn appends a turn of a.
+// pushTurn appends a turn of a. After close it drops the turn.
 func (g *globalQueue) pushTurn(a engine.ActorRef) {
 	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return
+	}
 	g.grow(1)
 	g.buf[g.index(g.n)] = globalEntry{actor: a}
 	g.n++
 	g.mu.Unlock()
 }
 
-// pushCallback appends the callback fn.
+// pushCallback appends the callback fn. After close it drops the callback.
 func (g *globalQueue) pushCallback(fn func()) {
 	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return
+	}
 	g.grow(1)
 	g.buf[g.index(g.n)] = globalEntry{fn: fn}
 	g.n++
 	g.mu.Unlock()
 }
 
-// pushBatch appends a turn of each of as, in order, in one critical section (SCH-060).
+// pushBatch appends a turn of each of as, in order, in one critical section (SCH-060). After
+// close it drops them.
 func (g *globalQueue) pushBatch(as []engine.ActorRef) {
 	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return
+	}
 	g.grow(len(as))
 	for _, a := range as {
 		g.buf[g.index(g.n)] = globalEntry{actor: a}
@@ -214,6 +228,17 @@ func (g *globalQueue) pop() (globalEntry, bool) {
 	g.head = g.index(1)
 	g.n--
 	return e, true
+}
+
+// close discards every entry and makes later pushes drop theirs (SCH-200 step 2). The turns
+// and callbacks it discards never run; the Slots of discarded turns stay queued, which is
+// harmless because nothing calls the engine after Stop (ENG-140).
+func (g *globalQueue) close() {
+	g.mu.Lock()
+	g.closed = true
+	clear(g.buf) // drop the references
+	g.head, g.n = 0, 0
+	g.mu.Unlock()
 }
 
 // index returns the buffer index of the entry i places after the oldest. The caller holds mu and

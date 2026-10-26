@@ -80,7 +80,9 @@ func (x effects) Start(req engine.EffectRequest, done func(v any, err error)) en
 	j := &job{req: req, done: done}
 	p.mu.Lock()
 	switch {
-	case p.closing.Load():
+	case p.closing.Load() || e.s.closing.Load():
+		// Stop marks the scheduler closing before it marks the pool and takes mu, so from the
+		// first mark on Start runs nothing and its Cancel reports false (SCH-200 step 1).
 		p.mu.Unlock()
 		return cancelNothing
 	case p.running < e.cfg.EffectWorkers:

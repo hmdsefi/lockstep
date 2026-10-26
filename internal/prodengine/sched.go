@@ -4,8 +4,6 @@
 package prodengine
 
 import (
-	crand "crypto/rand"
-	"encoding/binary"
 	"math/rand/v2"
 	"runtime"
 	"slices"
@@ -75,7 +73,7 @@ func (s *scheduler) start(workers, throughput int) {
 		w.index = i
 		w.hint = uint32(i + 1) //nolint:gosec // G115: i < Workers, a goroutine count
 		w.wake = make(chan struct{}, 1)
-		w.victims = newVictimRand()
+		w.victims = newPCG() // only its worker draws from it: no lock, no allocation
 		go w.loop(&started)
 	}
 	started.Wait()
@@ -85,21 +83,14 @@ func (s *scheduler) start(workers, throughput int) {
 	}
 }
 
-// newVictimRand returns a worker's own random stream for victim choice: a PCG generator seeded
-// from 16 bytes of crypto/rand. Only its worker draws from it, so it needs no lock and draws
-// allocate nothing. The determinism lint forbids the package-level functions of math/rand/v2 in
-// every class (DL002), so the stream is explicit.
-func newVictimRand() *rand.Rand {
-	var seed [16]byte
-	_, _ = crand.Read(seed[:]) // never fails (crypto/rand.Read, Go 1.24+)
-	s1, s2 := binary.LittleEndian.Uint64(seed[:8]), binary.LittleEndian.Uint64(seed[8:])
-	return rand.New(rand.NewPCG(s1, s2)) //nolint:gosec // G404: victim choice needs no cryptographic randomness
-}
-
-// stop is Stop's first call (SCH-200 steps 1, 3 and 4): mark closing, wake every parked worker
-// and wait until every worker has exited.
+// stop is the scheduler's part of SCH-200: mark closing (step 1), discard every queued global
+// turn and callback (step 2), wake every parked worker (step 3) and wait until every worker has
+// exited (step 4). Each worker drops its own local queue as it exits; stop never pops another
+// worker's queue. Engine.Stop marks closing before it stops the timers and the effect pool and
+// then calls stop; marking twice is harmless.
 func (s *scheduler) stop() {
 	s.closing.Store(true)
+	s.global.close()
 	s.park.wakeAll()
 	s.exited.Wait()
 }
@@ -238,7 +229,8 @@ func (w *worker) loop(started *sync.WaitGroup) {
 }
 
 // next returns the worker's next entry in SCH-070's order, parking while there is none. It
-// reports false once the engine is closing.
+// reports false once the engine is closing, also when Stop marked closing while the worker was
+// choosing: the entry it found is then dropped, not run (SCH-200 step 3).
 func (w *worker) next() (globalEntry, bool) {
 	for !w.s.closing.Load() {
 		ent, ok := w.find(w.schedtick%GlobalCheckInterval == 0)
@@ -246,6 +238,9 @@ func (w *worker) next() (globalEntry, bool) {
 			ent, ok = w.park()
 		}
 		if ok {
+			if w.s.closing.Load() {
+				break
+			}
 			w.schedtick++
 			return ent, true
 		}

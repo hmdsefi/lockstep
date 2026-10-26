@@ -80,6 +80,8 @@ type Engine struct {
 	fx           pool               // the effect pool (effects.go)
 	engineCtx    context.Context    // parent of every effect's context; cancelled by Stop
 	cancelEngine context.CancelFunc // cancels engineCtx
+
+	bundle engine.Engine // returned by Engine (bundle.go); built once in New
 }
 
 // New validates cfg, applies defaults, starts exactly cfg.Workers worker goroutines and
@@ -88,6 +90,7 @@ type Engine struct {
 func New(cfg Config) *Engine {
 	e := &Engine{cfg: withDefaults(cfg), timers: make(map[*timer]struct{})}
 	e.engineCtx, e.cancelEngine = context.WithCancel(context.Background())
+	e.bundle = e.newBundle()
 	e.s.start(e.cfg.Workers, e.cfg.Throughput)
 	return e
 }
@@ -99,20 +102,32 @@ func (e *Engine) Config() Config {
 
 // Stop stops the engine (SCH-200). It panics when called from engine context.
 //
-// This form marks the engine closing, so Ready does nothing from then on, wakes every parked
-// worker and waits until every worker has exited. A worker exits at its next choice (SCH-070),
-// so a turn in progress finishes first. Queued turns are left in their queues and never run.
-// It also drops the queued effects and cancels the contexts of the running ones; their done
-// never runs (SCH-200 step 2).
+// The first call marks the engine closing, so from then on Ready and ReadyFrom do nothing, and
+// AfterFunc and Start run nothing and return a Cancel that reports false. It then stops every
+// pending timer, drops the queued effects and cancels the contexts of the running ones, discards
+// every queued turn and callback, wakes every parked worker and waits until every worker has
+// exited. A worker exits at its next choice (SCH-070), so a turn or callback in progress
+// finishes first, and no callback runs after Stop returns (ENG-140). Stop does not wait for an
+// effect whose Run ignores its cancelled context; its done never runs. Later calls return once
+// the first has finished.
 func (e *Engine) Stop() {
 	if e.s.InTurn() {
 		panic("lockstep: prodengine: Stop called from engine context")
 	}
-	e.stopOnce.Do(func() {
-		e.fx.stop()
-		e.cancelEngine()
-		e.s.stop()
-	})
+	e.stopOnce.Do(e.stop)
+}
+
+// stop is the first Stop call, SCH-200 steps 1 to 4 in order.
+func (e *Engine) stop() {
+	// Step 1. The closing mark comes first: AfterFunc checks it under tmu, so stopTimers below
+	// sees every timer armed before it; Ready, ReadyFrom and the workers check it too.
+	e.s.closing.Store(true)
+	e.fx.stop() // the pool's own closing mark (Start, SCH-150 step 1); drops the queued jobs
+	// Step 2.
+	e.stopTimers()
+	e.cancelEngine()
+	// Steps 2 (queued turns and callbacks), 3 and 4.
+	e.s.stop()
 }
 
 // parked returns the number of workers registered as parked (SCH-090). Tests use it.
