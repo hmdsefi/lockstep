@@ -58,7 +58,7 @@ func must(err error) {
 	}
 }
 
-// PER-500, AT-PER-44: Volume returns one FS per node over its simdisk volume, mapping x to /x and
+// PER-500, the Volume part of AT-PER-44: Volume returns one FS per node over its simdisk volume, mapping x to /x and
 // . to /; Info comes from simdisk, simdisk's errors pass through, a handle crashed away reports
 // its size as closed, the Volume's own name check uses the FS method name, and an unknown node
 // panics.
@@ -67,7 +67,7 @@ func TestPER500VolumeMapping(t *testing.T) {
 		w, tt := s.World(), s.World().T()
 		boots := 0
 		var kept filestore.File
-		var invalidErr, missingErr, sizeErr error
+		var invalidErr, backslashErr, missingErr, sizeErr error
 		var root, sub []filestore.Info
 		size := int64(-2)
 		n1 := s.Node("n1", func(*lockstep.System) {
@@ -83,6 +83,7 @@ func TestPER500VolumeMapping(t *testing.T) {
 				panic(err)
 			}
 			_, invalidErr = fsys.Create("../x")
+			_, backslashErr = fsys.Create(`d\x`)
 			_, missingErr = fsys.Open("missing")
 			var err error
 			if root, err = fsys.ReadDir("."); err != nil {
@@ -120,6 +121,9 @@ func TestPER500VolumeMapping(t *testing.T) {
 		if !isPathError(invalidErr, "Create", "../x", fs.ErrInvalid) {
 			tt.Errorf("Create(../x) error %#v, want a *fs.PathError Create ../x fs.ErrInvalid", invalidErr)
 		}
+		if !isPathError(backslashErr, "Create", `d\x`, fs.ErrInvalid) {
+			tt.Errorf("Create(d\\x) error %#v, want a *fs.PathError Create d\\x fs.ErrInvalid", backslashErr)
+		}
 		if !isPathError(missingErr, "open", "/missing", fs.ErrNotExist) {
 			tt.Errorf("Open(missing) error %#v, want simdisk's *fs.PathError open /missing fs.ErrNotExist", missingErr)
 		}
@@ -129,11 +133,29 @@ func TestPER500VolumeMapping(t *testing.T) {
 		n1.Crash()
 		n1.Restart()
 		w.RunFor(time.Millisecond)
-		if boots != 2 || size != 0 || !isPathError(sizeErr, "size", "/d/x", fs.ErrClosed) {
-			tt.Errorf("after %d boots, Size of the crashed-away handle = %d, %#v; want 0 and a *fs.PathError size /d/x fs.ErrClosed",
+		if boots != 2 || size != 0 || !isPathError(sizeErr, "Size", "/d/x", fs.ErrClosed) {
+			tt.Errorf("after %d boots, Size of the crashed-away handle = %d, %#v; want 0 and a *fs.PathError Size /d/x fs.ErrClosed",
 				boots, size, sizeErr)
 		}
 	})
+}
+
+// SIM-040: the FS of a Volume and its files panic once the run of their Sim has ended, as the
+// Sim's own methods do.
+func TestVolumeAfterRunPanics(t *testing.T) {
+	var fsys filestore.FS
+	var f filestore.File
+	sim.Simulate(t, fullTrace(1), func(s *sim.Sim) {
+		s.Node("n1", func(*lockstep.System) {
+			fsys = s.Volume("n1")
+			f = mustFile(fsys.Create("a"))
+			must(f.Close())
+		})
+		s.World().RunFor(time.Millisecond)
+	})
+	const want = "lockstep: sim: Sim used after its run ended"
+	expectPanic(t, want, func() { _, _ = fsys.Open("a") })
+	expectPanic(t, want, func() { _, _ = f.Size() })
 }
 
 // The markers the misuse scenarios print when the refused call returned the expected error.
@@ -176,7 +198,7 @@ var (
 	})
 )
 
-// PER-510, AT-PER-45: a volume used from another node's event, or outside any node event, fails
+// PER-510, the Volume part of AT-PER-45: a volume used from another node's event, or outside any node event, fails
 // the seed with check lockstep/misuse after a lockstep.misuse record, and the call returns a
 // *fs.PathError with fs.ErrPermission without touching the volume.
 func TestPER510VolumeMisuse(t *testing.T) {
@@ -226,13 +248,22 @@ func writeSync(s *sim.Sim) func() (any, error) {
 }
 
 // PER-530, PER-520: an inline run's completion event comes the run's sampled disk latency after
-// the run: WriteAt 1ms plus Sync 2ms, with Size adding nothing. Without latency it comes at the
-// run's time, and Volume calls outside inline runs add nothing.
+// the run: WriteAt 1ms plus Sync 2ms, with Size adding nothing. With every class set, Create and
+// Close add 4ms each and Size still nothing, so a Size that sampled any class would move the
+// completion. Without latency it comes at the run's time, and Volume calls outside inline runs
+// add nothing.
 func TestPER530InlineLatency(t *testing.T) {
 	slow := fullTrace(3)
 	slow.Disk.Latency = simdisk.LatencyConfig{
 		Write: simdisk.Latency{Base: time.Millisecond},
 		Sync:  simdisk.Latency{Base: 2 * time.Millisecond},
+	}
+	every := fullTrace(3)
+	every.Disk.Latency = simdisk.LatencyConfig{
+		Meta:  simdisk.Latency{Base: 4 * time.Millisecond},
+		Read:  simdisk.Latency{Base: 8 * time.Millisecond},
+		Write: simdisk.Latency{Base: 16 * time.Millisecond},
+		Sync:  simdisk.Latency{Base: 32 * time.Millisecond},
 	}
 	for _, tc := range []struct {
 		name  string
@@ -242,6 +273,7 @@ func TestPER530InlineLatency(t *testing.T) {
 		want  time.Duration
 	}{
 		{"write and sync", slow, false, writeSync, 3 * time.Millisecond},
+		{"every class", every, false, writeSync, 56 * time.Millisecond}, // 4 + 16 + 32 + 4
 		{"zero latency", fullTrace(3), false, writeSync, 0},
 		{"setup calls", slow, true, func(*sim.Sim) func() (any, error) { return nil }, 0},
 	} {
@@ -326,7 +358,7 @@ var (
 // leakFile matches the leak failure of file /a of n1's /user/a in incarnation 1.
 var leakFile = regexp.MustCompile(`^lockstep: leak: lockstep://n1/user/a#[0-9a-f]+ \(incarnation 1\): file /a on node n1 still open$`)
 
-// PER-540, SIM-290 (c), AT-PER-48: a file still open when the incarnation that opened it ends by
+// PER-540, SIM-290 (c), the Volume part of AT-PER-48: a file still open when the incarnation that opened it ends by
 // restart or stop fails the seed with check lockstep/leak, files in path order, after the
 // lockstep.leak records of every such file.
 func TestPER540FileLeak(t *testing.T) {

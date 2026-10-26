@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/hmdsefi/lockstep/persist"
@@ -29,14 +30,15 @@ const (
 )
 
 var (
-	// ErrCorrupt: data in a file fails its checksum or does not parse.
+	// ErrCorrupt is returned when data in a file fails its checksum or does not parse.
 	ErrCorrupt = errors.New("filestore: corrupt data")
-	// ErrFormat: the store directory has a FORMAT file this version does not support.
+	// ErrFormat is returned when the store directory has a FORMAT file this version does not
+	// support.
 	ErrFormat = errors.New("filestore: unsupported store format")
-	// ErrUnusable: a persistence ID whose repair after a failed write or commit failed too; the
-	// Store refuses every later call for it.
+	// ErrUnusable is returned by every call for a persistence ID after the repair that followed a
+	// failed write or commit of that ID failed too.
 	ErrUnusable = errors.New("filestore: persistence id unusable after a failed repair")
-	// ErrTooLarge: a batch or snapshot that does not fit in one record.
+	// ErrTooLarge is returned when a batch or a snapshot does not fit in one record.
 	ErrTooLarge = errors.New("filestore: record too large")
 )
 
@@ -70,6 +72,9 @@ func WithSegmentSize(bytes int64) Option {
 // Store keeps the events and snapshots of many persistence IDs in files below one root
 // directory. It is safe for concurrent use: calls for one ID run one after another, calls for
 // different IDs may overlap.
+//
+// Use one Store per directory. Two Stores on the same directory, in one process or in two, are
+// not detected and can overwrite each other's committed events.
 type Store struct {
 	fs  FS
 	set settings
@@ -91,11 +96,15 @@ type idLock struct {
 }
 
 // Open returns a Store on directory dir of the operating system's file system, creating dir and
-// any missing parent if needed. It prepares the store before returning: it creates the journal
-// and snapshots directories and the FORMAT file, or checks an existing FORMAT file.
+// any missing parent if needed. It syncs the parent of every directory it creates, so that dir
+// survives a machine crash. It prepares the store before returning: it creates the journal and
+// snapshots directories and the FORMAT file, or checks an existing FORMAT file.
+//
+// Use one Store per directory. Two Stores on the same directory, in one process or in two, are
+// not detected and can overwrite each other's committed events.
 func Open(dir string, opts ...Option) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the store's directories are world-readable by design
-		return nil, fmt.Errorf("filestore: %w", err)
+	if err := makeRoot(dir); err != nil {
+		return nil, err
 	}
 	s := New(&osFS{root: dir}, opts...)
 	if err := s.ensureInit(); err != nil {
@@ -106,12 +115,49 @@ func Open(dir string, opts ...Option) (*Store, error) {
 
 // New returns a Store on fsys. New does no I/O: the store is prepared by its first operation,
 // and by the next one if that fails.
+//
+// Use one Store per directory. Two Stores on the same directory, in one process or in two, are
+// not detected and can overwrite each other's committed events.
 func New(fsys FS, opts ...Option) *Store {
 	s := &Store{fs: fsys, set: settings{segmentSize: DefaultSegmentSize}}
 	for _, o := range opts {
 		o(&s.set)
 	}
 	return s
+}
+
+// syncDirOS syncs a directory of the operating system's file system. Tests replace it to see
+// which directories Open syncs.
+var syncDirOS = syncDir
+
+// makeRoot creates dir and every missing parent (PER-430). os.MkdirAll alone makes the new
+// directories visible but not durable: an entry is durable only once its parent directory is
+// synced. So makeRoot finds the directories that do not exist yet, creates them, and then syncs
+// the parent of each one, deepest first. Without that, a machine crash after the first commit
+// could lose dir, with every acknowledged event in it. A directory that already exists is not
+// synced again.
+func makeRoot(dir string) error {
+	var created []string // the directories MkdirAll creates, deepest first
+	for p := filepath.Clean(dir); ; {
+		if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+			break // p exists, or MkdirAll reports why it cannot be created
+		}
+		created = append(created, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the store's directories are world-readable by design
+		return fmt.Errorf("filestore: %w", err)
+	}
+	for _, d := range created {
+		if err := syncDirOS(filepath.Dir(d)); err != nil {
+			return fmt.Errorf("filestore: %w", err)
+		}
+	}
+	return nil
 }
 
 // ensureInit prepares the store once: it creates the journal and snapshots directories, checks

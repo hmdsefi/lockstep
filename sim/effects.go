@@ -72,11 +72,11 @@ func (s *Sim) HandleEffect(name string, h func(c EffectCall) EffectResult) {
 }
 
 // Start is the engine's Effects. For an inline internal effect it runs req.Run in a node event of
-// its own (startInline). For any other effect it never calls req.Run (EFF-400): it calls the Sim's handler
-// for req.Name inside this call, so inside the turn that called Do, and schedules the handler's
-// result as one lockstep/effect node event after the handler's latency, which calls done
-// (EFF-430). The Cancel it returns cancels that event. The handler runs with no runtime lock
-// held, so it may call HandleEffect, sim.Send and the kernel and simnet APIs (EFF-470).
+// its own (startInline). For any other effect it never calls req.Run (EFF-400): it calls the Sim's
+// handler for req.Name inside this call, so inside the turn that called Do, and schedules the
+// handler's result as one lockstep/effect node event after the handler's latency, which calls done
+// (EFF-430). The Cancel it returns cancels that event. The handler runs with no runtime lock held,
+// so it may call HandleEffect, sim.Send and the kernel and simnet APIs (EFF-470).
 //
 // Start schedules nothing and returns a Cancel that reports true the first time it is called,
 // and done is never called, when there is no handler (EFF-450: the failure goes to the

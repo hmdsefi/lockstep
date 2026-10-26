@@ -44,6 +44,8 @@ type InternalEffect struct {
 
 // Signal enqueues sig, a lockstep.Signal, on the system queue of the live local actor at to on
 // sys (a *lockstep.System), as SUP delivers signals, and reports true; it reports false and
-// does nothing if no actor at to is alive. Implemented by ACT (registry) and SUP (signal
-// delivery).
+// does nothing if no actor at to is alive. The receiver's watches and subscriptions do not
+// filter sig (a lockstep.Terminated for an address the actor never watched still reaches
+// Signal), and sig does not consume a watch. Outside Running, sig is kept or dropped as SUP does
+// for unfiltered signals. Implemented by ACT (registry) and SUP (signal delivery).
 var Signal func(sys any, to engine.Address, sig any) bool
