@@ -21,7 +21,8 @@ import (
 type System struct {
 	eng engine.Engine
 	// prod is the production engine whose bundle eng is, when New built the system (SCH-030);
-	// nil for a system built on a given bundle (ACT-015). Only tests read it.
+	// nil for a system built on a given bundle (ACT-015). The watchdog reads its running turns
+	// (OVL-500).
 	prod        *prodengine.Engine
 	node        string
 	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
@@ -107,7 +108,11 @@ func (*System) sender()  {}
 // New builds a system on a pool of worker goroutines that run actor turns, creates its two
 // guardians and returns it. Turns of different actors can run in parallel on different workers;
 // the turns of one actor never overlap. WithWorkers, WithThroughput and WithEffectPool configure
-// the pools. New panics with an error wrapping ErrInvalidOption if an option is nil or invalid.
+// the pools. The system also samples the live heap for memory admission (WithAdmission) and logs
+// each turn that runs for at least the watchdog timeout at level Error, with the stack of the
+// goroutine running it. The watchdog is on by default, with DefaultWatchdogTimeout; WithWatchdog
+// sets the timeout or turns it off. New panics with an error wrapping ErrInvalidOption if an
+// option is nil or invalid.
 func New(opts ...Option) *System {
 	// The engine needs the node name and the pool settings before it starts its workers, so
 	// validate the options first: an invalid option panics before any goroutine exists.
