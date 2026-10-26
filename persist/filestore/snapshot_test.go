@@ -283,6 +283,36 @@ func TestPER400ParentSyncAfterFailedSave(t *testing.T) {
 	}
 }
 
+// PER-400: a Store that did not create the ID's snapshot directory (an earlier process did, and
+// may have died before syncing snapshots) syncs snapshots in its first successful Save only.
+func TestPER400ParentSyncOfFreshStore(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSave(t, first, "c-1", 1)
+
+	r := &recFS{FS: &osFS{root: dir}}
+	t.Cleanup(func() { r.checkClosed(t) })
+	s := New(r)
+	initStore(t, s)
+	m := r.mark()
+	mustSave(t, s, "c-1", 2)
+	if got := countOf(r.since(m), "SyncDir "+snapshotsDir); got != 1 {
+		t.Fatalf("first save of a fresh Store synced %q %d times", snapshotsDir, got)
+	}
+	m = r.mark()
+	mustSave(t, s, "c-1", 3)
+	if got := countOf(r.since(m), "SyncDir "+snapshotsDir); got != 0 {
+		t.Fatalf("second save synced %q %d times", snapshotsDir, got)
+	}
+	mustSave(t, s, "c-2", 1) // another ID has its own state
+	if got := countOf(r.since(m), "SyncDir "+snapshotsDir); got != 1 {
+		t.Fatalf("first save of another ID synced %q %d times", snapshotsDir, got)
+	}
+}
+
 func countOf(calls []string, call string) int {
 	n := 0
 	for _, c := range calls {
@@ -300,10 +330,14 @@ func TestPER400SaveRejects(t *testing.T) {
 	if !errors.Is(err, persist.ErrInvalidID) {
 		t.Fatalf("Save(\"\") = %v, want ErrInvalidID", err)
 	}
-	big := persist.Snapshot{Seq: 1, Data: make([]byte, MaxSnapshotSize)}
+	// MaxSnapshotSize-8 bytes of data fit, one more does not; the zero pages are never touched.
+	big := persist.Snapshot{Seq: 1, Data: make([]byte, MaxSnapshotSize-7)}
 	err = s.Save(ctx, "c-1", big)
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("Save(too large) = %v, want ErrTooLarge", err)
+	}
+	if want := "filestore: save snapshot c-1 seq 1: snapshot of "; !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("Save(too large) error = %q, want prefix %q", err, want)
 	}
 	if got := names(t, dir, snapDir("c-1")); got != nil {
 		t.Fatalf("a rejected snapshot created %q", got)
