@@ -250,6 +250,7 @@ var contractSteps = []contractStep{
 
 		sdata := []byte("snap")
 		c.expectErr("Save", c.s.Save(ctx, "c-1", persist.Snapshot{Seq: 1, Data: sdata}), nil)
+		c.after()
 		sdata[0] = 'X'
 		sn, ok, err := c.load(ctx, "c-1")
 		c.expectErr("Load", err, nil)
@@ -292,6 +293,8 @@ var contractSteps = []contractStep{
 		c.expectErr("Load", err, nil)
 		c.expect(!ok, "Load found a snapshot after all were deleted")
 	}},
+	// The goroutines call the Store directly: the open-file check of c.after is not safe while
+	// other calls run, so this step checks for open files once, at the end.
 	{"8 goroutines write 8 IDs", func(c *contract) {
 		const ids, rounds = 8, 6
 		var wg sync.WaitGroup

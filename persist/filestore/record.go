@@ -53,7 +53,7 @@ func encodeJournalRecord(events []persist.Event) ([]byte, error) {
 // returns an error wrapping ErrTooLarge if the payload would exceed MaxSnapshotSize.
 func encodeSnapshotRecord(snap persist.Snapshot) ([]byte, error) {
 	if int64(len(snap.Data))+snapshotFixed > MaxSnapshotSize {
-		return nil, fmt.Errorf("filestore: snapshot of %d bytes exceeds %d bytes: %w",
+		return nil, fmt.Errorf("snapshot of %d bytes exceeds %d bytes: %w",
 			len(snap.Data), MaxSnapshotSize-snapshotFixed, ErrTooLarge)
 	}
 	rec := make([]byte, headerSize, headerSize+snapshotFixed+len(snap.Data))

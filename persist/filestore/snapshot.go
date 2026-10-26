@@ -18,8 +18,8 @@ import (
 func snapDir(id string) string { return snapshotsDir + "/" + idDirName(id) }
 
 // Save stores snap durably as one file named after snap.Seq. A snapshot with the same Seq is
-// replaced. Stale temporary files of earlier failed saves are removed. A failed Save leaves no
-// temporary file behind. It returns an error wrapping fs.ErrInvalid if snap.Seq is 0 and one
+// replaced. Stale temporary files of earlier failed saves are removed. A failed Save removes its
+// temporary file. It returns an error wrapping fs.ErrInvalid if snap.Seq is 0 and one
 // wrapping ErrTooLarge if the snapshot does not fit in one record.
 func (s *Store) Save(ctx context.Context, id string, snap persist.Snapshot) error {
 	st, unlock, err := s.begin(ctx, id)
@@ -33,9 +33,10 @@ func (s *Store) Save(ctx context.Context, id string, snap persist.Snapshot) erro
 	return nil
 }
 
-// save runs PER-400. The snapshots directory has to be synced after the ID's directory was
-// created, also if the Save that created it failed, so the flag that says so lives in the ID's
-// state until a sync succeeds.
+// save runs PER-400. The ID's directory entry in the snapshots directory is durable only after a
+// SyncDir of snapshots. This Store may not have created the directory (an earlier process or a
+// failed Save may have), so it syncs snapshots in the first successful Save of the ID, not only
+// when it saw the directory missing; the ID's state remembers that the sync succeeded.
 func (s *Store) save(st *idState, id string, snap persist.Snapshot) (err error) {
 	if snap.Seq < 1 {
 		return fmt.Errorf("seq must be at least 1: %w", fs.ErrInvalid)
@@ -50,7 +51,6 @@ func (s *Store) save(st *idState, id string, snap persist.Snapshot) (err error) 
 	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
 		infos = nil
-		st.snapDirUnsynced = true
 	default:
 		return err
 	}
@@ -80,11 +80,11 @@ func (s *Store) save(st *idState, id string, snap persist.Snapshot) (err error) 
 	if err := s.fs.SyncDir(dir); err != nil {
 		return err
 	}
-	if st.snapDirUnsynced {
+	if !st.snapDirSynced {
 		if err := s.fs.SyncDir(snapshotsDir); err != nil {
 			return err
 		}
-		st.snapDirUnsynced = false
+		st.snapDirSynced = true
 	}
 	return nil
 }
@@ -179,7 +179,7 @@ func readFull(f File, buf []byte) error {
 }
 
 // DeleteSnapshots removes the snapshots of id with a sequence number of at most to, oldest
-// first, and then syncs the ID's directory.
+// first, and syncs the ID's directory if it removed any.
 func (s *Store) DeleteSnapshots(ctx context.Context, id string, to uint64) error {
 	_, unlock, err := s.begin(ctx, id)
 	if err != nil {
