@@ -415,8 +415,15 @@ type Done struct{}
 
 // AT-MSG-07: MSG-100. A Stopped hook sends during the shutdown; the collector, spawned before it,
 // stops after it and receives the message.
+//
+// The sweep asks the collector to stop only after the sender's stop has completed, so Done{} is in
+// the collector's mailbox before the stop request. A turn handles system messages before user
+// messages, though: if the guardians' turn ran on another worker before the collector's turn
+// popped Done{}, the stop would come first and drain Done{} as a dead letter (MBX-160). With one
+// worker the collector, scheduled by the Send, runs before the guardians, scheduled by the
+// sender's stop notice after it.
 func TestATMSG07SendDuringShutdown(t *testing.T) {
-	sys := newLocalSystem(t)
+	sys := newLocalSystem(t, WithWorkers(1))
 	received := make(chan any, 1)
 	collector, err := Spawn(sys, "collector", actorOf[any](&lifeActor[any]{receive: func(_ *Context[any], m any) {
 		received <- m
