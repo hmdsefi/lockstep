@@ -72,6 +72,9 @@ type Store struct {
 
 	locksMu sync.Mutex
 	locks   map[string]*idLock
+
+	statesMu sync.Mutex
+	states   map[string]*idState // only indexed, never ranged
 }
 
 // idLock is the lock of one persistence ID. refs counts the callers that hold it or wait for it.

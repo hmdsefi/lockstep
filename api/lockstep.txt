@@ -238,6 +238,9 @@ pkg github.com/hmdsefi/lockstep/persist/filestore, const MaxSnapshotSize ideal-i
 pkg github.com/hmdsefi/lockstep/persist/filestore, func New(FS, ...Option) *Store
 pkg github.com/hmdsefi/lockstep/persist/filestore, func Open(string, ...Option) (*Store, error)
 pkg github.com/hmdsefi/lockstep/persist/filestore, func WithSegmentSize(int64) Option
+pkg github.com/hmdsefi/lockstep/persist/filestore, method (*Store) Commit(context.Context, string) error
+pkg github.com/hmdsefi/lockstep/persist/filestore, method (*Store) Recover(context.Context, string) (persist.Bounds, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, method (*Store) Write(context.Context, string, []persist.Event) error
 pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface { Create, MkdirAll, Open, ReadDir, Remove, Rename, SyncDir }
 pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, Create(string) (File, error)
 pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, MkdirAll(string) error

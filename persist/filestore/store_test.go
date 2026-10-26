@@ -15,133 +15,6 @@ import (
 	"time"
 )
 
-// recFS wraps an FS, records every call and counts the files left open. A call fails with the
-// error failOn returns for its description, if failOn is set.
-type recFS struct {
-	FS
-	mu     sync.Mutex
-	ops    []string
-	open   int
-	failOn func(op string) error
-}
-
-func (r *recFS) rec(op string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ops = append(r.ops, op)
-	if r.failOn != nil {
-		return r.failOn(op)
-	}
-	return nil
-}
-
-func (r *recFS) calls() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.ops...)
-}
-
-func (r *recFS) openFiles() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.open
-}
-
-func (r *recFS) wrap(op string, f File, err error) (File, error) {
-	if err != nil {
-		return nil, err
-	}
-	r.mu.Lock()
-	r.open++
-	r.mu.Unlock()
-	return &recFile{File: f, r: r, name: op}, nil
-}
-
-func (r *recFS) Create(name string) (File, error) {
-	if err := r.rec("Create " + name); err != nil {
-		return nil, err
-	}
-	f, err := r.FS.Create(name)
-	return r.wrap(name, f, err)
-}
-
-func (r *recFS) Open(name string) (File, error) {
-	if err := r.rec("Open " + name); err != nil {
-		return nil, err
-	}
-	f, err := r.FS.Open(name)
-	return r.wrap(name, f, err)
-}
-
-func (r *recFS) Remove(name string) error {
-	if err := r.rec("Remove " + name); err != nil {
-		return err
-	}
-	return r.FS.Remove(name)
-}
-
-func (r *recFS) Rename(oldname, newname string) error {
-	if err := r.rec("Rename " + oldname + " " + newname); err != nil {
-		return err
-	}
-	return r.FS.Rename(oldname, newname)
-}
-
-func (r *recFS) MkdirAll(name string) error {
-	if err := r.rec("MkdirAll " + name); err != nil {
-		return err
-	}
-	return r.FS.MkdirAll(name)
-}
-
-func (r *recFS) ReadDir(name string) ([]Info, error) {
-	if err := r.rec("ReadDir " + name); err != nil {
-		return nil, err
-	}
-	return r.FS.ReadDir(name)
-}
-
-func (r *recFS) SyncDir(name string) error {
-	if err := r.rec("SyncDir " + name); err != nil {
-		return err
-	}
-	return r.FS.SyncDir(name)
-}
-
-type recFile struct {
-	File
-	r    *recFS
-	name string
-}
-
-func (f *recFile) WriteAt(p []byte, off int64) (int, error) {
-	if err := f.r.rec("WriteAt " + f.name + " " + string(p)); err != nil {
-		return 0, err
-	}
-	return f.File.WriteAt(p, off)
-}
-
-func (f *recFile) Sync() error {
-	if err := f.r.rec("Sync " + f.name); err != nil {
-		return err
-	}
-	return f.File.Sync()
-}
-
-func (f *recFile) Close() error {
-	_ = f.r.rec("Close " + f.name)
-	f.r.mu.Lock()
-	f.r.open--
-	f.r.mu.Unlock()
-	return f.File.Close()
-}
-
-func newRecFS(t *testing.T) (*recFS, string) {
-	t.Helper()
-	dir := t.TempDir()
-	return &recFS{FS: &osFS{root: dir}}, dir
-}
-
 func TestPER320Init(t *testing.T) {
 	const format = "lockstep-filestore 1\n"
 
@@ -198,7 +71,8 @@ func TestPER320Init(t *testing.T) {
 		if err := New(r).ensureInit(); err != nil {
 			t.Fatalf("ensureInit: %v", err)
 		}
-		want := []string{"MkdirAll journal", "MkdirAll snapshots", "Open FORMAT", "Close FORMAT", "SyncDir ."}
+		want := []string{"MkdirAll journal", "MkdirAll snapshots", "Open FORMAT", "Size FORMAT",
+			"ReadAt FORMAT 0 21", "Close FORMAT", "SyncDir ."}
 		if got := r.calls(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("calls =\n%q\nwant\n%q", got, want)
 		}
