@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"bytes"
+	"log"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -32,11 +33,12 @@ func (b *lockedBuffer) String() string {
 }
 
 // setDefaultLogger makes slog.Default() write JSON lines to the returned buffer until the test
-// ends.
+// ends. It restores slog's default logger and the log package's writer and flags, which
+// slog.SetDefault redirects.
 func setDefaultLogger(t *testing.T) *lockedBuffer {
 	t.Helper()
 	buf := &lockedBuffer{}
-	old := slog.Default()
+	old, oldWriter, oldFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{
 		// Drop the time so the line is the same in every run.
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -46,7 +48,11 @@ func setDefaultLogger(t *testing.T) *lockedBuffer {
 			return a
 		},
 	})))
-	t.Cleanup(func() { slog.SetDefault(old) })
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
 	return buf
 }
 

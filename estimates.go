@@ -80,14 +80,17 @@ func (s *System) sizeFor(to Address, msg any) int64 {
 
 // measure makes the actor's MemSize the incarnation's state bytes (OVL-420), as a guarded call in
 // the in-turn window. A failure in MemSize fails the incarnation as a failure of Receive would
-// (source receive). Only a Running incarnation is measured, and only while estimates are on.
+// (source receive). Only a Running incarnation is measured, and only while estimates are on. A
+// stuck MemSize only has its mark cleared (OVL-530).
 func (c *cell[M]) measure() {
 	c.measured = c.handled
 	if c.memSizer == nil || c.state != supervise.Running {
 		return
 	}
 	var n int
-	if failed, err := c.callGuarded(func() { n = c.memSizer.MemSize() }); failed {
+	failed, err := c.callGuarded(func() { n = c.memSizer.MemSize() })
+	c.unmark()
+	if failed {
 		c.handlerFailed(supervise.InReceive, err)
 		return
 	}

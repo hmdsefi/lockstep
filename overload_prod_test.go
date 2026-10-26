@@ -6,6 +6,8 @@ package lockstep
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"log/slog"
 	"math"
 	"runtime"
@@ -42,7 +44,14 @@ type memFeed struct {
 
 	block   atomic.Bool   // the next call blocks
 	entered chan struct{} // receives once a blocked call has started
-	release chan struct{} // closed to let the blocked call return
+	release chan struct{} // closed by unblock to let the blocked call return
+	once    sync.Once
+}
+
+// unblock disarms the block and lets a blocked call return. It may be called more than once.
+func (f *memFeed) unblock() {
+	f.block.Store(false)
+	f.once.Do(func() { close(f.release) })
 }
 
 // newMemFeed installs a feed serving live and limit as the sampler's read hook until the test
@@ -215,12 +224,19 @@ func (c *slogCapture) WithGroup(string) slog.Handler { return c }
 // captureDefaultLogger makes slog's default logger one that captures every record, until the test
 // ends, and returns a function that lists the records so far. A system takes the default logger
 // when it is built, so call it before New and before the system's cleanup is registered.
+// slog.SetDefault with a handler of its own also sends the log package's output to that handler
+// and clears its flags, and setting the old logger back does not undo that, so the cleanup also
+// restores the log package's writer and flags.
 func captureDefaultLogger(t *testing.T) func() []slogRecord {
 	t.Helper()
 	c := &slogCapture{mu: new(sync.Mutex), recs: new([]slogRecord)}
-	old := slog.Default()
+	old, oldWriter, oldFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(c))
-	t.Cleanup(func() { slog.SetDefault(old) })
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+	})
 	return func() []slogRecord {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -265,8 +281,10 @@ func TestATOVL30AdmissionOff(t *testing.T) {
 	feed := newMemFeed(t, 0, 0)
 	feed.real = true
 	old := debug.SetMemoryLimit(int64(max(heapLive(t)/2, 1))) //nolint:gosec // half a heap size is far below math.MaxInt64
+	restore := func() { debug.SetMemoryLimit(old) }
+	t.Cleanup(restore) // whatever happens next
 	sys := newLocalSystem(t, WithAdmission(0, 0))
-	t.Cleanup(func() { debug.SetMemoryLimit(old) })
+	t.Cleanup(restore) // before the shutdown, which a low limit slows
 	if _, err := Spawn(sys, "a", idle[int]()); err != nil {
 		t.Fatalf("Spawn = %v, want nil", err)
 	}
@@ -285,6 +303,13 @@ func TestATOVL30AdmissionOff(t *testing.T) {
 // record.
 func TestATOVL32AdmissionLogs(t *testing.T) {
 	verifyNoneAtEnd(t)
+	writer, flags := log.Writer(), log.Flags()
+	t.Cleanup(func() { // runs after captureDefaultLogger's cleanup
+		if log.Writer() != writer || log.Flags() != flags {
+			t.Errorf("the log package writes to %T with flags %d after the test, want %T with flags %d",
+				log.Writer(), log.Flags(), writer, flags)
+		}
+	})
 	records := captureDefaultLogger(t)
 	feed := newMemFeed(t, 2100, noMemoryLimit)
 	sys := newLocalSystem(t, WithNodeName("n1"), WithAdmission(2000, 1000))
@@ -317,6 +342,42 @@ func TestATOVL32AdmissionLogs(t *testing.T) {
 		if !slices.EqualFunc(g.attrs, w.attrs, slog.Attr.Equal) {
 			t.Errorf("record %d attributes = %v, want %v", i, g.attrs, w.attrs)
 		}
+	}
+}
+
+// goroutineWarnings returns the records of OBS-060's "Goroutines above bound" event.
+func goroutineWarnings(recs []slogRecord) []slogRecord {
+	return slices.DeleteFunc(slices.Clone(recs), func(r slogRecord) bool { return r.msg != "goroutine count above bound" })
+}
+
+// OVL-600, OVL-610, OVL-620: New starts a goroutine monitor with the bound of WithGoroutineWarning
+// that logs through the system's logger, slog's default when New runs, with the node. A count
+// above the bound that stays there is warned about once, on the tenth tick.
+func TestGoroutineWarningInNew(t *testing.T) {
+	verifyNoneAtEnd(t)
+	records := captureDefaultLogger(t)
+	counts := &atomic.Int64{}
+	counts.Store(800)
+	t.Cleanup(overload.SetNumGoroutine(func() int { return int(counts.Load()) }))
+	t.Cleanup(overload.SetGoroutineProfile(func(w io.Writer) error {
+		_, err := io.WriteString(w, "goroutine profile: total 800\n800 @ 0x1\n#\t0x1\tmain.busy+0x1\t/src/main.go:1\n")
+		return err
+	}))
+	sys := newLocalSystem(t, WithNodeName("n1"), WithGoroutineWarning(500))
+	waitUntil(t, "the goroutine warning", func() bool { return len(goroutineWarnings(records())) > 0 })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sys.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown = %v", err)
+	}
+	got := goroutineWarnings(records())
+	want := slogRecord{slog.LevelWarn, "goroutine count above bound", []slog.Attr{
+		slog.String("node", "n1"), slog.Int("goroutines", 800), slog.Int("bound", 500),
+		slog.String("summary", "800 main.busy")}}
+	if len(got) != 1 || got[0].level != want.level || got[0].msg != want.msg ||
+		!slices.EqualFunc(got[0].attrs, want.attrs, slog.Attr.Equal) {
+		t.Errorf("warnings = %+v, want exactly %+v", got, want)
 	}
 }
 
@@ -428,6 +489,7 @@ func TestOVL700SamplerStopsAtShutdown(t *testing.T) {
 			clk = &sampleClock{Clock: e.Clock, pending: map[*struct{}]bool{}}
 			e.Clock = clk
 		})
+		t.Cleanup(feed.unblock) // before the system's cleanup: a failed wait leaves no tick blocked
 		start()
 		feed.block.Store(true)
 		select {
@@ -443,13 +505,15 @@ func TestOVL700SamplerStopsAtShutdown(t *testing.T) {
 		}()
 		// Shutdown cannot return while the tick holds its worker: the engine's Stop waits for it.
 		waitUntil(t, "actors stopped", sys.shut.over.Load)
-		time.Sleep(20 * time.Millisecond) // let Shutdown reach the engine's Stop
+		// Give Shutdown time to reach the engine's Stop. Shutdown cannot return before the tick
+		// ends whatever the timing, so a short sleep can only weaken the check below, never fail it.
+		time.Sleep(20 * time.Millisecond)
 		select {
 		case err := <-done:
 			t.Fatalf("Shutdown returned %v while a tick was running", err)
 		default:
 		}
-		close(feed.release)
+		feed.unblock()
 		select {
 		case err := <-done:
 			if err != nil {

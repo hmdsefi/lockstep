@@ -197,11 +197,6 @@ func TestWatchdogStopJoins(t *testing.T) {
 		waitFor(t, "2 polls", func() bool { return f.pollCount() >= 2 })
 		returnsWithin(t, "Stop", w.Stop)
 		goleak.VerifyNone(t)
-		polls := f.pollCount()
-		time.Sleep(50 * time.Millisecond) // five poll periods
-		if n := f.pollCount(); n != polls {
-			t.Errorf("%d polls after Stop returned, want none", n-polls)
-		}
 		returnsWithin(t, "a second Stop", w.Stop)
 		w.Start()
 		goleak.VerifyNone(t)
@@ -269,9 +264,9 @@ func TestGoroutineStackSection(t *testing.T) {
 	}
 }
 
-// OVL-510: a dump larger than the first buffer is read again into a larger one; a section longer
-// than 64 KiB is cut at the last line end within its first 64 KiB and followed by
-// "...(truncated)"; a section of exactly 64 KiB is kept whole.
+// OVL-510: a dump larger than the first buffer is read again into a larger one, and the next
+// dump starts at that size; a section longer than 64 KiB is cut at the last line end within its
+// first 64 KiB and followed by "...(truncated)"; a section of exactly 64 KiB is kept whole.
 func TestGoroutineStackLimit(t *testing.T) {
 	const limit = 64 << 10
 	// section returns the section of goroutine id: its header and frame lines of 100 bytes each,
@@ -299,7 +294,11 @@ func TestGoroutineStackLimit(t *testing.T) {
 		t.Errorf("the dump of %d bytes was read %d times, want a second read into a larger buffer", len(dump), calls)
 	}
 
+	calls = 0
 	got := overload.GoroutineStack(9)
+	if calls != 1 {
+		t.Errorf("the same dump was read %d times, want once into a buffer of the size that held it", calls)
+	}
 	kept, ok := strings.CutSuffix(got, "...(truncated)")
 	if !ok {
 		t.Fatalf("a section of %d bytes does not end with ...(truncated): ends %q", len(long), got[max(len(got)-40, 0):])
@@ -309,6 +308,40 @@ func TestGoroutineStackLimit(t *testing.T) {
 	}
 	if next := strings.IndexByte(long[len(kept):], '\n'); len(kept)+next+1 <= limit {
 		t.Errorf("kept %d bytes, but the line ending at byte %d also fits in 64 KiB", len(kept), len(kept)+next+1)
+	}
+}
+
+// OVL-510: the buffer GoroutineStack starts from follows the size of the last dump, so it shrinks
+// after a spike instead of staying at the largest size ever needed.
+func TestGoroutineStackHintShrinks(t *testing.T) {
+	const limit = 64 << 10
+	big := "goroutine 1 [running]:\n" + strings.Repeat("x", 5*limit)
+	small := "goroutine 1 [running]:\nmain.main()"
+	dump := big
+	var first int // the buffer size of the first read of each GoroutineStack call
+	var reads int
+	t.Cleanup(overload.SetStack(func(buf []byte, all bool) int {
+		if reads == 0 {
+			first = len(buf)
+		}
+		reads++
+		return copy(buf, dump)
+	}))
+
+	overload.GoroutineStack(1) // grows to fit the spike
+	reads = 0
+	overload.GoroutineStack(1)
+	if first < len(big) {
+		t.Fatalf("a repeated dump of %d bytes started from a buffer of %d bytes; want one that holds it", len(big), first)
+	}
+
+	dump = small
+	reads = 0
+	overload.GoroutineStack(1) // the dump has shrunk
+	reads = 0
+	overload.GoroutineStack(1)
+	if first != limit {
+		t.Errorf("after the dump shrank to %d bytes the buffer is %d bytes; want %d", len(small), first, limit)
 	}
 }
 

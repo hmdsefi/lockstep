@@ -47,10 +47,12 @@ type Sampler struct {
 	log      *slog.Logger
 	mon      *Monitor
 
-	// hyst and samples belong to the sampling callbacks, which the engine clock never overlaps.
+	// hyst, samples and ticks belong to the sampling callbacks, which the engine clock never
+	// overlaps.
 	hyst    Hysteresis
 	on      bool
 	samples [2]metrics.Sample
+	ticks   int
 
 	// enabled reports whether the last sample found thresholds in force (OVL-310). It is written by
 	// the sampling callbacks and read from any goroutine.
@@ -73,8 +75,8 @@ func NewSampler(g *Gate, clock engine.Clock, high, low uint64, explicit bool, lo
 	return s
 }
 
-// Start takes the first sample and arms the first tick (OVL-300). Calling it after Stop does
-// nothing.
+// Start takes the first sample and arms the first tick (OVL-300). Call it once: a second call
+// arms a second chain of ticks. Calling it after Stop does nothing.
 func (s *Sampler) Start() {
 	if s.isStopped() {
 		return
@@ -122,6 +124,10 @@ func (s *Sampler) tick() {
 		return
 	}
 	s.sample()
+	s.ticks++
+	if s.mon != nil && s.ticks%monitorEvery == 0 {
+		s.mon.Sample() // OVL-600: every 10th tick, whether or not admission is on
+	}
 	s.arm()
 }
 
@@ -137,11 +143,15 @@ func (s *Sampler) sample() {
 	}
 	readMetrics(s.samples[:])
 	liveVal, limitVal := s.samples[0].Value, s.samples[1].Value
+	var live uint64 // stays 0 when the live heap is unreadable
+	if liveVal.Kind() == metrics.KindUint64 {
+		live = liveVal.Uint64()
+	}
 	if liveVal.Kind() != metrics.KindUint64 || limitVal.Kind() != metrics.KindUint64 {
-		s.switchOff(0) // OVL-330: a metric the runtime cannot read keeps the source off
+		s.switchOff(live) // OVL-330: a metric the runtime cannot read keeps the source off
 		return
 	}
-	live, limit := liveVal.Uint64(), limitVal.Uint64()
+	limit := limitVal.Uint64()
 
 	high, low := s.high, s.low
 	if !s.explicit {
@@ -159,12 +169,14 @@ func (s *Sampler) sample() {
 	}
 }
 
-// switchOff turns the memory source off, with no thresholds in force, when it is on.
+// switchOff turns the memory source off, with no thresholds in force, when it is on. The change
+// carries live and the thresholds that were last in force (OVL-340).
 func (s *Sampler) switchOff(live uint64) {
 	s.enabled.Store(false)
+	high, low := s.hyst.High, s.hyst.Low
 	s.hyst = Hysteresis{}
 	if s.on {
-		s.change(false, live, 0, 0)
+		s.change(false, live, high, low)
 	}
 }
 
