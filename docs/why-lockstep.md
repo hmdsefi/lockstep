@@ -43,9 +43,10 @@ timings, so it may pass, and you are left with a log line and a guess.
 
 ## The same shop as an actor
 
-In lockstep the shop is an actor. It handles one message at a time, so its fields need no lock,
-and the payment is an effect: `lockstep.Do` starts it and returns, and the result comes back later
-as a message. The bug is the same, written the actor way:
+In lockstep the shop is an actor ([The actor model](actor-model.md) explains the idea). It
+handles one message at a time, so its fields need no lock, and the payment is an effect:
+`lockstep.Do` starts it and returns, and the result comes back later as a message. The bug is the
+same, written the actor way:
 
 ```go
 func (s *Shop) Receive(ctx *lockstep.Context[Msg], msg Msg) {
