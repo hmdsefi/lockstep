@@ -235,8 +235,9 @@ func (c *cell[M]) finishStop() {
 // lockstep.drop reason incarnation-ended, a piped reply or an effect result described by its error
 // or its value (MBX §8); each signal and each inject command (SFT-040) left in the system queue as
 // lockstep.drop reason not-running, except a Terminated that a delivery to the ended incarnation
-// would skip (ACT-630), which is discarded without a record. The other system messages are
-// discarded without a record.
+// would skip (ACT-630), which is discarded without a record; each internal effect outcome left in
+// the system queue as lockstep.drop reason incarnation-ended (PER-160). The other system messages
+// are discarded without a record.
 func (c *cell[M]) drain() {
 	sent, self, notRunning := c.closeQueues()
 	for _, e := range sent {
@@ -258,6 +259,8 @@ func (c *cell[M]) drain() {
 			if !c.endedWatched.skips(m) {
 				c.sys.recordDropNotRunning(c.addr, m.sig)
 			}
+		case internalResult:
+			c.sys.recordDropEnded(c.addr, m.inc, m.res)
 		default:
 			c.sys.recordDropNotRunning(c.addr, m)
 		}

@@ -118,12 +118,14 @@ type Host interface {
 	Inbound(env Envelope)
 }
 
-// EffectRequest describes one effect started by an actor (EFF).
+// EffectRequest describes one effect started by an actor (EFF). Value is the user's Effect[T] value
+// for a Do effect, or the hooks.InternalEffect of an internal effect, which simulation runs inline
+// when its Inline is set (PER-240, PER-520).
 type EffectRequest struct {
 	ID    uint64                                 // unique per system, assigned by the runtime
 	Name  string                                 // Effect.Name()
 	Actor Address                                // the actor that started it
-	Value any                                    // the user's Effect[T] value, for simulation handlers
+	Value any                                    // the Effect[T] or hooks.InternalEffect value
 	Run   func(ctx context.Context) (any, error) // the production implementation
 }
 
