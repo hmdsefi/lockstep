@@ -229,6 +229,40 @@ pkg github.com/hmdsefi/lockstep/persist, var ErrInvalidConfig error
 pkg github.com/hmdsefi/lockstep/persist, var ErrInvalidID error
 pkg github.com/hmdsefi/lockstep/persist, var ErrMissingEvents error
 pkg github.com/hmdsefi/lockstep/persist, var ErrSeqConflict error
+pkg github.com/hmdsefi/lockstep/persist/filestore, const DefaultSegmentSize = 67108864
+pkg github.com/hmdsefi/lockstep/persist/filestore, const DefaultSegmentSize int64
+pkg github.com/hmdsefi/lockstep/persist/filestore, const MaxRecordSize = 16777216
+pkg github.com/hmdsefi/lockstep/persist/filestore, const MaxRecordSize ideal-int
+pkg github.com/hmdsefi/lockstep/persist/filestore, const MaxSnapshotSize = 268435456
+pkg github.com/hmdsefi/lockstep/persist/filestore, const MaxSnapshotSize ideal-int
+pkg github.com/hmdsefi/lockstep/persist/filestore, func New(FS, ...Option) *Store
+pkg github.com/hmdsefi/lockstep/persist/filestore, func Open(string, ...Option) (*Store, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, func WithSegmentSize(int64) Option
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface { Create, MkdirAll, Open, ReadDir, Remove, Rename, SyncDir }
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, Create(string) (File, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, MkdirAll(string) error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, Open(string) (File, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, ReadDir(string) ([]Info, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, Remove(string) error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, Rename(string, string) error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type FS interface, SyncDir(string) error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface { Close, ReadAt, Size, Sync, Truncate, WriteAt }
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface, Close() error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface, ReadAt([]byte, int64) (int, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface, Size() (int64, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface, Sync() error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface, Truncate(int64) error
+pkg github.com/hmdsefi/lockstep/persist/filestore, type File interface, WriteAt([]byte, int64) (int, error)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type Info struct
+pkg github.com/hmdsefi/lockstep/persist/filestore, type Info struct, IsDir bool
+pkg github.com/hmdsefi/lockstep/persist/filestore, type Info struct, Name string
+pkg github.com/hmdsefi/lockstep/persist/filestore, type Info struct, Size int64
+pkg github.com/hmdsefi/lockstep/persist/filestore, type Option func(*settings)
+pkg github.com/hmdsefi/lockstep/persist/filestore, type Store struct
+pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrCorrupt error
+pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrFormat error
+pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrTooLarge error
+pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrUnusable error
 pkg github.com/hmdsefi/lockstep/sim, func Ask[M any, R any](*Sim, string, lockstep.PID[M], func(lockstep.ReplyTo[R]) M, ...lockstep.AskOption) (R, error)
 pkg github.com/hmdsefi/lockstep/sim, func Send[M any](*Sim, string, lockstep.PID[M], M) error
 pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Sim))
