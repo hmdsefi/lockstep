@@ -430,15 +430,16 @@ func (c *cell[M]) deliverInternal(pe *pendingEffect[M], v any, err error, outcom
 
 // processInternalResult handles the internal effect outcome m that the turn popped (PER-240). Done
 // runs only in Running and only for the live incarnation: an outcome of an incarnation that has
-// ended, or is ending, is dropped as incarnation-ended (PER-160), and one that reaches a
-// Suspended incarnation is dropped as not-running. Done is a guarded handler call with source
+// ended, or is ending, is dropped as incarnation-ended (PER-160). One that reaches its Suspended
+// incarnation is kept, as a Do result waits in the mailbox: Done runs after a resume, and a
+// restart or stop drops it (SUP-160, dropKept). Done is a guarded handler call with source
 // receive, so a panic or a Fail in it fails the actor as one in Receive would (SUP-140).
 func (c *cell[M]) processInternalResult(m internalResult) {
 	switch {
 	case m.inc != c.inc || c.ctx == nil || c.ending():
 		c.sys.recordDropEnded(c.addr, m.inc, m.res)
-	case c.state != supervise.Running:
-		c.sys.recordDropNotRunning(c.addr, m.res)
+	case c.state == supervise.Suspended:
+		c.keep(m)
 	default:
 		c.callHandler(supervise.InReceive, func() { m.done(c.ctx, m.v, m.err) })
 	}

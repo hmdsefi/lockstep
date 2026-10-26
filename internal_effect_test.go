@@ -272,3 +272,98 @@ func TestPER240InternalEffectLocal(t *testing.T) {
 		}
 	})
 }
+
+// parentOf is a supervisor whose Started spawns child at c and whose deciding function returns
+// directive, after appending each failure to decided.
+type parentOf struct {
+	child     *internalActor
+	directive Directive
+	decided   []error
+	pid       PID[iMsg] // the child's PID
+}
+
+func (p *parentOf) Started(ctx *Context[iMsg]) {
+	pid, err := Spawn(ctx, "c", actorOf[iMsg](p.child))
+	if err != nil {
+		panic(err)
+	}
+	p.pid = pid
+}
+
+func (*parentOf) Receive(*Context[iMsg], iMsg) {}
+
+// PER-240, PER-160, SUP-160: an internal effect's outcome that reaches its incarnation while it
+// is Suspended waits: after a resume, Done runs once in the same incarnation; after a restart, the
+// outcome is dropped and Done never runs.
+func TestPER240InternalEffectSuspended(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		directive Directive
+		dones     int
+		starts    int
+	}{
+		{"resume", DirectiveResume, 1, 1},
+		{"restart", DirectiveRestart, 0, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys, eng := newManualSystem(t)
+			starts := 0
+			child := &internalActor{inStart: true}
+			p := &parentOf{child: child, directive: tc.directive}
+			strategy := OneForOne(func(err error) Directive {
+				p.decided = append(p.decided, err)
+				return p.directive
+			})
+			if _, err := Spawn(sys, "p", actorOf[iMsg](p), WithStrategy(strategy)); err != nil {
+				t.Fatal(err)
+			}
+			eng.RunUntilIdle()
+			req := onlyPending(t, eng)
+			first := child.ctx
+			if first == nil {
+				t.Fatal("the child did not start")
+			}
+			starts++
+
+			// The child fails; its turn suspends it and queues the parent's decision.
+			if err := hooks.InjectFail(sys, p.pid.Address().engine(), errors.New("boom")); err != nil {
+				t.Fatal(err)
+			}
+			if !eng.Step() {
+				t.Fatal("no turn ran for the injected failure")
+			}
+			// The outcome reaches the Suspended child before the parent decides.
+			if !eng.CompleteEffect(req.ID, 42, nil) {
+				t.Fatal("CompleteEffect reported false")
+			}
+			eng.RunUntilIdle()
+			eng.Advance(time.Second) // past the restart's backoff
+
+			if len(p.decided) != 1 {
+				t.Fatalf("the parent decided %d times, want 1", len(p.decided))
+			}
+			if child.ctx != first {
+				starts++
+			}
+			if len(child.dones) != tc.dones || starts != tc.starts {
+				t.Fatalf("Done ran %d times with %d incarnations, want %d and %d", len(child.dones), starts, tc.dones, tc.starts)
+			}
+			if tc.dones == 1 {
+				d := child.dones[0]
+				if d.ctx != any(first) || d.v != 42 || d.err != nil {
+					t.Errorf("Done got (%p, %v, %v), want the first incarnation's Context, 42 and nil", d.ctx, d.v, d.err)
+				}
+				return
+			}
+			var drops []map[string]string
+			for _, r := range effectRecords(eng.Records(), "lockstep.drop") {
+				if r["to"] == p.pid.String() {
+					drops = append(drops, r)
+				}
+			}
+			if len(drops) != 1 || drops[0]["reason"] != "incarnation-ended" || drops[0]["inc"] != "1" || drops[0]["msg"] != "42" {
+				t.Errorf("lockstep.drop records of the child %v, want one incarnation-ended for inc 1 with msg 42", drops)
+			}
+		})
+	}
+}
