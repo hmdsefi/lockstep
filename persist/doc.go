@@ -1,14 +1,37 @@
 // Copyright 2026 Hamed Yousefi
 // SPDX-License-Identifier: MPL-2.0
 
-// Package persist defines the storage contracts for durable actor state: a Journal that stores
-// the events of many persistence IDs, a SnapshotStore that stores their snapshots, and a Codec
-// that turns events and states into bytes.
+// Package persist provides event-sourced actors. A command handler returns events; after the
+// journal commits them, Apply folds them into the state and the handler's Then callbacks run.
+// Start and restart recover the state from the newest snapshot plus the events after it. Every
+// storage call is an effect, so the actor never blocks.
 //
-// A persistence ID is a string of 1 to MaxIDLen bytes that names one stream of events. Events in
-// a stream are numbered 1, 2, 3 and so on, without gaps. A snapshot records the encoded state
-// after one event, so recovery can start from the newest snapshot and replay only the events
-// after it.
+// An EventSourced value defines the actor: Initial gives the state before the first event,
+// Handle turns a command into events, and Apply folds one event into the state. Spawn starts it
+// under a persistence ID, a string of 1 to MaxIDLen bytes that names its stream of events:
+//
+//	pid, err := persist.Spawn(sys, "account", "acct-1", newAccount, persist.Config[Deposited, Balance]{
+//		Journal: store,
+//		Events:  persist.JSON[Deposited](),
+//	})
+//
+// The actor's message type is the command type, so lockstep.Send and lockstep.Ask reach it like
+// any actor. A reply that must wait until the events are durable goes in a Then callback:
+//
+//	func (a *account) Handle(ctx *persist.Context[Cmd, Deposited, Balance], b Balance, cmd Cmd) []Deposited {
+//		ctx.Then(func(ctx *persist.Context[Cmd, Deposited, Balance], b Balance) {
+//			cmd.ReplyTo.Send(ctx, b.Total)
+//		})
+//		return []Deposited{{Amount: cmd.Amount}}
+//	}
+//
+// While the actor recovers, and while one batch of events is being written and committed, it
+// handles no command: commands wait in the mailbox and run in arrival order afterwards. Signals
+// that arrive during recovery reach Signal after Recovered.
+//
+// Events in a stream are numbered 1, 2, 3 and so on, without gaps. A snapshot records the encoded
+// state after one event, so recovery can start from the newest snapshot and replay only the
+// events after it.
 //
 // A Journal separates writing from committing. Write accepts a batch of events, Commit makes
 // every written event durable, and only committed events count as stored. If the process stops
