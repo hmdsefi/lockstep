@@ -1,31 +1,32 @@
 # lockstep architecture
 
-This page explains how lockstep v0.1.0 is built: its parts, how a message moves through them, and
+This page explains how lockstep is built: its parts, how a message moves through them, and
 why the same actor code can run in your program and in a seeded simulation. To start using
 lockstep, read the [README](../README.md) first.
 
 ## The parts
 
-lockstep has a runtime, two engines that run it, and an analyzer. The runtime in package
+lockstep has a runtime, the engines that run it, and an analyzer. The runtime in package
 `lockstep` holds everything an actor sees: systems, PIDs, mailboxes, supervision, timers, asks and
-effects. It is written against a small internal interface, the engine seam. Two engines implement
-the seam: the local engine behind `lockstep.New()`, and the simulation engine in `lockstep/sim`,
-which runs on [faultline](https://github.com/hmdsefi/faultline).
+effects. It is written against a small internal interface, the engine seam. Two engines run your
+code: the production engine behind `lockstep.New()`, and the simulation engine in
+`lockstep/sim`, which runs on [faultline](https://github.com/hmdsefi/faultline). A third engine,
+which runs every turn on one goroutine, exists only for the project's own tests.
 
 ```mermaid
 flowchart LR
     accTitle: lockstep's parts and how they depend on each other
-    accDescr: Your actors use the lockstep runtime. The runtime runs on the engine seam, which two engines implement: the local engine used by lockstep.New and the simulation engine in lockstep/sim. The simulation engine runs on faultline. lockstep-vet checks your actor code.
+    accDescr: Your actors use the lockstep runtime. The runtime runs on the engine seam, which two engines implement for your code: the production engine used by lockstep.New and the simulation engine in lockstep/sim. The simulation engine runs on faultline. lockstep-vet checks your actor code.
     actors["Your actors"]
     runtime["Runtime: package lockstep"]
     seam["Engine seam"]
-    local["Local engine: lockstep.New"]
+    production["Production engine: lockstep.New"]
     simengine["Simulation engine: lockstep/sim"]
     faultline["faultline kernel"]
     vet["lockstep-vet analyzer"]
     actors --> runtime
     runtime --> seam
-    local --> seam
+    production --> seam
     simengine --> seam
     simengine --> faultline
     vet -. checks .-> actors
@@ -108,9 +109,10 @@ A *turn* is one engine call that processes messages for one actor: its system qu
 user messages up to a budget the engine passes in. An actor handles one message at a time, so its
 fields need no lock.
 
-The budget is where the two engines differ most. The local engine passes 32, so a busy actor
-yields after 32 messages. The simulation engine passes 1, so every delivery is a separate event
-and each seed can order deliveries to different actors differently.
+The budget is where the two engines differ most. The production engine passes 32 by default, so a
+busy actor yields after 32 messages. `WithThroughput` changes the limit for every actor and
+`WithActorThroughput` for one. The simulation engine passes 1, so every delivery is a separate
+event and each seed can order deliveries to different actors differently.
 
 ## Lifecycle and supervision
 
@@ -140,21 +142,34 @@ an incarnation are cancelled when it stops or restarts.
 
 The engines run effects in different ways:
 
-- Local engine: `Run` runs on its own goroutine, at most 64 at a time. Up to 1024 more wait in a
-  queue; past that, `done` receives `ErrOverloaded`.
+- Production engine: `Run` runs on a bounded pool, at most 64 effects at a time by default. Up to
+  1024 more wait in a queue; past that, `done` receives `ErrOverloaded`. `WithEffectPool` sets
+  both limits.
 - Simulation engine: `Run` is never called, because real I/O cannot replay. The test registers
   a handler per effect name with `s.HandleEffect`. The handler returns a value, an error and a
   simulated latency, and can draw them from the run's seeded random stream. An effect with no
   handler fails the seed.
 
-## The local engine
+## The production engine
 
-`lockstep.New()` builds a system on the local engine. One loop goroutine runs every turn, every
-timer callback and every effect completion. Actors interleave on that goroutine but never run in
-parallel. Effects are the only work that runs on other goroutines.
+`lockstep.New()` builds a system on the production engine. A fixed pool of worker goroutines runs
+every turn, every timer callback and every effect completion. `WithWorkers` sets the pool size,
+which defaults to `runtime.GOMAXPROCS(0)` at the time `New` runs.
 
-The local engine reads the wall clock and seeds each actor's random stream from `crypto/rand`. It
-has no transport to other processes, so actors on different nodes talk only in simulation.
+An actor is not a goroutine. When a message arrives for an idle actor, the engine queues the actor
+and a free worker runs its turn. Turns of different actors run in parallel on different workers.
+The turns of one actor never overlap, so its fields still need no lock, and messages from one
+sender to one receiver are handled in send order.
+
+Each worker has a local queue of ready actors, and one global queue is shared by all workers. A
+worker that runs out of work takes some from another worker's queue. An actor that still has
+messages after its throughput budget goes to the back of the global queue, so a busy actor cannot
+starve the others. The [README](../README.md#configure-the-production-engine) lists the options
+that configure the pool.
+
+The production engine reads the wall clock and seeds each actor's random stream from
+`crypto/rand`. It has no transport to other processes, so actors on different nodes talk only in
+simulation.
 
 ## The simulation engine
 
@@ -208,8 +223,8 @@ so supervision keeps working at the cap.
 In simulation, `sim.Options.Budget` caps live actors and their estimated memory in bytes, and
 `s.Pressure` turns memory pressure on and off. While either applies, `Spawn` returns
 `ErrOverloaded`, sends to user actors are refused as if their mailboxes were full, and actors that
-called `ctx.SubscribeOverload` receive an `Overloaded` signal. The local engine does not read the
-live heap, so `WithAdmission` has no effect there; see [Limitations](../README.md#limitations).
+called `ctx.SubscribeOverload` receive an `Overloaded` signal. The production engine does not read
+the live heap, so `WithAdmission` has no effect there; see [Limitations](../README.md#limitations).
 
 ## Static analysis
 
@@ -233,7 +248,7 @@ module plugin.
 The repository holds three Go modules:
 
 - `github.com/hmdsefi/lockstep`, the root module: the runtime, `sim`, and internal packages for
-  the engine seam, the local engine, mailboxes, supervision, the registry and overload state.
+  the engine seam, the production engine, mailboxes, supervision, the registry and overload state.
 - `github.com/hmdsefi/lockstep/analysis`: `lockstep-vet` and the golangci-lint plugin.
 - `github.com/hmdsefi/lockstep/examples/raft`: the Raft example.
 

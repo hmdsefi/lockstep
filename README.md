@@ -26,7 +26,7 @@ delivery, timer, and I/O event, and that is what makes the simulation exact.
 
 ## Features
 
-lockstep v0.1.0 includes:
+lockstep includes:
 
 - **Typed actors and PIDs.** `Actor[M]` receives one message type and `PID[M]` accepts only that
   type, so a message of the wrong type does not compile.
@@ -38,6 +38,9 @@ lockstep v0.1.0 includes:
   limits with backoff, death watch, an actor cap, and a `Stopped` hook on every stop and restart.
 - **Timers and effects** on the runtime's clock: `ctx.After`, `ctx.Every`, and I/O as named
   effects with `lockstep.Do`.
+- **A pooled production engine.** `lockstep.New()` runs actors on a fixed pool of worker
+  goroutines, so turns of different actors run in parallel while each actor handles one message at
+  a time.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
@@ -136,6 +139,40 @@ total: 6
 `[Msg]` explicitly because `Add{N: n}` alone has type `Add`. `Ask` puts a `ReplyTo[int]` into the
 `Get` message and returns a `*Reply[int]`. `Await` blocks, so call it outside actors; inside an
 actor, `lockstep.Pipe` delivers the reply as a message instead.
+
+## Configure the production engine
+
+`lockstep.New()` runs actor turns on a fixed pool of worker goroutines. Turns of different actors
+run in parallel, the turns of one actor never overlap, and messages from one sender to one
+receiver arrive in send order. Timers and effect results run on the same workers. Four options
+configure the engine:
+
+- `WithWorkers(n)` sets the number of workers. The default is `runtime.GOMAXPROCS(0)`, read when
+  `New` runs.
+- `WithThroughput(n)` sets how many user messages an actor processes in one turn before it yields
+  its worker to other actors. The default is 32.
+- `WithActorThroughput(n)` is a `Spawn` option that replaces that limit for one actor, for example
+  a small `n` for an actor whose messages are expensive.
+- `WithEffectPool(workers, queue)` bounds effects started with `lockstep.Do`: at most `workers`
+  run at once, and at most `queue` more wait for a free slot. The defaults are 64 and 1024. A `Do`
+  call that finds both full resolves with `ErrOverloaded`.
+
+The quick start's `main` can begin like this instead:
+
+```go
+sys := lockstep.New(
+	lockstep.WithWorkers(4),
+	lockstep.WithThroughput(64),
+	lockstep.WithEffectPool(16, 256),
+)
+counter, err := lockstep.Spawn(sys, "counter", newCounter, lockstep.WithActorThroughput(256))
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+The options apply only to `lockstep.New()`. Simulation checks the values and then ignores them:
+every turn there processes one message, in an order the seed decides.
 
 ## Deterministic simulation testing: the same actor under faults
 
@@ -346,20 +383,17 @@ it, so a program that uses lockstep without `sim` never links faultline.
 
 ```text
 github.com/hmdsefi/lockstep          actor runtime
-├── lockstep.New()                   local engine for your program
+├── lockstep.New()                   production engine for your program
 └── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
 ```
 
 ## Limitations
 
-v0.1.0 runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
-`lockstep.New()` runs every actor turn on one engine goroutine, so actors interleave but never run
-in parallel. Effects started with `lockstep.Do` run on separate goroutines, at most 64 at a time.
-
-v0.1.0 has no pooled production scheduler. It does not read the live heap: `WithAdmission`,
-`WithWatchdog`, and `WithGoroutineWarning` are accepted and have no effect on `lockstep.New()`.
-The actor cap (`WithMaxActors`) applies everywhere. There is no remoting, clustering,
-persistence, or OpenTelemetry support, so actors on different nodes talk only in simulation.
+lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
+`lockstep.New()` does not read the live heap: `WithAdmission`, `WithWatchdog`, and
+`WithGoroutineWarning` are accepted and have no effect on it. The actor cap (`WithMaxActors`)
+applies everywhere. There is no remoting, clustering, persistence, or OpenTelemetry support, so
+actors on different nodes talk only in simulation.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
