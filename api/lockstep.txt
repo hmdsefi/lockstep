@@ -191,6 +191,44 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch = 256
+pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch ideal-int
+pkg github.com/hmdsefi/lockstep/persist, const MaxIDLen = 80
+pkg github.com/hmdsefi/lockstep/persist, const MaxIDLen ideal-int
+pkg github.com/hmdsefi/lockstep/persist, func JSON[T any]() Codec[T]
+pkg github.com/hmdsefi/lockstep/persist, type Bounds struct
+pkg github.com/hmdsefi/lockstep/persist, type Bounds struct, First uint64
+pkg github.com/hmdsefi/lockstep/persist, type Bounds struct, Last uint64
+pkg github.com/hmdsefi/lockstep/persist, type Bounds struct, Repaired int64
+pkg github.com/hmdsefi/lockstep/persist, type Codec[T any] interface { Decode, Encode }
+pkg github.com/hmdsefi/lockstep/persist, type Codec[T any] interface, Decode([]byte) (T, error)
+pkg github.com/hmdsefi/lockstep/persist, type Codec[T any] interface, Encode(T) ([]byte, error)
+pkg github.com/hmdsefi/lockstep/persist, type Event struct
+pkg github.com/hmdsefi/lockstep/persist, type Event struct, Data []byte
+pkg github.com/hmdsefi/lockstep/persist, type Event struct, Seq uint64
+pkg github.com/hmdsefi/lockstep/persist, type Journal interface { Commit, DeleteEvents, Read, Recover, Write }
+pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Commit(context.Context, string) error
+pkg github.com/hmdsefi/lockstep/persist, type Journal interface, DeleteEvents(context.Context, string, uint64) error
+pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Read(context.Context, string, uint64, int) ([]Event, error)
+pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Recover(context.Context, string) (Bounds, error)
+pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Write(context.Context, string, []Event) error
+pkg github.com/hmdsefi/lockstep/persist, type Recovery struct
+pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, Events uint64
+pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, LastSeq uint64
+pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, Repaired int64
+pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, SnapshotSeq uint64
+pkg github.com/hmdsefi/lockstep/persist, type Snapshot struct
+pkg github.com/hmdsefi/lockstep/persist, type Snapshot struct, Data []byte
+pkg github.com/hmdsefi/lockstep/persist, type Snapshot struct, Seq uint64
+pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface { DeleteSnapshots, Load, Save }
+pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface, DeleteSnapshots(context.Context, string, uint64) error
+pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface, Load(context.Context, string) (Snapshot, bool, error)
+pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface, Save(context.Context, string, Snapshot) error
+pkg github.com/hmdsefi/lockstep/persist, var ErrInconsistent error
+pkg github.com/hmdsefi/lockstep/persist, var ErrInvalidConfig error
+pkg github.com/hmdsefi/lockstep/persist, var ErrInvalidID error
+pkg github.com/hmdsefi/lockstep/persist, var ErrMissingEvents error
+pkg github.com/hmdsefi/lockstep/persist, var ErrSeqConflict error
 pkg github.com/hmdsefi/lockstep/sim, func Ask[M any, R any](*Sim, string, lockstep.PID[M], func(lockstep.ReplyTo[R]) M, ...lockstep.AskOption) (R, error)
 pkg github.com/hmdsefi/lockstep/sim, func Send[M any](*Sim, string, lockstep.PID[M], M) error
 pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Sim))
