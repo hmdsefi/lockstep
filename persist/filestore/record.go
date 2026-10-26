@@ -26,16 +26,17 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // encodeJournalRecord returns the record of one batch: the header, then firstSeq (the Seq of
 // events[0]), the count and the length-prefixed event data. The sequence numbers of the later
 // events are implied. It returns an error wrapping ErrTooLarge if the payload would exceed
-// MaxRecordSize.
+// MaxRecordSize; the caller adds the package prefix. It panics for an empty batch, which Write
+// refuses before it encodes.
 func encodeJournalRecord(events []persist.Event) ([]byte, error) {
 	if len(events) == 0 {
-		return nil, fmt.Errorf("filestore: empty batch")
+		panic("filestore: encodeJournalRecord: empty batch")
 	}
 	size := int64(journalFixed)
 	for _, e := range events {
 		size += entryLenSize + int64(len(e.Data))
 		if size > MaxRecordSize {
-			return nil, fmt.Errorf("filestore: batch of %d events exceeds %d bytes: %w",
+			return nil, fmt.Errorf("batch of %d events exceeds %d bytes: %w",
 				len(events), MaxRecordSize, ErrTooLarge)
 		}
 	}
