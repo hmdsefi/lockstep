@@ -42,8 +42,8 @@ lockstep includes:
   goroutines, so turns of different actors run in parallel while each actor handles one message at
   a time.
 - **Overload protection** in the production engine: new actors and user messages are refused while
-  the live heap is near its memory limit, a turn that runs too long is reported and its actor isolated,
-  and a growing goroutine count is logged.
+  the live heap is near its memory limit, a turn that runs too long is reported and its actor
+  isolated, and a growing goroutine count is logged.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
@@ -246,8 +246,8 @@ warning, the next one waits until the count falls below 80% of the bound and rea
 
 These events go to the logger that `slog.Default()` returned when `New` ran, each with a `node`
 attribute, so set the default logger before you call `New`. A negative watchdog timeout or goroutine
-bound, or a non-zero `WithAdmission` pair other than `0 < low < high`, makes `New` panic with an error that
-wraps `ErrInvalidOption`.
+bound, or a non-zero `WithAdmission` pair other than `0 < low < high`, makes `New` panic with an
+error that wraps `ErrInvalidOption`.
 
 Simulation checks these values and then ignores them. It stays deterministic, and overload there
 comes from `sim.Options.Budget` and `s.Pressure`, described in
