@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ type crashCapture struct {
 // every record emitted from now on to match, once and in order, so match may keep state ("after
 // the first …"). The first time match returns true it schedules, d later, an event that captures
 // vol.ReadFile of paths, crashes n1, captures vol.ReadDurable of paths and schedules n1's restart
-// 1 ms later.
+// 1 ms later. A path that does not exist is captured as nil; any other read error fails the test.
 func crashAtRecord(s *sim.Sim, n1 *kernel.Node, match func(kernel.Record) bool, d time.Duration, paths ...string) *crashCapture {
 	w := s.World()
 	c := &crashCapture{}
@@ -61,14 +62,20 @@ func crashAtRecord(s *sim.Sim, n1 *kernel.Node, match func(kernel.Record) bool, 
 		}
 		w.Sim.After(d, "test/crash", func() {
 			v := vol(s)
+			capture := func(op, p string, b []byte, err error) []byte {
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					w.T().Errorf("%s(%s) at the crash: %v", op, p, err)
+				}
+				return b
+			}
 			for _, p := range paths {
-				b, _ := v.ReadFile(p)
-				c.visible = append(c.visible, b)
+				b, err := v.ReadFile(p)
+				c.visible = append(c.visible, capture("ReadFile", p, b, err))
 			}
 			n1.Crash()
 			for _, p := range paths {
-				b, _ := v.ReadDurable(p)
-				c.durable = append(c.durable, b)
+				b, err := v.ReadDurable(p)
+				c.durable = append(c.durable, capture("ReadDurable", p, b, err))
 			}
 			c.fired = true
 			w.Sim.After(time.Millisecond, "test/restart", n1.Restart)
@@ -109,17 +116,22 @@ func TestATPER16AckedSurvive(t *testing.T) {
 	})
 	t.Run("default-latency", func(t *testing.T) {
 		crashes, lost, cut := atper16Sweep(t, simdisk.DefaultLatency())
-		t.Logf("%d crashes of n1; %d seeds left an Add unacknowledged; %d batches cut in flight", crashes, lost, cut)
-		if crashes == 0 || cut == 0 {
-			t.Errorf("%d crashes and %d batches cut between write and commit; want both above 0", crashes, cut)
+		t.Logf("%d crashes of n1; %d seeds left an Add unacknowledged; %d batches cut while writing, %d while committing",
+			crashes, lost, cut.write, cut.commit)
+		if crashes == 0 || cut.write == 0 || cut.commit == 0 {
+			t.Errorf("%d crashes, %d batches cut while writing and %d while committing; want all above 0",
+				crashes, cut.write, cut.commit)
 		}
 	})
 }
 
+// cutBatches counts the batches a crash cut: write those whose write started and never finished,
+// commit those whose commit started and never finished.
+type cutBatches struct{ write, commit int }
+
 // atper16Sweep runs the world of AT-PER-16 for seeds 0 to 49 with disk latency lat. It returns the
-// number of crashes of n1, of seeds in which an Add got no reply, and of batches whose commit
-// started but never finished.
-func atper16Sweep(t *testing.T, lat simdisk.LatencyConfig) (crashes, lost, cut int) {
+// number of crashes of n1, of seeds in which an Add got no reply, and of batches cut in flight.
+func atper16Sweep(t *testing.T, lat simdisk.LatencyConfig) (crashes, lost int, cut cutBatches) {
 	opts := fullTrace(0)
 	opts.Duration = 250 * time.Millisecond
 	opts.Disk.Crash = simdisk.CrashAny
@@ -165,7 +177,8 @@ func atper16Sweep(t *testing.T, lat simdisk.LatencyConfig) (crashes, lost, cut i
 		w.RunFor(w.End().Sub(w.Sim.Now()))
 		recs := w.Sim.Records()
 		crashes += len(ofKind(recs, "kernel.crash"))
-		cut += len(effectStarts(recs, "lockstep.persist.commit")) - len(ofKind(recs, "lockstep.persist.commit"))
+		cut.write += len(effectStarts(recs, "lockstep.persist.write")) - len(ofKind(recs, "lockstep.persist.write"))
+		cut.commit += len(effectStarts(recs, "lockstep.persist.commit")) - len(ofKind(recs, "lockstep.persist.commit"))
 		if ackedBits(adds) != 1<<60-1 {
 			lost++
 		}
