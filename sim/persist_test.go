@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1072,4 +1074,455 @@ func replyLog(log []string) []string {
 		}
 	}
 	return out
+}
+
+// snapshotEffects are the names of the internal effects of one snapshot cycle.
+var snapshotEffects = []string{"lockstep.persist.save", "lockstep.persist.delete-snapshots", "lockstep.persist.delete-events"}
+
+// AT-PER-19, PER-170: with SnapshotEvery 3, five Add{1} give one snapshot of seq 3; SnapNow gives
+// seq 5; the next Add{1} gives none; after a crash and restart the recovery starts from seq 5 and
+// replays one event. With SnapshotEvery 1 and slow syncs, three Add{1} sent at once give strictly
+// increasing snapshot seqs, and no save starts while another cycle is in flight.
+func TestATPER19SnapshotPolicy(t *testing.T) {
+	t.Run("policy", func(t *testing.T) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			r.config = func(cfg *persist.Config[Added, CounterState]) { cfg.SnapshotEvery = 3 }
+			n1 := r.node()
+			w.RunFor(time.Millisecond)
+			for range 5 {
+				r.ask(tt, addCmd(1))
+			}
+			w.RunFor(50 * time.Millisecond)
+			if got := snapSeqs(s); !slices.Equal(got, []string{"3"}) {
+				tt.Fatalf("snapshot seqs after five Add{1}: %v, want [3]", got)
+			}
+			rec := ofKind(w.Sim.Records(), "lockstep.persist.snapshot")[0]
+			want := []string{"actor", r.pid.String(), "id", "c-1", "seq", "3", "bytes", fmt.Sprint(len(`{"Sum":3,"Count":3}`))}
+			if got := kvs(rec); !slices.Equal(got, want) {
+				tt.Errorf("snapshot record %q, want %q", got, want)
+			}
+
+			if err := sim.Send(s, "n1", r.pid, CounterCmd(SnapNow{})); err != nil {
+				tt.Fatalf("Send: %v", err)
+			}
+			w.RunFor(50 * time.Millisecond)
+			if got := snapSeqs(s); !slices.Equal(got, []string{"3", "5"}) {
+				tt.Fatalf("snapshot seqs after SnapNow: %v, want [3 5]", got)
+			}
+			r.ask(tt, addCmd(1))
+			w.RunFor(50 * time.Millisecond)
+			if got := snapSeqs(s); !slices.Equal(got, []string{"3", "5"}) {
+				tt.Errorf("snapshot seqs after the sixth Add{1}: %v, want [3 5]", got)
+			}
+
+			now := w.Sim.Now()
+			w.Sim.At(now.Add(time.Millisecond), "test/crash", n1.Crash)
+			w.Sim.At(now.Add(2*time.Millisecond), "test/restart", n1.Restart)
+			w.RunFor(5 * time.Millisecond)
+			if got, want := r.recs[len(r.recs)-1], (persist.Recovery{SnapshotSeq: 5, Events: 1, LastSeq: 6}); got != want {
+				tt.Errorf("recovery after the restart %+v, want %+v", got, want)
+			}
+			if got := r.ask(tt, getCmd); got != 6 {
+				tt.Errorf("Get after the restart replied %d, want 6", got)
+			}
+		})
+	})
+	t.Run("one save at a time", func(t *testing.T) {
+		opts := fullTrace(3)
+		opts.Disk.Latency.Sync.Base = 20 * time.Millisecond
+		sim.Simulate(t, opts, func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			r.config = func(cfg *persist.Config[Added, CounterState]) { cfg.SnapshotEvery = 1 }
+			r.node()
+			w.RunFor(500 * time.Millisecond)
+			r.mustHaveRecovered(tt)
+			sys := s.System("n1")
+			var replies []*lockstep.Reply[int64]
+			for range 3 {
+				replies = append(replies, lockstep.Ask(sys, r.pid, addCmd(1)))
+			}
+			w.RunFor(5 * time.Second)
+			for i, rp := range replies {
+				if !hooks.AskResolved(rp) {
+					tt.Fatalf("ask %d is unresolved", i+1)
+				}
+			}
+
+			seqs := snapSeqs(s)
+			if len(seqs) < 2 || seqs[len(seqs)-1] != "3" {
+				tt.Errorf("snapshot seqs %v, want at least two, the last one 3", seqs)
+			}
+			prev := uint64(0)
+			for _, q := range seqs {
+				n, _ := strconv.ParseUint(q, 10, 64)
+				if n <= prev {
+					tt.Errorf("snapshot seqs %v are not strictly increasing", seqs)
+				}
+				prev = n
+			}
+			r.checkOneCycleAtATime(tt)
+		})
+	})
+}
+
+// AT-PER-20, PER-180: a state that does not encode at Sum 2 is recorded once as op=encode-state;
+// the counter does not fail, and snapshots are saved for seq 1 and 3.
+func TestATPER20SnapshotEncodeFailure(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		r := newCounterRun(s)
+		errX := errors.New("x")
+		r.config = func(cfg *persist.Config[Added, CounterState]) {
+			cfg.SnapshotEvery = 1
+			cfg.State = stateFailCodec{Codec: persist.JSON[CounterState](), sum: 2, err: errX}
+		}
+		r.node()
+		w.RunFor(time.Millisecond)
+		for range 3 {
+			r.ask(tt, addCmd(1))
+		}
+		w.RunFor(50 * time.Millisecond)
+
+		if len(r.errs) != 0 {
+			tt.Errorf("errs %v, want none", r.errs)
+		}
+		if got := snapSeqs(s); !slices.Equal(got, []string{"1", "3"}) {
+			tt.Errorf("snapshot seqs %v, want [1 3]", got)
+		}
+		fails := ofKind(w.Sim.Records(), "lockstep.persist.fail")
+		if len(fails) != 1 {
+			tt.Fatalf("%d lockstep.persist.fail records, want one", len(fails))
+		}
+		wantErr := fmt.Errorf("persist: c-1: encode state at seq 2: %w", errX)
+		if got, want := kvs(fails[0]), r.failRecord("encode-state", wantErr); !slices.Equal(got, want) {
+			tt.Errorf("fail record %q, want %q", got, want)
+		}
+		if got := r.ask(tt, getCmd); got != 3 {
+			tt.Errorf("Get replied %d, want 3", got)
+		}
+	})
+}
+
+// AT-PER-21, PER-190: with a snapshot every 2 events, pruning and one event per segment, eight
+// Add{1} give snapshots 2, 4, 6 and 8 and leave the snapshots 6 and 8 and the segments 7 and 8.
+// With the payload of snapshot 8 damaged, the restart recovers from snapshot 6 and replays two
+// events.
+func TestATPER21Retention(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		r := newCounterRun(s)
+		r.config = func(cfg *persist.Config[Added, CounterState]) {
+			store := filestore.New(s.Volume("n1"), filestore.WithSegmentSize(1))
+			cfg.Journal, cfg.Snapshots = store, store
+			cfg.SnapshotEvery, cfg.PruneEvents = 2, true
+		}
+		n1 := r.node()
+		w.RunFor(time.Millisecond)
+		for range 8 {
+			r.ask(tt, addCmd(1))
+		}
+		w.RunFor(100 * time.Millisecond)
+
+		if got := snapSeqs(s); !slices.Equal(got, []string{"2", "4", "6", "8"}) {
+			tt.Fatalf("snapshot seqs %v, want [2 4 6 8]", got)
+		}
+		v := vol(s)
+		if got, want := names(tt, v, "/snapshots/id-c-1"), []string{path.Base(vsnap(6)), path.Base(vsnap(8))}; !slices.Equal(got, want) {
+			tt.Errorf("snapshot files %v, want %v", got, want)
+		}
+		if got, want := names(tt, v, "/journal/id-c-1"), []string{path.Base(vseg(7)), path.Base(vseg(8))}; !slices.Equal(got, want) {
+			tt.Errorf("journal segments %v, want %v", got, want)
+		}
+		if ops := failOps(s); len(ops) != 0 {
+			tt.Errorf("lockstep.persist.fail records %v, want none", ops)
+		}
+
+		now := w.Sim.Now()
+		w.Sim.At(now.Add(time.Millisecond), "test/crash", n1.Crash)
+		w.RunFor(2 * time.Millisecond)
+		// Offset 16 is the first byte of the snapshot's data: the checksum no longer matches.
+		if err := v.Corrupt(vsnap(8), 16, 1); err != nil {
+			tt.Fatalf("Corrupt: %v", err)
+		}
+		w.Sim.At(w.Sim.Now().Add(time.Millisecond), "test/restart", n1.Restart)
+		w.RunFor(5 * time.Millisecond)
+		if got, want := r.recs[len(r.recs)-1], (persist.Recovery{SnapshotSeq: 6, Events: 2, LastSeq: 8}); got != want {
+			tt.Errorf("recovery after the restart %+v, want %+v", got, want)
+		}
+		if got := r.ask(tt, getCmd); got != 8 {
+			tt.Errorf("Get after the restart replied %d, want 8", got)
+		}
+	})
+}
+
+// AT-PER-39, PER-180, PER-400 (simulation part): a sync failure during a save is recorded as
+// op=save, the counter keeps running and the snapshot directory holds no .tmp and no .snap file; a
+// .tmp file put there while n1 is down is gone after the next successful save.
+func TestATPER39FailedSave(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		r := newCounterRun(s)
+		n1 := r.node()
+		w.RunFor(time.Millisecond)
+		r.ask(tt, addCmd(1))
+		r.mustHaveRecovered(tt)
+		v := vol(s)
+		v.FailSyncs(1)
+		if err := sim.Send(s, "n1", r.pid, CounterCmd(SnapNow{})); err != nil {
+			tt.Fatalf("Send: %v", err)
+		}
+		w.RunFor(50 * time.Millisecond)
+
+		if ops := failOps(s); !slices.Equal(ops, []string{"save"}) {
+			tt.Fatalf("lockstep.persist.fail ops %v, want [save]", ops)
+		}
+		fail := ofKind(w.Sim.Records(), "lockstep.persist.fail")[0]
+		if err := attr(fail, "err"); !strings.HasPrefix(err, "persist: c-1: save snapshot seq 1: filestore: save snapshot c-1 seq 1: ") ||
+			!strings.Contains(err, simdisk.ErrIO.Error()) {
+			tt.Errorf("save failure text %q, want the save error of seq 1 wrapping the I/O error", err)
+		}
+		if got := names(tt, v, "/snapshots/id-c-1"); len(got) != 0 {
+			tt.Errorf("snapshot directory holds %v after the failed save, want nothing", got)
+		}
+		if len(r.errs) != 0 || len(snapSeqs(s)) != 0 {
+			tt.Errorf("errs %v, snapshot seqs %v; want none", r.errs, snapSeqs(s))
+		}
+
+		now := w.Sim.Now()
+		w.Sim.At(now.Add(time.Millisecond), "test/crash", n1.Crash)
+		w.RunFor(2 * time.Millisecond)
+		leftover := path.Dir(vsnap(1)) + "/" + fmt.Sprintf("%020d.tmp", 9)
+		if err := v.WriteFileDurable(leftover, []byte("junk")); err != nil {
+			tt.Fatalf("WriteFileDurable: %v", err)
+		}
+		w.Sim.At(w.Sim.Now().Add(time.Millisecond), "test/restart", n1.Restart)
+		w.RunFor(5 * time.Millisecond)
+		if err := sim.Send(s, "n1", r.pid, CounterCmd(SnapNow{})); err != nil {
+			tt.Fatalf("Send: %v", err)
+		}
+		w.RunFor(50 * time.Millisecond)
+		if got, want := names(tt, v, "/snapshots/id-c-1"), []string{path.Base(vsnap(1))}; !slices.Equal(got, want) {
+			tt.Errorf("snapshot directory holds %v after the next save, want %v", got, want)
+		}
+		if got := snapSeqs(s); !slices.Equal(got, []string{"1"}) {
+			tt.Errorf("snapshot seqs %v, want [1]", got)
+		}
+	})
+}
+
+// PER-190: the deletions of a cycle follow its save, in order: snapshots up to P-1, then events up
+// to P, with P the previous snapshot. A failed deletion of snapshots is recorded and the deletion
+// of events still runs; a failed deletion of events is recorded; the counter does not fail.
+func TestPER190DeleteOrder(t *testing.T) {
+	errX := errors.New("x")
+	run := func(t *testing.T, failSnaps, failEvents bool, wantCalls, wantFails, wantDeleted []string) {
+		sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			var log *storeLog
+			r.config = func(cfg *persist.Config[Added, CounterState]) {
+				log = &storeLog{Store: filestore.New(s.Volume("n1"))}
+				if failSnaps {
+					log.failSnapshots = errX
+				}
+				if failEvents {
+					log.failEvents = errX
+				}
+				cfg.Journal, cfg.Snapshots = log, log
+				cfg.SnapshotEvery, cfg.PruneEvents = 2, true
+			}
+			r.node()
+			w.RunFor(time.Millisecond)
+			for range 6 {
+				r.ask(tt, addCmd(1))
+			}
+			w.RunFor(50 * time.Millisecond)
+
+			var calls []string
+			for _, c := range log.calls {
+				if !strings.HasPrefix(c, "Write ") {
+					calls = append(calls, c)
+				}
+			}
+			if !slices.Equal(calls, wantCalls) {
+				tt.Errorf("store calls %v, want %v", calls, wantCalls)
+			}
+			if got := failOps(s); !slices.Equal(got, wantFails) {
+				tt.Errorf("fail ops %v, want %v", got, wantFails)
+			}
+			var deleted []string
+			for _, rec := range ofKind(w.Sim.Records(), "lockstep.persist.delete") {
+				deleted = append(deleted, attr(rec, "store")+" "+attr(rec, "to"))
+			}
+			if !slices.Equal(deleted, wantDeleted) {
+				tt.Errorf("delete records %v, want %v", deleted, wantDeleted)
+			}
+			if len(r.errs) != 0 {
+				tt.Errorf("errs %v, want none", r.errs)
+			}
+			if got := r.ask(tt, getCmd); got != 6 {
+				tt.Errorf("Get replied %d, want 6", got)
+			}
+		})
+	}
+	calls := []string{"Save 2", "Save 4", "DeleteSnapshots 1", "DeleteEvents 2", "Save 6", "DeleteSnapshots 3", "DeleteEvents 4"}
+	t.Run("ok", func(t *testing.T) {
+		run(t, false, false, calls, nil, []string{"snapshots 1", "events 2", "snapshots 3", "events 4"})
+	})
+	t.Run("snapshots deletion fails", func(t *testing.T) {
+		run(t, true, false, calls, []string{"delete-snapshots", "delete-snapshots"}, []string{"events 2", "events 4"})
+	})
+	t.Run("events deletion fails", func(t *testing.T) {
+		run(t, false, true, calls, []string{"delete-events", "delete-events"}, []string{"snapshots 1", "snapshots 3"})
+	})
+}
+
+// PER-160, PER-170: a snapshot save in flight when the incarnation fails is cancelled: its snapshot
+// record never appears, and the next incarnation takes snapshots as before.
+func TestPersistSnapshotCancelledAtRestart(t *testing.T) {
+	opts := fullTrace(3)
+	opts.Disk.Latency.Sync.Base = 10 * time.Millisecond
+	sim.Simulate(t, opts, func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		r := newCounterRun(s)
+		r.config = func(cfg *persist.Config[Added, CounterState]) { cfg.SnapshotEvery = 1 }
+		r.node()
+		w.RunFor(500 * time.Millisecond)
+		r.mustHaveRecovered(tt)
+		old := r.pid
+		r.ask(tt, addCmd(1))
+		// The reply comes with the commit; the save that follows takes several 10 ms syncs.
+		if err := s.InjectFail(old.Address(), errors.New("injected")); err != nil {
+			tt.Fatalf("InjectFail: %v", err)
+		}
+		w.RunFor(time.Second)
+		if len(r.errs) != 1 {
+			tt.Fatalf("errs %v, want the injected failure", r.errs)
+		}
+		if got := snapSeqs(s); len(got) != 0 {
+			tt.Errorf("snapshot seqs %v after the failure, want none: the save was cancelled", got)
+		}
+		if got := r.ask(tt, addCmd(1)); got != 2 {
+			tt.Errorf("Add{1} after the restart replied %d, want 2", got)
+		}
+		w.RunFor(time.Second)
+		// Recovery found no snapshot: the next incarnation's snapshot is of seq 2 once the commit
+		// is done, and nothing else.
+		if got := snapSeqs(s); !slices.Equal(got, []string{"2"}) {
+			tt.Errorf("snapshot seqs %v, want [2]", got)
+		}
+	})
+}
+
+// checkOneCycleAtATime checks over the whole trace that no save of the counter started while an
+// effect of a snapshot cycle (a save or a deletion) was in flight, and that no cycle effect is left
+// in flight at the end. A cancelled effect ends with its lockstep.effect.done record.
+func (r *counterRun) checkOneCycleAtATime(tt testing.TB) {
+	tt.Helper()
+	inFlight := map[string]bool{}
+	for _, rec := range r.s.World().Sim.Records() {
+		if attr(rec, "actor") != r.pid.String() || !slices.Contains(snapshotEffects, attr(rec, "name")) {
+			continue
+		}
+		switch rec.Kind {
+		case "lockstep.effect.start":
+			if attr(rec, "name") == "lockstep.persist.save" && len(inFlight) > 0 {
+				tt.Errorf("a save started while %v are in flight", inFlight)
+			}
+			inFlight[attr(rec, "name")] = true
+		case "lockstep.effect.done":
+			delete(inFlight, attr(rec, "name"))
+		}
+	}
+	if len(inFlight) != 0 {
+		tt.Errorf("snapshot effects still in flight at the end: %v", inFlight)
+	}
+}
+
+// PER-145, PER-160, PER-170: a snapshot save in flight when a failure breaks the counter, which
+// its parent resumes, does not count. A completion that reaches the broken counter only starts
+// the recovery; a command that reaches it first cancels the save. Either way the save's snapshot
+// record never appears, no deletion of the cycle starts, no second save runs beside it, and the
+// next save, after the recovery, is of the recovered counter. The save itself ran before the
+// failure, so its snapshot is on disk and the recovery uses it.
+func TestPersistSnapshotInFlightAtBreak(t *testing.T) {
+	opts := fullTrace(3)
+	opts.Disk.Latency.Sync.Base = 20 * time.Millisecond
+	// run adds 1 (its save starts), then 99, whose Apply panics once 1 ms later, so the counter
+	// breaks while the save runs; afterwards, if get is set, it asks Get while the save runs.
+	run := func(t *testing.T, get bool, wantOutcome string) {
+		sim.Simulate(t, opts, func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			r := newCounterRun(s)
+			r.config = func(cfg *persist.Config[Added, CounterState]) { cfg.SnapshotEvery = 1 }
+			r.directive = func(error) lockstep.Directive { return lockstep.DirectiveResume }
+			panicked := false
+			r.apply = func(e Added) {
+				if e.N == 99 && !panicked {
+					panicked = true
+					panic("boom")
+				}
+			}
+			r.node()
+			w.RunFor(500 * time.Millisecond)
+			r.mustHaveRecovered(tt)
+			r.ask(tt, addCmd(1))
+			if err := sim.Send(s, "n1", r.pid, CounterCmd(Add{N: 99})); err != nil {
+				tt.Fatalf("Send: %v", err)
+			}
+			w.RunFor(30 * time.Millisecond)
+			if len(r.errs) != 1 || !isPanic(r.errs[0], "boom") {
+				tt.Fatalf("errs %v, want the panic of Apply", r.errs)
+			}
+			recs := w.Sim.Records()
+			saveAt := indexOf(recs, func(x kernel.Record) bool {
+				return x.Kind == "lockstep.effect.start" && attr(x, "name") == "lockstep.persist.save"
+			})
+			if saveAt < 0 || len(r.ofActor(recs[saveAt:], "lockstep.fail")) == 0 || len(slices.DeleteFunc(
+				ofKind(recs[saveAt:], "lockstep.effect.done"), func(x kernel.Record) bool { return attr(x, "name") != "lockstep.persist.save" })) != 0 {
+				tt.Fatal("the save is not in flight when the counter fails")
+			}
+			var reply *lockstep.Reply[int64]
+			if get {
+				reply = lockstep.Ask(s.System("n1"), r.pid, getCmd)
+			}
+			w.RunFor(2 * time.Second)
+
+			recs = w.Sim.Records()
+			var saves []kernel.Record
+			for _, rec := range ofKind(recs, "lockstep.effect.done") {
+				if attr(rec, "name") == "lockstep.persist.save" && attr(rec, "actor") == r.pid.String() {
+					saves = append(saves, rec)
+				}
+			}
+			if len(saves) != 1 || attr(saves[0], "outcome") != wantOutcome {
+				tt.Errorf("outcomes of the saves %v, want one %q", saves, wantOutcome)
+			}
+			if got := snapSeqs(s); len(got) != 0 {
+				tt.Errorf("snapshot seqs %v, want none: the save of the broken counter does not count", got)
+			}
+			if got := effectStarts(recs, "lockstep.persist.delete-snapshots"); len(got) != 0 {
+				tt.Errorf("%d deletions of snapshots started, want none", len(got))
+			}
+			if len(r.recs) != 2 || r.recs[1] != (persist.Recovery{SnapshotSeq: 1, Events: 1, LastSeq: 2}) {
+				tt.Fatalf("recs %+v, want a second recovery from the snapshot of seq 1 with one event", r.recs)
+			}
+			if get && (!hooks.AskResolved(reply) || !slices.Contains(r.log, "get 100")) {
+				tt.Errorf("Get was not answered with 100 after the recovery: %v", r.log)
+			}
+			if got := r.ask(tt, addCmd(1)); got != 101 {
+				tt.Errorf("Add{1} after the recovery replied %d, want 101", got)
+			}
+			w.RunFor(time.Second)
+			if got := snapSeqs(s); !slices.Equal(got, []string{"3"}) {
+				tt.Errorf("snapshot seqs %v, want [3]: the next save runs after the recovery", got)
+			}
+			r.checkOneCycleAtATime(tt)
+		})
+	}
+	t.Run("a completion reaches the broken counter", func(t *testing.T) { run(t, false, "ok") })
+	t.Run("a command reaches the broken counter", func(t *testing.T) { run(t, true, "cancelled") })
 }
