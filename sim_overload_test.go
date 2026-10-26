@@ -645,13 +645,14 @@ func settledGoroutines() int {
 }
 
 // AT-OVL-25, OVL-230: a simulation with every host-state option set, a Go memory limit below the
-// live heap and metrics.Read replaced by a panicking hook runs spawning and sending for 10 s of
-// virtual time and passes; no admission source turns on, no kernel event is labeled
-// lockstep/overload-sample, and the host's goroutine count and Go memory limit are the same after
-// Simulate as before. The hooks for runtime.NumGoroutine, runtime.Stack and the goroutine profile
-// join metrics.Read's once the goroutine monitor and the watchdog exist.
+// live heap and metrics.Read and runtime.Stack replaced by panicking hooks runs spawning and
+// sending for 10 s of virtual time and passes; no admission source turns on, no kernel event is
+// labeled lockstep/overload-sample, and the host's goroutine count and Go memory limit are the
+// same after Simulate as before. The hooks for runtime.NumGoroutine and the goroutine profile join
+// them once the goroutine monitor exists.
 func TestATOVL25NoHostState(t *testing.T) {
 	t.Cleanup(overload.SetReadMetrics(func([]metrics.Sample) { panic("simulation called metrics.Read") }))
+	t.Cleanup(overload.SetStack(func([]byte, bool) int { panic("simulation called runtime.Stack") }))
 	limit := int64(max(liveHeap(t)/2, 1)) //nolint:gosec // half a heap size is far below math.MaxInt64
 	old := debug.SetMemoryLimit(limit)
 	t.Cleanup(func() { debug.SetMemoryLimit(old) })

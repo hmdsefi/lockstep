@@ -4,6 +4,10 @@
 package lockstep
 
 import (
+	"context"
+	"log/slog"
+	"time"
+
 	"github.com/hmdsefi/lockstep/internal/overload"
 	"github.com/hmdsefi/lockstep/internal/prodengine"
 )
@@ -13,6 +17,9 @@ import (
 // nil. startOverload sets the fields before New returns; stopOverload stops what they hold.
 type prodOverload struct {
 	sampler *overload.Sampler // samples the live heap for the memory source on the engine clock (OVL-300)
+	// watchdog reports the turns running past the watchdog timeout (OVL-500); nil when the timeout
+	// is 0.
+	watchdog *overload.Watchdog
 }
 
 // startOverload starts the production overload machinery of a system New built on pe, whose
@@ -29,13 +36,65 @@ func (s *System) startOverload(pe *prodengine.Engine, gate *overload.Gate, cfg *
 	adm := cfg.admission
 	s.prodOvl.sampler = overload.NewSampler(gate, s.eng.Clock, adm.high, adm.low, adm.set, log, nil)
 	s.prodOvl.sampler.Start()
+
+	// Stuck-turn watchdog (OVL-500): its one goroutine polls the engine's running turns.
+	if d := cfg.watchdog; d > 0 {
+		turns := &runningTurns{pe: s.prod}
+		s.prodOvl.watchdog = overload.NewWatchdog(d, turns.running, func(t overload.Turn, elapsed time.Duration, stack string) {
+			s.onStuck(t, elapsed, d, stack)
+		})
+		s.prodOvl.watchdog.Start()
+	}
 }
 
 // stopOverload stops the production overload machinery, if the system has any, before the
 // engine stops (OVL-700): the sampler's pending tick is cancelled, and a tick running on a worker
-// arms no further one. stopEngine calls it once, on every path that stops the engine.
+// arms no further one; the watchdog's goroutine has exited when it returns. stopEngine calls it
+// once, on every path that stops the engine.
 func (s *System) stopOverload() {
 	if s.prodOvl.sampler != nil {
 		s.prodOvl.sampler.Stop()
 	}
+	if s.prodOvl.watchdog != nil {
+		s.prodOvl.watchdog.Stop()
+	}
 }
+
+// runningTurns adapts (*prodengine.Engine).RunningTurns to the watchdog (OVL-500): the watchdog
+// reaches the engine only through it, so internal/prodengine and internal/overload do not import
+// each other (R38). Only the watchdog's goroutine calls running.
+type runningTurns struct {
+	pe      *prodengine.Engine
+	scratch []prodengine.RunningTurn // reused by every poll
+}
+
+// running appends the engine's turns in progress to dst as watchdog turns and returns the
+// extended slice.
+func (r *runningTurns) running(dst []overload.Turn) []overload.Turn {
+	r.scratch = r.pe.RunningTurns(r.scratch[:0])
+	for _, t := range r.scratch {
+		dst = append(dst, overload.Turn(t)) // the same fields (SCH-270, OVL §4.2)
+	}
+	clear(r.scratch) // keep no actor alive until the next poll
+	return dst
+}
+
+// onStuck reports a turn of t.Actor that has run for elapsed, at least the watchdog timeout, on
+// the watchdog's goroutine (OVL-510): it logs OBS-060's "Stuck turn" event through the system's
+// logger with the actor's attributes in OBS-020's order and the stack of the turn's worker. A
+// turn of the guardians, which are not a cell, carries the user guardian's address. The address
+// is safe to read here: it is written before the actor's first turn, and the engine publishes the
+// turn under a lock that RunningTurns takes.
+func (s *System) onStuck(t overload.Turn, elapsed, timeout time.Duration, stack string) {
+	a := t.Actor.Address()
+	s.log.LogAttrs(context.Background(), slog.LevelError, "turn exceeds watchdog timeout",
+		slog.String("node", a.Node), slog.String("path", a.Path), slog.Uint64("uid", a.UID),
+		slog.Duration("elapsed", elapsed.Truncate(time.Millisecond)),
+		slog.Duration("timeout", timeout),
+		slog.String("stack", stack),
+	)
+	s.markStuck(t)
+}
+
+// markStuck marks t's actor stuck after a report (OVL-520). It does nothing yet.
+func (*System) markStuck(overload.Turn) {}
