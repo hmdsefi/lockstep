@@ -62,8 +62,9 @@ func NewMonitor(bound int, log *slog.Logger) *Monitor {
 // Sample reads the goroutine count. While armed, a count of at least the bound logs one warning
 // and disarms the monitor; while disarmed, a count below bound - bound/5 re-arms it (OVL-610).
 // With a bound of 0 it does nothing. The warning's summary is empty when the goroutine profile
-// could not be read. The Sampler calls it on every 10th tick; callers must not
-// run it concurrently with itself.
+// could not be read. When the logger has Warn disabled, reaching the bound disarms the monitor
+// without reading the profile. The Sampler calls it on every 10th tick; callers must not run it
+// concurrently with itself.
 func (m *Monitor) Sample() {
 	if m.bound <= 0 {
 		return

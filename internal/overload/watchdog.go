@@ -27,8 +27,9 @@ const (
 // stackHook, when set, replaces runtime.Stack (OVL §10).
 var stackHook atomic.Pointer[func([]byte, bool) int]
 
-// stackSize is the size of the last buffer that held the whole all-goroutines dump. Each dump
-// stops the world, so GoroutineStack starts from it rather than growing from 64 KiB again.
+// stackSize is the buffer size GoroutineStack starts from: the size of the last all-goroutines
+// dump plus a quarter. Each dump stops the world, so starting there avoids growing from 64 KiB
+// again, and the hint falls back when the dump shrinks.
 var stackSize atomic.Int64
 
 // stackDump calls the test hook if one is set and runtime.Stack otherwise.
@@ -166,13 +167,13 @@ func runs(turns []Turn, worker int, start time.Time) bool {
 // goid: from its "goroutine <goid> [" header to the end of its last line. A section longer than
 // 64 KiB is cut after the last line end within its first 64 KiB and followed by "...(truncated)"
 // (OVL-510). It returns "" when no such goroutine exists. It stops the world for the dump, once
-// more each time the buffer is too small; the buffer starts at the size that last held the dump.
+// more each time the buffer is too small; the buffer starts a quarter above the size of the last dump.
 func GoroutineStack(goid uint64) string {
 	buf := make([]byte, max(stackLimit, int(stackSize.Load())))
 	for {
 		n := stackDump(buf, true)
 		if n < len(buf) {
-			stackSize.Store(int64(len(buf)))
+			stackSize.Store(int64(max(stackLimit, n+n/4)))
 			buf = buf[:n]
 			break
 		}
