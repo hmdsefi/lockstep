@@ -362,10 +362,12 @@ failure, so a supervisor that resumes the actor does not leave it paused for goo
 supervisor decides, as for any failure:
 
 - A restart builds a new wrapper, which recovers from the store.
-- A resume keeps the incarnation, but the wrapper recovers again before it handles its next
-  message, so the actor never runs on a state that the store does not hold. A command or signal
+- A resume keeps the incarnation. After a store, codec or consistency error, or a panic in `Apply`,
+  `Recovered` or a callback of committed events, the wrapper recovers again before it handles its
+  next message, so the actor never runs on a state that the store does not hold. A command or signal
   that arrived after the failure is kept and handled after that recovery. The result of an effect
-  started before the failure is dropped.
+  started before the failure is dropped. After a panic in `Handle` or its callbacks in the command's
+  own turn, or a `Fail`, the state is unchanged and the next command uses it.
 
 With a snapshot store, the wrapper saves a snapshot of the encoded state after every `SnapshotEvery`
 committed events, and when the actor calls `Context.Snapshot`, once the events up to that point are
@@ -382,8 +384,9 @@ In simulation each step leaves a record in the trace: `lockstep.persist.recover`
 ### The file store
 
 `filestore.Open(dir)` returns a `Store` on a directory of the operating system's file system, and
-`filestore.New(fsys)` returns one on any `FS`. A `Store` is both the journal and the snapshot store
-of an actor. It keeps its data under one root directory:
+`filestore.New(fsys)` returns one on any `FS`. `Open` creates the directory if needed and syncs the
+parent of every directory it creates, so the store's root survives a machine crash. A `Store` is
+both the journal and the snapshot store of an actor. It keeps its data under one root directory:
 
 ```text
 FORMAT
@@ -403,13 +406,13 @@ segment has reached the segment size, 64 MiB by default, the next `Write` starts
 after its first sequence number.
 
 `Commit` is the durability point. It syncs, in this order, every segment written since its last
-sync, then the ID's directory if a segment was created or removed, then the journal directory if
-the ID's directory was created. The order covers the data and its directory entries: a new file's
-bytes can reach the disk while its entry does not, and a crash then loses the file. If a `Write`
-fails, the store truncates the segment to its size before the call. If a `Commit` fails, it
-truncates every segment written since the last commit and removes a segment created since then
-that holds no committed event. The next `Recover` reports what survived. If the repair itself fails, the ID becomes unusable and every later call for it returns
-`ErrUnusable`.
+sync, then the ID's directory if a segment was created or removed, then the journal directory if the
+ID's directory was created. The order covers the data and its directory entries: a new file's bytes
+can reach the disk while its entry does not, and a crash then loses the file. If a `Write` fails,
+the store truncates the segment to its size before the call. If a `Commit` fails, it truncates every
+segment written since the last commit and removes each segment created since then that starts after
+the first uncommitted sequence number. The next `Recover` reports what survived. If the repair
+itself fails, the ID becomes unusable and every later call for it returns `ErrUnusable`.
 
 `Recover` makes every event it reports durable: records that survived a crash without a sync are
 synced before they count. It reads the first record of the first segment and every record of the
@@ -430,8 +433,10 @@ events are all covered, and always keeps the last segment.
 
 The `Store` opens every file inside the call that needs it and closes it before the call returns,
 so no file handle outlives a call. Calls for one persistence ID run one after another, and calls
-for different IDs may overlap. Every error wraps the error of the `FS` call that caused it, so
-`errors.Is` reaches the `io/fs` sentinels.
+for different IDs may overlap. Each `Store` keeps its own segment sizes, so use one `Store` per
+directory: two Stores on the same directory, in one process or in two, are not detected and can
+overwrite each other's committed events. Every error wraps the error of the `FS` call that caused
+it, so `errors.Is` reaches the `io/fs` sentinels.
 
 ### The runtime seam
 
@@ -455,8 +460,8 @@ production.
 
 Disk latency comes from the simulated disk, never from the wall clock. Each `Volume` call made by a
 storage operation of `persist`, except `Size`, samples the latency model of `Options.Disk.Latency`
-for its class (read, write, sync or metadata) from the seeded stream, and the operation's completion event is
-scheduled after the sum. With no latency configured, no draw happens.
+for its class (read, write, sync or metadata) from the seeded stream, and the operation's completion
+event is scheduled after the sum. With no latency configured, no draw happens.
 
 A `Volume` belongs to its node. A call from another node's event, or from outside any node event,
 fails the seed with `lockstep/misuse` and returns an error that wraps `fs.ErrPermission`, without

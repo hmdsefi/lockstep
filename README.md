@@ -44,18 +44,18 @@ lockstep includes:
 - **Overload protection** in the production engine: new actors and user messages are refused while
   the live heap is near its memory limit, a turn that runs too long is reported and its actor
   isolated, and a growing goroutine count is logged.
-- **Event-sourced persistent actors.** `persist.Spawn` starts an actor whose state is rebuilt from
-  a journal of events. A reply goes out only after its events are fsynced, and a restart recovers
-  from the newest snapshot and the events after it. `persist/filestore` is the reference journal
-  and snapshot store. The same actor code runs on the operating system's files in production and
-  on a simulated disk in tests, where crashes, torn writes, and failed syncs exercise the real
-  recovery code.
+- **Event-sourced persistent actors.** `persist.Spawn` starts an actor whose state is rebuilt from a
+  journal of events. A reply sent from a `Then` callback goes out only after its events are fsynced,
+  and a restart recovers from the newest snapshot and the events after it. `persist/filestore` is
+  the reference journal and snapshot store. The same actor code runs on the operating system's files
+  in production and on a simulated disk in tests, where crashes, torn writes, and failed syncs
+  exercise the real recovery code.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
 - **Deadlock and leak detection** in simulation. A cycle of pending asks fails the seed with
-  `lockstep: deadlock: A → B → A`, and so does an actor that stops with an effect pending, a
-  resource unclosed, or a file still open on the simulated disk.
+  `lockstep: deadlock: A → B → A`. An actor that stops with an effect pending, a resource unclosed,
+  or a file still open on the simulated disk fails it with a leak failure.
 - **A static analyzer**, `lockstep-vet`, also available as a golangci-lint plugin. It reports
   `time.Now`, global randomness, goroutines, `select`, map ranges, and blocking calls in actor
   code.
@@ -472,7 +472,8 @@ directory and recovers the balance of 5 from the journal before it handles the n
 recovery calls it again for every stored event. An actor handles one command at a time, and while
 it recovers and while a batch of events is being committed, its commands wait in the mailbox. The
 actor's message type is the command type, so `Send` and `Ask` reach it like any actor.
-`persist.JSON` encodes events with `encoding/json`; any `persist.Codec` works.
+`persist.JSON` encodes events with `encoding/json`. Any `persist.Codec` works whose `Encode` is
+deterministic and returns a slice it does not reuse afterwards.
 
 To start recovery from a snapshot instead of from the first event, give the `Config` a snapshot
 store and a codec for the state. A `*filestore.Store` is both the journal and the snapshot store:
@@ -688,7 +689,9 @@ It cannot preempt a turn, so the watchdog reports a stuck turn and isolates its 
 free the worker. There is no remoting, clustering, or OpenTelemetry support, so actors
 on different nodes talk only in simulation. The reference store in `persist/filestore` keeps files
 on a local disk; a journal or snapshot store of another kind implements `persist.Journal` and
-`persist.SnapshotStore`.
+`persist.SnapshotStore`. Use one `filestore.Store` per directory: two Stores on the same
+directory, in one process or in two, are not detected and can overwrite each other's committed
+events.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
