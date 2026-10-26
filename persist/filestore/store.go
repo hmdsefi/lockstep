@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -81,11 +82,12 @@ type idLock struct {
 }
 
 // Open returns a Store on directory dir of the operating system's file system, creating dir and
-// any missing parent if needed. It prepares the store before returning: it creates the journal
-// and snapshots directories and the FORMAT file, or checks an existing FORMAT file.
+// any missing parent if needed. It syncs the parent of every directory it creates, so that dir
+// survives a machine crash. It prepares the store before returning: it creates the journal and
+// snapshots directories and the FORMAT file, or checks an existing FORMAT file.
 func Open(dir string, opts ...Option) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the store's directories are world-readable by design
-		return nil, fmt.Errorf("filestore: %w", err)
+	if err := makeRoot(dir); err != nil {
+		return nil, err
 	}
 	s := New(&osFS{root: dir}, opts...)
 	if err := s.ensureInit(); err != nil {
@@ -102,6 +104,40 @@ func New(fsys FS, opts ...Option) *Store {
 		o(&s.set)
 	}
 	return s
+}
+
+// syncDirOS syncs a directory of the operating system's file system. Tests replace it to see
+// which directories Open syncs.
+var syncDirOS = syncDir
+
+// makeRoot creates dir and every missing parent (PER-430). os.MkdirAll alone makes the new
+// directories visible but not durable: an entry is durable only once its parent directory is
+// synced. So makeRoot finds the directories that do not exist yet, creates them, and then syncs
+// the parent of each one, deepest first. Without that, a machine crash after the first commit
+// could lose dir, with every acknowledged event in it. A directory that already exists is not
+// synced again.
+func makeRoot(dir string) error {
+	var created []string // the directories MkdirAll creates, deepest first
+	for p := filepath.Clean(dir); ; {
+		if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+			break // p exists, or MkdirAll reports why it cannot be created
+		}
+		created = append(created, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the store's directories are world-readable by design
+		return fmt.Errorf("filestore: %w", err)
+	}
+	for _, d := range created {
+		if err := syncDirOS(filepath.Dir(d)); err != nil {
+			return fmt.Errorf("filestore: %w", err)
+		}
+	}
+	return nil
 }
 
 // ensureInit prepares the store once: it creates the journal and snapshots directories, checks

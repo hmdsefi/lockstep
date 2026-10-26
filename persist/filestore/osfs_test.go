@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -95,6 +96,75 @@ func TestOpenErrors(t *testing.T) {
 			t.Fatalf("Open(%q) error %v does not wrap a *fs.PathError", dir, err)
 		}
 	}
+}
+
+// recordSyncs replaces syncDirOS for the test: it records each path and returns fail(path).
+func recordSyncs(t *testing.T, fail func(path string) error) *[]string {
+	t.Helper()
+	var synced []string
+	old := syncDirOS
+	syncDirOS = func(path string) error {
+		synced = append(synced, path)
+		return fail(path)
+	}
+	t.Cleanup(func() { syncDirOS = old })
+	return &synced
+}
+
+// TestPER430OpenSyncsCreatedParents covers PER-430: Open syncs the parent of every directory it
+// creates, deepest first, and no parent when the directory exists.
+func TestPER430OpenSyncsCreatedParents(t *testing.T) {
+	ok := func(string) error { return nil }
+	base := t.TempDir()
+	existing := filepath.Join(base, "existing")
+	if err := os.Mkdir(existing, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want []string
+	}{
+		{"nested missing", filepath.Join(base, "a", "b", "store"),
+			[]string{filepath.Join(base, "a", "b"), filepath.Join(base, "a"), base}},
+		{"one missing", filepath.Join(existing, "store"), []string{existing}},
+		{"exists", existing, nil},
+		{"exists, unclean name", existing + string(filepath.Separator) + ".", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synced := recordSyncs(t, ok)
+			if _, err := Open(tc.dir); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			if !slices.Equal(*synced, tc.want) {
+				t.Fatalf("Open(%q) synced %q, want %q", tc.dir, *synced, tc.want)
+			}
+		})
+	}
+
+	t.Run("relative", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		synced := recordSyncs(t, ok)
+		if _, err := Open(filepath.Join("data", "store")); err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if want := []string{"data", "."}; !slices.Equal(*synced, want) {
+			t.Fatalf("Open synced %q, want %q", *synced, want)
+		}
+	})
+
+	t.Run("sync fails", func(t *testing.T) {
+		boom := &fs.PathError{Op: "sync", Path: "x", Err: errors.New("boom")}
+		synced := recordSyncs(t, func(string) error { return boom })
+		dir := filepath.Join(t.TempDir(), "a", "store")
+		s, err := Open(dir)
+		if s != nil || !errors.Is(err, boom) {
+			t.Fatalf("Open = %v, %v; want no Store and an error wrapping %v", s, err, boom)
+		}
+		if want := []string{filepath.Dir(dir)}; !slices.Equal(*synced, want) {
+			t.Fatalf("Open synced %q before failing, want %q", *synced, want)
+		}
+	})
 }
 
 func TestATPER42InvalidNames(t *testing.T) {
