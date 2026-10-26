@@ -74,7 +74,7 @@ type counterCtx = persist.Context[CounterCmd, Added, CounterState]
 type counterRun struct {
 	s      *sim.Sim
 	config func(cfg *persist.Config[Added, CounterState]) // edits the default Config; nil: none
-	pid    lockstep.PID[CounterCmd]                        // the counter of the latest boot
+	pid    lockstep.PID[CounterCmd]                       // the counter of the latest boot
 
 	boots     int                // runs of n1's setup
 	factories int                // calls of the counter's factory

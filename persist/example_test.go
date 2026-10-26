@@ -51,7 +51,11 @@ func Example() {
 			panic(err)
 		}
 		sys := lockstep.New()
-		defer sys.Shutdown(context.Background())
+		defer func() {
+			if err := sys.Shutdown(context.Background()); err != nil {
+				panic(err)
+			}
+		}()
 		pid, err := persist.Spawn(sys, "account", "acct-1",
 			func() persist.EventSourced[Deposit, Deposited, int64] { return account{} },
 			persist.Config[Deposited, int64]{Journal: store, Events: persist.JSON[Deposited]()})
