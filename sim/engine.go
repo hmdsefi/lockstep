@@ -108,6 +108,11 @@ type simEngine struct {
 	// that started them (SIM-290 b); it is read by key only.
 	held map[string][]*heldEffect
 
+	// starts holds the incarnation of each live actor's latest lockstep.start record, by the
+	// actor's address text, so the Volume adapter knows who opens a file (PER-540); it is read by
+	// key only.
+	starts map[string]string
+
 	// dead is set when the node crashes (SIM-110) or the system stops (SIM-195): the engine then
 	// ignores every seam call (SIM-120). The kernel itself discards the events a crashed
 	// incarnation scheduled, so its turns, timers and deferred sends never run, even after a
@@ -168,6 +173,7 @@ func (e *simEngine) Ready(a engine.ActorRef) {
 // when Slot.End says so; the runtime does not call Ready for it (ENG-350).
 func (e *simEngine) postTurn(a engine.ActorRef) {
 	e.post(turnLabel, func() {
+		e.s.exec.actor = a.Address() // the turn's actor owns the files it opens (PER-540)
 		slot := a.Slot()
 		slot.Begin()
 		more := a.RunTurn(1)
@@ -192,12 +198,14 @@ func (e *simEngine) post(label string, fn func()) { e.schedule(0, label, fn) }
 // schedule schedules fn as an event of e's node, labeled label, after the local duration d, and
 // returns the Cancel of that event. It is the one counted path for node events: every node event
 // sim schedules goes through it, so the event counts as pending, by its label's class, in e's
-// counts and the Sim's until it runs, its Cancel returns true or its node crashes (SIM-250). The
-// caller has checked canSchedule; on a down node nothing is scheduled or counted.
+// counts and the Sim's until it runs, its Cancel returns true or its node crashes (SIM-250). While
+// fn runs, the event is the execution in progress, an event of e's node (PER-510). The caller has
+// checked canSchedule; on a down node nothing is scheduled or counted.
 func (e *simEngine) schedule(d time.Duration, label string, fn func()) engine.Cancel {
 	ev := &pendingEvent{label: label}
 	id := e.n.After(d, label, func() {
 		e.settle(ev)
+		defer e.s.enter(execution{eng: e})()
 		fn()
 	})
 	if id == 0 { // the node is down: nothing was scheduled
@@ -339,6 +347,15 @@ func (e *simEngine) Record(kind string, attrs ...engine.Attr) {
 	}
 	e.emit(kind, recordText(kind, attrs), attrs)
 	e.checkLeak(kind, attrs) // after the record it is about (SIM-290)
+	switch kind {
+	case "lockstep.start": // the owner of the files the actor opens from now on (PER-540)
+		if e.starts == nil {
+			e.starts = make(map[string]string)
+		}
+		e.starts[attrValue(attrs, "actor")] = attrValue(attrs, "inc")
+	case "lockstep.stop":
+		delete(e.starts, attrValue(attrs, "actor"))
+	}
 	if changesUsage(kind) {
 		e.checkBudget()
 	}

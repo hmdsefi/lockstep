@@ -48,7 +48,8 @@ func (e *simEngine) release(actor string, ef *heldEffect) {
 //
 // A lockstep.close record with a non-empty err is a resource that failed to close. At a
 // lockstep.restart or lockstep.stop record of an actor, every effect the engine still holds for it
-// is a pending effect; they are reported in ID order and forgotten.
+// is a pending effect; they are reported in ID order and forgotten. Then every file the ending
+// incarnation opened through a Volume and has not closed is reported, in path order (SIM-290 c).
 func (e *simEngine) checkLeak(kind string, attrs []engine.Attr) {
 	switch kind {
 	case "lockstep.close":
@@ -63,6 +64,7 @@ func (e *simEngine) checkLeak(kind string, attrs []engine.Attr) {
 		for _, ef := range list {
 			e.leak(attrs, "effect", fmt.Sprintf("effect %d %q still pending", ef.id, ef.name))
 		}
+		e.fileLeaks(attrs)
 	}
 }
 

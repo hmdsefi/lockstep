@@ -3,7 +3,10 @@
 
 package sim
 
-import "github.com/hmdsefi/lockstep/internal/engine"
+import (
+	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/persist/filestore"
+)
 
 // ApplyEnv exposes applyEnv to the external tests.
 var ApplyEnv = applyEnv
@@ -32,4 +35,14 @@ func (s *Sim) Engine(name string) engine.Engine {
 		return e.bundle
 	}
 	return engine.Engine{}
+}
+
+// CloseUnderlying closes the simdisk handle behind f, a File of a Volume, without the Volume
+// seeing it, so that f's own Close returns an error.
+func CloseUnderlying(f filestore.File) error {
+	vf, ok := f.(*volFile)
+	if !ok {
+		panic("CloseUnderlying: not a File of a Volume")
+	}
+	return vf.f.Close()
 }
