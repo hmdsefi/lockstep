@@ -25,10 +25,11 @@ const tick = 100 * time.Millisecond
 // metricFeed is a read hook: each call serves the next live-heap value; the limit is set by the
 // test. A value of badLive makes the live-heap metric read as KindBad.
 type metricFeed struct {
-	live  []uint64
-	limit uint64
-	bad   bool // the live-heap metric reads as KindBad
-	calls int
+	live     []uint64
+	limit    uint64
+	bad      bool // the live-heap metric reads as KindBad
+	badLimit bool // the memory-limit metric reads as KindBad
+	calls    int
 }
 
 func (f *metricFeed) read(samples []metrics.Sample) {
@@ -42,7 +43,10 @@ func (f *metricFeed) read(samples []metrics.Sample) {
 				samples[k].Value = overload.Uint64Value(f.live[i])
 			}
 		case "/gc/gomemlimit:bytes":
-			samples[k].Value = overload.Uint64Value(f.limit)
+			samples[k].Value = metrics.Value{}
+			if !f.badLimit {
+				samples[k].Value = overload.Uint64Value(f.limit)
+			}
 		}
 	}
 }
@@ -228,10 +232,38 @@ func TestATOVL31KindBad(t *testing.T) {
 	}
 }
 
-// OVL-330: a source that is on goes off when a metric becomes unreadable.
+// wantOffChange asserts that the memory source went on and then off, that the off change and the
+// "admission resumed" record carry live and the thresholds last in force (900 and 800), and that
+// the source is off.
+func wantOffChange(t *testing.T, r *rig, records func() []record, live uint64) {
+	t.Helper()
+	if r.memoryOn() {
+		t.Fatal("source stays on; want off")
+	}
+	want := []engine.AdmissionChange{
+		{Source: engine.SourceMemory, On: true, Live: 950, High: 900, Low: 800, Shedding: true},
+		{Source: engine.SourceMemory, On: false, Live: live, High: 900, Low: 800, Shedding: false},
+	}
+	if !reflect.DeepEqual(r.changes, want) {
+		t.Errorf("changes = %+v; want %+v", r.changes, want)
+	}
+	recs := records()
+	if len(recs) != 2 {
+		t.Fatalf("logged %d records %+v; want 2", len(recs), recs)
+	}
+	wantAttrs := []slog.Attr{slog.Uint64("heap_live_bytes", live), slog.Uint64("low_mark_bytes", 800)}
+	got := recs[1]
+	if got.level != slog.LevelInfo || got.msg != "admission resumed" || !slices.EqualFunc(got.attrs, wantAttrs, slog.Attr.Equal) {
+		t.Errorf("off record = %v %q %v; want Info \"admission resumed\" %v", got.level, got.msg, got.attrs, wantAttrs)
+	}
+}
+
+// OVL-330: a source that is on goes off when the live heap becomes unreadable. The off change
+// carries 0 for the live heap and the thresholds last in force.
 func TestSamplerKindBadAfterOn(t *testing.T) {
+	capt, records := newCapture()
 	feed := &metricFeed{live: []uint64{950}, limit: 1000}
-	r := newRig(t, feed, 0, 0, false, nil)
+	r := newRig(t, feed, 0, 0, false, slog.New(capt))
 	r.sampler.Start()
 	t.Cleanup(r.sampler.Stop)
 	if !r.memoryOn() {
@@ -239,9 +271,38 @@ func TestSamplerKindBadAfterOn(t *testing.T) {
 	}
 	feed.bad = true
 	r.eng.Advance(tick)
-	if r.memoryOn() {
-		t.Fatal("source stays on while the live heap reads KindBad; want off")
+	wantOffChange(t, r, records, 0)
+}
+
+// OVL-330: when only the limit becomes unreadable the live heap is still reported.
+func TestSamplerLimitKindBadAfterOn(t *testing.T) {
+	capt, records := newCapture()
+	feed := &metricFeed{live: []uint64{950}, limit: 1000}
+	r := newRig(t, feed, 0, 0, false, slog.New(capt))
+	r.sampler.Start()
+	t.Cleanup(r.sampler.Stop)
+	if !r.memoryOn() {
+		t.Fatal("source is off at 950 with limit 1000; want on")
 	}
+	feed.badLimit = true
+	r.eng.Advance(tick)
+	wantOffChange(t, r, records, 950)
+}
+
+// OVL-310: a source that is on goes off when the limit vanishes. The off change carries the live
+// heap and the thresholds last in force.
+func TestSamplerLimitVanishesAfterOn(t *testing.T) {
+	capt, records := newCapture()
+	feed := &metricFeed{live: []uint64{950}, limit: 1000}
+	r := newRig(t, feed, 0, 0, false, slog.New(capt))
+	r.sampler.Start()
+	t.Cleanup(r.sampler.Stop)
+	if !r.memoryOn() {
+		t.Fatal("source is off at 950 with limit 1000; want on")
+	}
+	feed.limit = math.MaxInt64
+	r.eng.Advance(tick)
+	wantOffChange(t, r, records, 950)
 }
 
 // OVL-300: with WithAdmission(0, 0) the sampler never reads the metrics, yet the tick re-arms.
