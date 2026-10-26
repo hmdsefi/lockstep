@@ -276,13 +276,14 @@ messages as if the mailbox were full, and subscribers receive `Overloaded`. Rest
 messages, replies, timer messages, and effect results are not refused. The system logs the change
 as `admission refusing` at Warn and `admission resumed` at Info.
 
-A watchdog goroutine finds stuck turns. It is the one goroutine of the overload machinery, so it
-runs even when every worker is stuck. It polls the production engine for the turns in progress,
+A watchdog goroutine finds stuck turns. It has its own goroutine so that it keeps running when every
+worker is stuck. It polls the production engine for the turns in progress,
 and reports each turn that has run for `WithWatchdog`'s timeout (5 seconds by default) once, at
 Error, with the actor's path and the stack of the worker goroutine. The actor is then stuck: user
 messages to it get its mailbox policy as if the mailbox were full, while system messages such as
-`Stop` still queue. When the turn returns, the incarnation fails with an error that matches
-`ErrTimeout`, and its supervisor decides what happens next. lockstep cannot preempt a turn, so a
+`Stop` still queue, and a `Stop` that queued while the turn was stuck stops the actor after the
+turn returns, without a restart. Otherwise, when the turn returns, the incarnation fails with an
+error that matches `ErrTimeout`, and its supervisor decides what happens next. lockstep cannot preempt a turn, so a
 turn that never returns keeps its worker, and `Shutdown` with a deadline returns the context's
 error.
 

@@ -42,7 +42,7 @@ lockstep includes:
   goroutines, so turns of different actors run in parallel while each actor handles one message at
   a time.
 - **Overload protection** in the production engine: new actors and user messages are refused while
-  the live heap is near its limit, a turn that runs too long is reported and its actor isolated,
+  the live heap is near its memory limit, a turn that runs too long is reported and its actor isolated,
   and a growing goroutine count is logged.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
@@ -226,16 +226,17 @@ goroutine reports every turn that has run for at least the timeout. The default,
 The report is one log line at Error with the actor's path and the stack of the worker goroutine
 that runs the turn. From then until the turn returns, the actor counts as stuck. User messages to
 it get its mailbox policy as if the mailbox were full, and under `FailSend` the error matches
-`ErrMailboxFull`. System messages, such as `Stop`, still queue. When the turn returns, the
-incarnation fails with an error that matches `ErrTimeout`, and its supervisor decides whether to
-restart, stop, or escalate.
+`ErrMailboxFull`. System messages, such as `Stop`, still queue, and a `Stop` that queued while the
+turn was stuck stops the actor after the turn returns, without a restart. Otherwise, when the turn
+returns, the incarnation fails with an error that matches `ErrTimeout`, and its supervisor decides
+whether to restart, stop, or escalate.
 
 lockstep cannot preempt a turn. A turn that never returns keeps its worker, and `Shutdown` with a
 deadline returns the context's error when the deadline passes.
 
 ### Goroutine count
 
-Once a second, `New` counts the goroutines of the whole process, not only lockstep's. When the
+Once a second, the system counts the goroutines of the whole process, not only lockstep's. When the
 count reaches the bound from `WithGoroutineWarning(n)`, the system logs one warning at Warn with
 the count and a summary of the ten functions that hold the most goroutines. The default,
 `DefaultGoroutineWarning`, is 10,000, and `WithGoroutineWarning(0)` turns the warning off. After a
@@ -245,7 +246,7 @@ warning, the next one waits until the count falls below 80% of the bound and rea
 
 These events go to the logger that `slog.Default()` returned when `New` ran, each with a `node`
 attribute, so set the default logger before you call `New`. A negative watchdog timeout or goroutine
-bound, or a `WithAdmission` pair other than `0 < low < high`, makes `New` panic with an error that
+bound, or a non-zero `WithAdmission` pair other than `0 < low < high`, makes `New` panic with an error that
 wraps `ErrInvalidOption`.
 
 Simulation checks these values and then ignores them. It stays deterministic, and overload there
