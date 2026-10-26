@@ -64,7 +64,8 @@ func WithSegmentSize(bytes int64) Option {
 
 // Store keeps the events and snapshots of many persistence IDs in files below one root
 // directory. It is safe for concurrent use: calls for one ID run one after another, calls for
-// different IDs may overlap.
+// different IDs may overlap. A Store keeps a small state for every persistence ID it has used,
+// for as long as it lives.
 //
 // Use one Store per directory. Two Stores on the same directory, in one process or in two, are
 // not detected and can overwrite each other's committed events.
