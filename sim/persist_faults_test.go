@@ -460,8 +460,9 @@ func (j *leakJournal) Write(ctx context.Context, id string, events []persist.Eve
 }
 
 // leakRun runs the counter, with a leakJournal if leaky and with a file created and left open in
-// its setup if setupFile, and adds 1; end then ends the run: it gets the run
-// and the node, and may fail, stop or crash the counter.
+// its setup if setupFile, and adds 1. It checks that the files exist, which shows that they were
+// opened: neither is ever closed. end then ends the run: it gets the run and the node, and may
+// fail, stop or crash the counter.
 func leakRun(s *sim.Sim, leaky, setupFile bool, end func(r *counterRun, n1 *kernel.Node)) {
 	w := s.World()
 	r := newCounterRun(s)
@@ -479,6 +480,14 @@ func leakRun(s *sim.Sim, leaky, setupFile bool, end func(r *counterRun, n1 *kern
 	w.RunFor(time.Millisecond)
 	if got := r.ask(w.T(), addCmd(1)); got != 1 {
 		w.T().Fatalf("Add{1} replied %d, want 1", got)
+	}
+	for _, f := range []struct {
+		path string
+		open bool
+	}{{"/extra", leaky}, {"/setup", setupFile}} {
+		if _, err := vol(s).Stat(f.path); (err == nil) != f.open {
+			w.T().Fatalf("Stat(%s) before the end = %v; want the file to exist: %v", f.path, err, f.open)
+		}
 	}
 	end(r, n1)
 	w.RunFor(time.Second)
