@@ -70,7 +70,10 @@ type cell[M any] struct {
 	addr    Address
 	parent  Address
 	factory func() Actor[M]
-	slot    engine.Slot // a named field: ActorRef needs a Slot method (ENG-300)
+	// throughput is WithActorThroughput's value, 0 if absent (SCH-040). Spawn sets it before the
+	// cell is registered, so it never changes while turns run.
+	throughput int
+	slot       engine.Slot // a named field: ActorRef needs a Slot method (ENG-300)
 
 	// The queues are set when the cell is built and never replaced: the mailbox keeps its capacity
 	// and policy for the life of the cell, across restarts (MBX-010).

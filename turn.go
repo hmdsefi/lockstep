@@ -16,10 +16,14 @@ import (
 // the popping of user messages for the turn: the cell is Suspended. RunTurn reports whether the
 // actor still has work (ENG-320). It never blocks, starts no goroutine and recovers every panic of
 // actor code (ENG-330, SUP-140). The engine re-queues the cell when it returns true; the runtime
-// never calls Ready for that (ENG-350).
+// never calls Ready for that (ENG-350). An actor spawned with WithActorThroughput(n) processes up
+// to n user messages in place of budget, unless budget is 1 (ENG-310, SCH-040).
 func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if budget < 1 {
 		panic("lockstep: RunTurn budget " + strconv.Itoa(budget) + " < 1")
+	}
+	if c.throughput > 0 && budget > 1 {
+		budget = c.throughput // WithActorThroughput replaces the engine's budget; 1 is never raised
 	}
 	c.mu.Lock()
 	held := c.holding()
