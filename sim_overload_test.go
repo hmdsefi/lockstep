@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
@@ -648,10 +649,11 @@ func settledGoroutines() int {
 // live heap and metrics.Read replaced by a panicking hook runs spawning and sending for 10 s of
 // virtual time and passes; no admission source turns on, no kernel event is labeled
 // lockstep/overload-sample, and the host's goroutine count and Go memory limit are the same after
-// Simulate as before. The hooks for runtime.NumGoroutine, runtime.Stack and the goroutine profile
-// join metrics.Read's once the goroutine monitor and the watchdog exist.
+// Simulate as before. The hook for runtime.Stack joins the others once the watchdog exists.
 func TestATOVL25NoHostState(t *testing.T) {
 	t.Cleanup(overload.SetReadMetrics(func([]metrics.Sample) { panic("simulation called metrics.Read") }))
+	t.Cleanup(overload.SetNumGoroutine(func() int { panic("simulation called runtime.NumGoroutine") }))
+	t.Cleanup(overload.SetGoroutineProfile(func(io.Writer) error { panic("simulation read the goroutine profile") }))
 	limit := int64(max(liveHeap(t)/2, 1)) //nolint:gosec // half a heap size is far below math.MaxInt64
 	old := debug.SetMemoryLimit(limit)
 	t.Cleanup(func() { debug.SetMemoryLimit(old) })
