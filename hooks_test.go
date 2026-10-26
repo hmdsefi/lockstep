@@ -38,6 +38,9 @@ func TestATENG11HookSet(t *testing.T) {
 	if hooks.NewSystem == nil {
 		t.Fatal("hooks.NewSystem is nil")
 	}
+	if hooks.Control == nil || hooks.Signal == nil {
+		t.Error("package lockstep left hooks.Control or hooks.Signal nil (PER §4.3)")
+	}
 	for _, opts := range []any{nil, []lockstep.Option{}} {
 		b := built(t, "n1", opts)
 		sys, ok := b.System.(*lockstep.System)

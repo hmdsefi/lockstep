@@ -10,9 +10,9 @@ import (
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
-// init sets the hook of ENG-200, SIM's three hooks (SIM §5.9), SFT's InjectFail (SFT-030) and the
-// address conversion that sim's effect handlers need (EFF-400); it is the only init function of
-// the package.
+// init sets the hook of ENG-200, SIM's three hooks (SIM §5.9), SFT's InjectFail (SFT-030), the
+// address conversion that sim's effect handlers need (EFF-400) and persistence's Control and
+// Signal (PER §4.3); it is the only init function of the package.
 //
 //nolint:gochecknoinits // RFC-0001: internal/hooks is set at package init
 func init() {
@@ -22,6 +22,8 @@ func init() {
 	hooks.PendingAsks = pendingAsksHook
 	hooks.InjectFail = injectFailHook
 	hooks.Address = func(a engine.Address) any { return addressOf(a) }
+	hooks.Control = controlHook
+	hooks.Signal = signalHook
 }
 
 // buildSystem is hooks.NewSystem (ENG-200): it builds a system on eng with the options in opts,

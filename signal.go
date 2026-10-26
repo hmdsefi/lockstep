@@ -21,11 +21,13 @@ type SignalReceiver[M any] interface {
 // travel only through the system queue: they never count against the user mailbox's capacity and
 // never go through Send. For a Terminated, seq is the sequence number of the Watch call it answers
 // (ACT-630); the public Terminated has no such field. For an Overloaded, inc is the incarnation
-// whose subscription it answers and seq the subscription's number in it (OVL-170).
+// whose subscription it answers and seq the subscription's number in it (OVL-170). direct marks a
+// signal queued through hooks.Signal (PER §4.3): no watch or subscription filters it.
 type signalMsg struct {
-	sig Signal
-	seq uint64
-	inc uint32
+	sig    Signal
+	seq    uint64
+	inc    uint32
+	direct bool
 }
 
 func (signalMsg) isSysMsg() {}
@@ -62,6 +64,10 @@ func (c *cell[M]) receiveSignal(m signalMsg) {
 // unsubscribed and subscribed again since (OVL-170).
 func (c *cell[M]) deliverSignal(m signalMsg) {
 	sig := m.sig
+	if m.direct {
+		c.signal(sig) // hooks.Signal: delivered as it is, whatever its type (PER §4.3)
+		return
+	}
 	switch s := sig.(type) {
 	case Terminated:
 		if c.ctx.watched.skips(m) {
