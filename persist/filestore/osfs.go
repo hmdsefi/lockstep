@@ -4,11 +4,11 @@
 package filestore
 
 import (
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // osFS is the FS of a directory of the operating system's file system.
@@ -17,9 +17,10 @@ type osFS struct{ root string }
 var _ FS = (*osFS)(nil)
 
 // path maps a store name to a path below the root. It returns an error for a name that fails
-// fs.ValidPath, so no name can leave the root.
+// fs.ValidPath or contains a backslash, so no name can leave the root: Windows takes a backslash
+// as a separator, and fs.ValidPath accepts "..\\x".
 func (o *osFS) path(op, name string) (string, error) {
-	if !fs.ValidPath(name) {
+	if !fs.ValidPath(name) || strings.ContainsRune(name, '\\') {
 		return "", &fs.PathError{Op: op, Path: name, Err: fs.ErrInvalid}
 	}
 	return filepath.Join(o.root, filepath.FromSlash(name)), nil
@@ -101,21 +102,31 @@ func (o *osFS) ReadDir(name string) ([]Info, error) {
 	return infos, nil
 }
 
-// SyncDir flushes the entry changes of a directory. Windows cannot open a directory for Sync,
-// so there it does nothing.
-func (o *osFS) SyncDir(name string) (err error) {
+// SyncDir flushes the entry changes of a directory.
+func (o *osFS) SyncDir(name string) error {
 	p, err := o.path("SyncDir", name)
 	if err != nil {
 		return err
 	}
+	return syncDir(p)
+}
+
+// syncDir flushes the entry changes of directory path: it opens it read-only, syncs it and
+// closes it. Windows cannot open a directory for Sync, so there it does nothing. The error is
+// the *fs.PathError of the first call that failed.
+func syncDir(path string) (err error) {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	d, err := os.Open(p) //nolint:gosec // names are validated
+	d, err := os.Open(path) //nolint:gosec // the store builds the path
 	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, d.Close()) }()
+	defer func() {
+		if cerr := d.Close(); err == nil {
+			err = cerr
+		}
+	}()
 	return d.Sync()
 }
 

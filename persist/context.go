@@ -33,7 +33,7 @@ func (c *Context[C, E, S]) LastSeq() uint64 { return c.w.lastSeq }
 
 // Then registers fn to run after the events returned by the current Handle call are committed
 // and applied, with the new state; at once after Handle returns if it returns no events. It
-// panics outside Handle.
+// panics outside Handle and when fn is nil.
 func (c *Context[C, E, S]) Then(fn func(ctx *Context[C, E, S], state S)) {
 	if !c.handling {
 		panic("persist: Then called outside Handle")
@@ -44,7 +44,9 @@ func (c *Context[C, E, S]) Then(fn func(ctx *Context[C, E, S], state S)) {
 	c.thens = append(c.thens, fn)
 }
 
-// Snapshot requests a snapshot of the state after the current command's events are applied.
+// Snapshot requests a snapshot of the state after the current command's events are applied. It
+// may also be called in Recovered and in a Then callback. A requested snapshot is taken once an
+// event has been committed since the last snapshot. Without Config.Snapshots it does nothing.
 func (c *Context[C, E, S]) Snapshot() {
 	if c.w.cfg.Snapshots != nil {
 		c.snapshot = true

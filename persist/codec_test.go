@@ -5,6 +5,7 @@ package persist_test
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/hmdsefi/lockstep/persist"
@@ -16,8 +17,8 @@ type counterState struct{ Sum, Count int64 }
 // I is a local interface type for the JSON panic test.
 type I interface{ M() }
 
-// TestJSONRoundTrip covers AT-PER-24: encoding is encoding/json's, decoding goes into a new
-// value, and a decode error comes back unwrapped.
+// TestJSONRoundTrip covers the codec part of AT-PER-24: encoding is encoding/json's, decoding
+// goes into a new value, and a decode error comes back unwrapped.
 func TestJSONRoundTrip(t *testing.T) {
 	c := persist.JSON[counterState]()
 	want := counterState{Sum: 3, Count: 2}
@@ -46,6 +47,18 @@ func TestJSONRoundTrip(t *testing.T) {
 	}
 	if _, ok := err.(*json.SyntaxError); !ok {
 		t.Fatalf("Decode error is %T, want an unwrapped *json.SyntaxError", err)
+	}
+}
+
+// TestJSONEncodeError covers PER-230: an encode error is encoding/json's, unwrapped.
+func TestJSONEncodeError(t *testing.T) {
+	_, err := persist.JSON[float64]().Encode(math.NaN())
+	_, want := json.Marshal(math.NaN())
+	if err == nil || err.Error() != want.Error() {
+		t.Fatalf("Encode error = %v, want encoding/json's %v", err, want)
+	}
+	if _, ok := err.(*json.UnsupportedValueError); !ok {
+		t.Fatalf("Encode error is %T, want an unwrapped *json.UnsupportedValueError", err)
 	}
 }
 
