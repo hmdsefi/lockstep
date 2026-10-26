@@ -207,7 +207,8 @@ func (s *System) deliverLocal(r routeRequest) outcome {
 // offers it (OVL-110, ENG-150). A shed message takes the full branch of its target's policy
 // (forceFull): OVL-120's error replaces ErrMailboxFull's and lockstep.overload event=shed replaces
 // lockstep.mailbox.full. A shed outside sender to a BlockSender mailbox on a blocking engine waits
-// for room and for admission instead.
+// for room and for admission instead. A message to a stuck actor that admission admits is shed the
+// same way, with errStuck in place of admission's error (OVL-520).
 //
 // An ask request becomes tracked by its target before it is offered (MSG-310, MSG-340), so the
 // reply attempt that removes the entry (MSG-410) cannot come first. A request that the mailbox
@@ -226,6 +227,9 @@ func (s *System) offer(r routeRequest) outcome {
 		return s.deadRequest(r, reason)
 	}
 	shed := s.admitSend(owner)
+	if shed == nil && c.stuck() {
+		shed = errStuck // OVL-520: the stuck actor's mailbox is treated as full
+	}
 	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
 	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, size: r.size, kind: entrySent}
 	var out mailbox.Outcome
@@ -278,23 +282,25 @@ func (s *System) offer(r routeRequest) outcome {
 }
 
 // offerWaiting offers e, the message of the outside sender of r, to c's BlockSender mailbox and
-// waits while the mailbox is full, the system sheds or other senders wait, until the entry is
-// enqueued, the mailbox closes, or r.wait ends (MBX-070, MBX-075, MBX-090). shed is admission's
-// error for the message, or nil. When the sender starts waiting it records lockstep.mailbox.full
-// action blocked, or for a shed message lockstep.overload event=shed dropped=none (OVL-120). When
-// the context ends first it returns the context's error and records the rejection: action
-// rejected, nothing more for a shed message that waited, and event=shed dropped=new for a shed
-// message that never waited (its context had ended already). The caller records the other
-// outcomes. While it waits the mailbox is listed in s.waiting (MBX-075): it is listed before the
-// offer, so a recheck that follows a change of admission cannot miss a sender that starts waiting
-// meanwhile. Every waiter's admit is s.admits, so one queue's waiters are admitted alike. The
-// caller holds no lock.
+// waits while the mailbox is full, the system sheds, c is stuck or other senders wait, until the
+// entry is enqueued, the mailbox closes, or r.wait ends (MBX-070, MBX-075, MBX-090, OVL-520). shed
+// is admission's error for the message, errStuck, or nil. When the sender starts waiting it records
+// lockstep.mailbox.full action blocked, or for a shed message lockstep.overload event=shed
+// dropped=none (OVL-120). When the context ends first it returns the context's error and records
+// the rejection: action rejected, nothing more for a shed message that waited, and event=shed
+// dropped=new for a shed message that never waited (its context had ended already). The caller
+// records the other outcomes. While it waits the mailbox is listed in s.waiting (MBX-075): it is
+// listed before the offer, so a recheck that follows a change of admission cannot miss a sender
+// that starts waiting meanwhile. Every waiter's admit is s.admits and c not being stuck, so one
+// queue's waiters are admitted alike; the turn that clears c's mark calls Recheck on c's mailbox
+// (OVL-530). The caller holds no lock.
 func (s *System) offerWaiting(c actorCell, r routeRequest, e entry, shed error) (mailbox.Outcome, error) {
 	q := c.userQueue()
 	s.waiting.add(q)
 	defer s.waiting.remove(q)
 	waited := false
-	out, err := c.offerWait(r.wait, e, s.admits, func() {
+	admit := func() bool { return s.admits() && !c.stuck() }
+	out, err := c.offerWait(r.wait, e, admit, func() {
 		waited = true
 		if shed != nil {
 			s.recordShed(c, r, shed, "none")
@@ -374,12 +380,16 @@ func (s *System) deadRequest(r routeRequest, reason string) outcome {
 func mailboxFullError(owner Address) error { return fmt.Errorf("%w: %s", ErrMailboxFull, owner) }
 
 // refusalError returns the error of a message to the actor at owner that its mailbox's policy
-// refused or dropped: OVL-120's error when admission shed it with shed, else ErrMailboxFull's.
+// refused or dropped: OVL-520's error when it was shed because the actor is stuck, OVL-120's when
+// admission shed it with shed, else ErrMailboxFull's.
 func refusalError(owner Address, shed error) error {
-	if shed != nil {
-		return sendOverloaded(owner, shed)
+	switch {
+	case shed == nil:
+		return mailboxFullError(owner)
+	case errors.Is(shed, errStuck):
+		return sendStuck(owner)
 	}
-	return mailboxFullError(owner)
+	return sendOverloaded(owner, shed)
 }
 
 // recordRefusal records the message of r that c's mailbox refused or dropped with action

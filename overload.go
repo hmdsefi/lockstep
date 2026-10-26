@@ -56,7 +56,12 @@ func WithMemoryEstimates() Option {
 // DefaultWatchdogTimeout is the stuck-turn timeout of a production System without WithWatchdog.
 const DefaultWatchdogTimeout = 5 * time.Second
 
-// WithWatchdog sets the stuck-turn timeout. 0 turns the watchdog off. A d < 0 makes New panic
+// WithWatchdog sets the stuck-turn timeout. A turn that runs at least d is logged and its actor is
+// stuck until the turn returns: messages sent to it meanwhile meet its mailbox's policy as if the
+// mailbox were full, so with FailSend, Send returns an error matching ErrMailboxFull. When a
+// Started, Receive or Signal returns during the stuck turn, the actor fails with an error matching
+// ErrTimeout, which its supervisor handles, unless that handler failed itself. A stuck Stopped,
+// MemSize or factory only ends the stuck state. 0 turns the watchdog off. A d < 0 makes New panic
 // with an error wrapping ErrInvalidOption. Simulation ignores it.
 func WithWatchdog(d time.Duration) Option {
 	return func(c *systemConfig) {

@@ -82,8 +82,8 @@ func (a *admissionState) shedPeriod() (start engine.AdmissionChange, shedding bo
 func (s *System) shedding() bool { return s.adm.shedding.Load() }
 
 // admits reports whether the system admits a waiting outside sender's message now (MBX-075): no
-// overload source is on (OVL-150). Phase 1 marks no actor stuck (OVL-520). It is the admit of
-// every waiter on every mailbox, called with a mailbox's lock held, and takes no lock.
+// overload source is on (OVL-150). Every waiter's admit calls it, with a mailbox's lock held, and
+// also requires that the mailbox's actor is not stuck (OVL-520, offerWaiting); it takes no lock.
 func (s *System) admits() bool { return !s.shedding() }
 
 // usage is the usage function the system binds to admission (§4.3): its live-actor count and the
@@ -104,7 +104,8 @@ func (s *System) admitSend(target Address) error {
 
 // overloadError is the error of work refused while the system sheds: a normal spawn (OVL-100) or a
 // message shed under FailSend, or BlockSender acting as FailSend (OVL-120). It matches
-// ErrOverloaded, ErrMailboxFull for a message, and admission's own error.
+// ErrOverloaded, ErrMailboxFull for a message, and admission's own error. A message refused
+// because its actor is stuck gets one too, which matches ErrMailboxFull only (sendStuck, OVL-520).
 type overloadError struct {
 	text   string
 	parent string // a refused spawn's parent path; empty for a message
@@ -141,12 +142,15 @@ func sendOverloaded(to Address, err error) error {
 }
 
 // overloadReason returns the reason admission's error err names: its source's String (memory,
-// budget or pressure). An engine whose Admission breaks §4.3 by returning another error is named by
-// that error's text.
+// budget or pressure), or stuck for errStuck (OVL §8, OVL-520). An engine whose Admission breaks
+// §4.3 by returning another error is named by that error's text.
 func overloadReason(err error) string {
 	var ae *engine.AdmissionError
-	if errors.As(err, &ae) {
+	switch {
+	case errors.As(err, &ae):
 		return ae.Source.String()
+	case errors.Is(err, errStuck):
+		return "stuck"
 	}
 	return err.Error()
 }
@@ -164,9 +168,9 @@ func (s *System) recordRefuse(e *overloadError) {
 	)
 }
 
-// recordShed emits lockstep.overload with event=shed (OVL §8) for the message of r that c's
-// mailbox treated as full because admission refused it with err. dropped is new, oldest, or none
-// for a BlockSender wait that starts.
+// recordShed emits lockstep.overload with event=shed (OVL §8) for the message of r that c's mailbox
+// treated as full because admission refused it with err, or because c is stuck (err is errStuck,
+// reason stuck, OVL-520). dropped is new, oldest, or none for a BlockSender wait that starts.
 func (s *System) recordShed(c actorCell, r routeRequest, err error, dropped string) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {

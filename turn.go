@@ -31,6 +31,7 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if held {
 		return false // held by a test (hold.go): nothing runs until the release schedules the cell
 	}
+	c.beginTurn() // OVL-520: the counter names this turn until endTurn
 	var system, u int
 	var first any
 	var firstShown bool // the first user message has a description for lockstep.turn
@@ -53,6 +54,7 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 		break
 	}
 	c.measureIfRan() // OVL-420: after every turn that called actor code
+	c.endTurn()      // OVL-530: a mark of this turn is cleared by now
 	if system+u > 0 {
 		c.recordTurn(system, firstShown, u, first)
 	}
@@ -188,6 +190,7 @@ func (c *cell[M]) begin() {
 	}
 	var a Actor[M]
 	failed, err := guard(func() { a = c.factory() })
+	c.unmark() // a stuck factory is not a handler of a live incarnation: no stuck failure (OVL-530)
 	if !failed && a == nil {
 		failed, err = true, errNilActor
 	}
