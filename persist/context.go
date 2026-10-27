@@ -14,10 +14,12 @@ type Context[C, E, S any] struct {
 	w *wrapper[C, E, S]
 
 	// The fields below belong to the Handle call that runs, if any: handling is set during it,
-	// thens holds its Then callbacks in registration order, and failed records a Fail call.
+	// thens holds its Then callbacks in registration order, failed records a Fail call and stop a
+	// Stop call.
 	handling bool
 	thens    []func(ctx *Context[C, E, S], state S)
 	failed   bool
+	stop     bool
 
 	// snapshot records a Snapshot call since the last snapshot started (PER-170).
 	snapshot bool
@@ -52,16 +54,22 @@ func (c *Context[C, E, S]) Snapshot() {
 }
 
 // Stop stops the actor with reason Normal, as lockstep's Context.Stop. Inside a Handle call that
-// returns events, the stop waits until those events are committed and the Then callbacks ran.
+// returns events, the stop waits until those events are committed and the Then callbacks ran;
+// if the write or the commit fails, the actor fails instead and does not stop.
 func (c *Context[C, E, S]) Stop() {
-	c.Context.Stop()
+	if c.handling {
+		c.stop = true
+		return
+	}
+	c.w.stop(c.Context)
 }
 
 // Fail marks the actor failed, as lockstep's Context.Fail: the failure takes effect when the
 // current handler returns, and Fail panics if err is nil. Events returned by the same Handle call
-// are discarded.
+// are discarded, and so are the Then callbacks it registered.
 func (c *Context[C, E, S]) Fail(err error) {
 	c.Context.Fail(err)
+	c.w.halted = true
 	if c.handling {
 		c.failed = true
 	}

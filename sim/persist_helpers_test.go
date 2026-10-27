@@ -4,11 +4,13 @@
 package sim_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/hmdsefi/faultline/kernel"
+	"github.com/hmdsefi/faultline/kernel/simdisk"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/persist"
 	"github.com/hmdsefi/lockstep/persist/filestore"
@@ -46,11 +48,17 @@ type Boom struct{}
 // AddThenStop adds N and stops the counter.
 type AddThenStop struct{ N int64 }
 
-// FailWith adds N and fails the counter with Err.
+// FailWith adds N, registers a Then callback that replies to ReplyTo, and fails the counter with
+// Err. The failure discards the event and the callback, so no reply goes out.
 type FailWith struct {
-	N   int64
-	Err error
+	N       int64
+	Err     error
+	ReplyTo lockstep.ReplyTo[int64]
 }
+
+// StopNow registers a Then callback that replies with the sum, stops the counter and returns no
+// events.
+type StopNow struct{ ReplyTo lockstep.ReplyTo[int64] }
 
 func (Add) counterCmd()         {}
 func (AddMany) counterCmd()     {}
@@ -59,6 +67,7 @@ func (SnapNow) counterCmd()     {}
 func (Boom) counterCmd()        {}
 func (AddThenStop) counterCmd() {}
 func (FailWith) counterCmd()    {}
+func (StopNow) counterCmd()     {}
 
 // Added is the counter's event. One Added{1} encodes to the 7 bytes {"N":1}.
 type Added struct{ N int64 }
@@ -72,9 +81,12 @@ type counterCtx = persist.Context[CounterCmd, Added, CounterState]
 // counterRun runs the counter fixture on n1 for one seed and observes it across node boots and
 // actor incarnations.
 type counterRun struct {
-	s      *sim.Sim
-	config func(cfg *persist.Config[Added, CounterState]) // edits the default Config; nil: none
-	pid    lockstep.PID[CounterCmd]                       // the counter of the latest boot
+	s         *sim.Sim
+	config    func(cfg *persist.Config[Added, CounterState]) // edits the default Config; nil: none
+	opts      []lockstep.SpawnOption                         // passed to persist.Spawn
+	directive func(err error) lockstep.Directive             // the parent's decision after errs grew; nil: restart
+	apply     func(e Added)                                  // called at the start of every Apply; nil: none
+	pid       lockstep.PID[CounterCmd]                       // the counter of the latest boot
 
 	boots     int                // runs of n1's setup
 	factories int                // calls of the counter's factory
@@ -83,14 +95,17 @@ type counterRun struct {
 	log       []string           // the counter's handler calls, in order
 	handleAt  []int              // len(Records()) at each Handle call
 	thenSeqs  []uint64           // LastSeq() in each Then callback
+	stops     []string           // the state's sum and the reason of each Stopped call
+	inUser    bool               // set while Handle or Apply runs
 }
 
 // newCounterRun returns a run of the counter fixture in s.
 func newCounterRun(s *sim.Sim) *counterRun { return &counterRun{s: s} }
 
 // node adds n1. Its setup builds a filestore.Store on n1's Volume and spawns /user/parent, whose
-// OneForOne decider appends each error to r.errs and restarts the child. The parent spawns the
-// counter as /user/parent/counter with persistence ID c-1, and r.pid follows the latest boot.
+// OneForOne decider appends each error to r.errs and returns r.directive's decision, by default a
+// restart. The parent spawns the counter as /user/parent/counter with persistence ID c-1, and
+// r.pid follows the latest boot.
 func (r *counterRun) node() *kernel.Node {
 	return r.s.Node("n1", func(sys *lockstep.System) {
 		r.boots++
@@ -106,10 +121,13 @@ func (r *counterRun) node() *kernel.Node {
 		}
 		decider := func(err error) lockstep.Directive {
 			r.errs = append(r.errs, err)
+			if r.directive != nil {
+				return r.directive(err)
+			}
 			return lockstep.DirectiveRestart
 		}
 		spawn(sys, "parent", &actor[PMsg]{started: func(ctx *lockstep.Context[PMsg]) {
-			pid, err := persist.Spawn(ctx, "counter", "c-1", r.newCounter, cfg)
+			pid, err := persist.Spawn(ctx, "counter", "c-1", r.newCounter, cfg, r.opts...)
 			if err != nil {
 				panic(err)
 			}
@@ -147,14 +165,27 @@ func addManyCmd(k int) func(lockstep.ReplyTo[int64]) CounterCmd {
 
 func getCmd(rt lockstep.ReplyTo[int64]) CounterCmd { return Get{ReplyTo: rt} }
 
+// restartUpTo returns a directive that restarts the counter until the parent has seen n errors and
+// stops it at the nth, so that a counter that fails at every start adds exactly n errors.
+func (r *counterRun) restartUpTo(n int) func(error) lockstep.Directive {
+	return func(error) lockstep.Directive {
+		if len(r.errs) < n {
+			return lockstep.DirectiveRestart
+		}
+		return lockstep.DirectiveStop
+	}
+}
+
 // pcounter is the counter of PER §10: an EventSourced[CounterCmd, Added, CounterState] that also
-// implements Recoverer and SignalReceiver. It logs its handler calls to r.
+// implements Recoverer, SignalReceiver and Stopper. It logs its handler calls to r.
 type pcounter struct{ r *counterRun }
 
 func (c *pcounter) Initial() CounterState { return CounterState{} }
 
 func (c *pcounter) Handle(ctx *counterCtx, state CounterState, cmd CounterCmd) []Added {
 	r := c.r
+	r.inUser = true
+	defer func() { r.inUser = false }()
 	r.handleAt = append(r.handleAt, len(r.s.World().Sim.Records()))
 	r.log = append(r.log, fmt.Sprintf("handle %T", cmd))
 	reply := func(rt lockstep.ReplyTo[int64]) func(*counterCtx, CounterState) {
@@ -186,13 +217,22 @@ func (c *pcounter) Handle(ctx *counterCtx, state CounterState, cmd CounterCmd) [
 		ctx.Stop()
 		return []Added{{N: m.N}}
 	case FailWith:
+		ctx.Then(reply(m.ReplyTo))
 		ctx.Fail(m.Err)
 		return []Added{{N: m.N}}
+	case StopNow:
+		ctx.Then(reply(m.ReplyTo))
+		ctx.Stop()
 	}
 	return nil
 }
 
 func (c *pcounter) Apply(state CounterState, event Added) CounterState {
+	c.r.inUser = true
+	defer func() { c.r.inUser = false }()
+	if c.r.apply != nil {
+		c.r.apply(event)
+	}
 	state.Sum += event.N
 	state.Count++
 	return state
@@ -205,6 +245,124 @@ func (c *pcounter) Recovered(_ *counterCtx, state CounterState, rec persist.Reco
 
 func (c *pcounter) Signal(_ *counterCtx, state CounterState, _ lockstep.Signal) {
 	c.r.log = append(c.r.log, fmt.Sprintf("signal %d", state.Sum))
+}
+
+func (c *pcounter) Stopped(_ *counterCtx, state CounterState, reason lockstep.StopReason) {
+	c.r.stops = append(c.r.stops, fmt.Sprintf("%d %s", state.Sum, reason))
+}
+
+// vol returns n1's simulated disk volume, for fault injection and inspection.
+func vol(s *sim.Sim) *simdisk.Volume {
+	w := s.World()
+	return w.Disk.Volume(w.Sim.Lookup("n1"))
+}
+
+// vseg returns the volume path of segment i of the counter's journal.
+func vseg(i int) string { return fmt.Sprintf("/journal/id-c-1/%020d.seg", i) }
+
+// fakeJournal is a Journal that passes every call to Journal unless a function replaces it.
+type fakeJournal struct {
+	persist.Journal
+	recover func() (persist.Bounds, error)                      // replaces Recover; nil: pass
+	read    func(from uint64, max int) ([]persist.Event, error) // replaces Read; nil: pass
+	write   func(events []persist.Event) error                  // replaces Write; nil: pass
+}
+
+func (j *fakeJournal) Recover(ctx context.Context, id string) (persist.Bounds, error) {
+	if j.recover != nil {
+		return j.recover()
+	}
+	return j.Journal.Recover(ctx, id)
+}
+
+func (j *fakeJournal) Read(ctx context.Context, id string, from uint64, max int) ([]persist.Event, error) {
+	if j.read != nil {
+		return j.read(from, max)
+	}
+	return j.Journal.Read(ctx, id, from, max)
+}
+
+func (j *fakeJournal) Write(ctx context.Context, id string, events []persist.Event) error {
+	if j.write != nil {
+		return j.write(events)
+	}
+	return j.Journal.Write(ctx, id, events)
+}
+
+// fakeSnapshots is a SnapshotStore whose Load returns load's results.
+type fakeSnapshots struct {
+	persist.SnapshotStore
+	load func() (persist.Snapshot, bool, error)
+}
+
+func (f *fakeSnapshots) Load(context.Context, string) (persist.Snapshot, bool, error) {
+	return f.load()
+}
+
+// recJournal is a Journal around Journal that logs the name of every call and, in bad, the calls
+// made while the counter's Handle or Apply runs.
+type recJournal struct {
+	persist.Journal
+	r          *counterRun
+	calls, bad []string
+}
+
+func (j *recJournal) note(name string) {
+	j.calls = append(j.calls, name)
+	if j.r.inUser {
+		j.bad = append(j.bad, name)
+	}
+}
+
+func (j *recJournal) Recover(ctx context.Context, id string) (persist.Bounds, error) {
+	j.note("Recover")
+	return j.Journal.Recover(ctx, id)
+}
+
+func (j *recJournal) Read(ctx context.Context, id string, from uint64, max int) ([]persist.Event, error) {
+	j.note("Read")
+	return j.Journal.Read(ctx, id, from, max)
+}
+
+func (j *recJournal) Write(ctx context.Context, id string, events []persist.Event) error {
+	j.note("Write")
+	return j.Journal.Write(ctx, id, events)
+}
+
+func (j *recJournal) Commit(ctx context.Context, id string) error {
+	j.note("Commit")
+	return j.Journal.Commit(ctx, id)
+}
+
+// failCodec is the JSON codec of Added whose Encode fails with err for Added{N: n}.
+type failCodec struct {
+	persist.Codec[Added]
+	n   int64
+	err error
+}
+
+func (c failCodec) Encode(e Added) ([]byte, error) {
+	if e.N == c.n {
+		return nil, c.err
+	}
+	return c.Codec.Encode(e)
+}
+
+// failRecord returns the attributes the lockstep.persist.fail record of the counter has for op and
+// err.
+func (r *counterRun) failRecord(op string, err error) []string {
+	return []string{"actor", r.pid.String(), "id", "c-1", "op", op, "err", err.Error()}
+}
+
+// ofActor returns the records of kind whose actor attribute is the counter's address, in order.
+func (r *counterRun) ofActor(recs []kernel.Record, kind string) []kernel.Record {
+	var out []kernel.Record
+	for _, rec := range ofKind(recs, kind) {
+		if attr(rec, "actor") == r.pid.String() {
+			out = append(out, rec)
+		}
+	}
+	return out
 }
 
 // effectStarts returns the lockstep.effect.start records of effects named name, in order.

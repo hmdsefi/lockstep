@@ -37,6 +37,14 @@
 // every written event durable, and only committed events count as stored. If the process stops
 // between the two, Recover on the next start reports which events survived.
 //
+// A store error, an event or snapshot that does not encode or decode, or a journal that does not
+// fit the snapshot fails the actor, and so does a panic in Handle, Apply or a Then callback. Its
+// supervisor decides as for any failure: a restart recovers the state again from the store. When
+// the supervisor resumes the actor after a failure of the storage or the codecs, or after a panic
+// in Apply, in Recovered or in a Then callback of committed events, the actor recovers again from
+// the store before it handles its next message, so it never runs on a state the store does not
+// hold. Then callbacks run only for events that the journal committed.
+//
 // JSON returns a Codec for concrete types that uses encoding/json. A type that needs another
 // format implements Codec itself.
 //
