@@ -285,12 +285,7 @@ func exhaustiveCheck(pass *analysis.Pass, r *reporter, code *actorCode, decls ma
 	if !w.inspected || w.forwarded {
 		return // messages handled uniformly
 	}
-	qual := func(p *types.Package) string {
-		if p == pass.Pkg {
-			return ""
-		}
-		return p.Name()
-	}
+	qual := pkgQualifier(pass)
 	var uncovered []exhaustiveExpected
 	for _, e := range expected {
 		if !w.covers(e.t) {

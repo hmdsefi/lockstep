@@ -223,12 +223,7 @@ func (c *cleanup) checkActor(a *actorType) {
 	done := make([]bool, st.NumFields())
 	c.findOwned(a, done)
 	c.findReleased(a, st, release, done)
-	qual := func(p *types.Package) string {
-		if p == c.pass.Pkg {
-			return ""
-		}
-		return p.Name()
-	}
+	qual := pkgQualifier(c.pass)
 	for i := range st.NumFields() {
 		f := st.Field(i)
 		if release[i] == nil || done[i] || f.Pkg() != c.pass.Pkg {

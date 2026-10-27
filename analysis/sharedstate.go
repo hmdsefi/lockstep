@@ -171,12 +171,7 @@ func checkActorState(pass *analysis.Pass, r *reporter, f *actorFunc) {
 		recv, _ = info.Defs[id].(*types.Var)
 		recvName = id.Name
 	}
-	qual := func(p *types.Package) string {
-		if p == pass.Pkg {
-			return ""
-		}
-		return p.Name()
-	}
+	qual := pkgQualifier(pass)
 	pl := newPlacer(pass, decl)
 	for _, site := range sendSites(pass, decl) {
 		for _, msg := range site.msgs {
