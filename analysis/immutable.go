@@ -5,6 +5,7 @@ package analysis
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 
@@ -289,7 +290,7 @@ func (c *immutableCheck) checkAssign(lhs ast.Expr, op string) {
 
 // checkCall reports a builtin or an in-place mutator whose first argument is a slice or map field
 // of an immutable type (ANL-260). Slicing the field still writes into its memory, except where a
-// full slice expression makes append or slices.Insert reallocate.
+// full slice expression whose max equals its high makes append or slices.Insert reallocate.
 func (c *immutableCheck) checkCall(call *ast.CallExpr) {
 	if len(call.Args) == 0 {
 		return
@@ -307,9 +308,10 @@ func (c *immutableCheck) checkCall(call *ast.CallExpr) {
 		if !isSlice {
 			break
 		}
-		if s.Slice3 && (op == "append" || op == "slices.Insert") {
-			// A full slice expression caps the capacity, so the call reallocates instead of
-			// writing past the slice's length: append(x.f[:0:0], ...) copies x.f.
+		if s.Slice3 && (op == "append" || op == "slices.Insert") && c.sameBound(s.High, s.Max) {
+			// A full slice expression whose capacity equals its length makes the call
+			// reallocate instead of writing past the length: append(x.f[:0:0], ...) copies
+			// x.f. A larger max, as in x.f[:1:3], leaves room to write x.f[1] in place.
 			return
 		}
 		arg = ast.Unparen(s.X)
@@ -317,6 +319,15 @@ func (c *immutableCheck) checkCall(call *ast.CallExpr) {
 	if f, named, _, ok := c.immutableField(arg); ok && immutableSliceOrMap(f.Type()) {
 		c.report(call.Pos(), op, immutableWrite{field: f, named: named, elem: true})
 	}
+}
+
+// sameBound reports whether the slice bounds a and b are the same expression or equal constants.
+func (c *immutableCheck) sameBound(a, b ast.Expr) bool {
+	if types.ExprString(a) == types.ExprString(b) {
+		return true
+	}
+	x, y := c.pass.TypesInfo.Types[a].Value, c.pass.TypesInfo.Types[b].Value
+	return x != nil && y != nil && constant.Compare(x, token.EQL, y)
 }
 
 // report adds the LS201 finding of the write t at pos.
