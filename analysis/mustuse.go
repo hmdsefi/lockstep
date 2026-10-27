@@ -38,7 +38,7 @@ func runMustUse(pass *analysis.Pass) (any, error) {
 	if !ok {
 		return nil, nil
 	}
-	m := &mustUse{pass: pass, info: pass.TypesInfo, r: newReporter(pass, idx)}
+	m := &mustUse{info: pass.TypesInfo, r: newReporter(pass, idx)}
 	insp.WithStack([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node, push bool, stack []ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok && push {
 			m.call(call, stack)
@@ -51,7 +51,6 @@ func runMustUse(pass *analysis.Pass) (any, error) {
 
 // mustUse is the state of one MustUse run.
 type mustUse struct {
-	pass *analysis.Pass
 	info *types.Info
 	r    *reporter
 }
@@ -65,11 +64,11 @@ func (m *mustUse) call(call *ast.CallExpr, stack []ast.Node) {
 			m.r.report(call.Pos(), idMustUse, mustUseReplyText)
 		}
 	case isAPI(callee, "Send"):
-		if errorDiscarded(stack) {
+		if mustUseErrorDiscarded(stack) {
 			m.r.report(call.Pos(), idMustUse, "the error returned by lockstep.Send is ignored")
 		}
 	case isAPI(callee, "Spawn"):
-		if errorDiscarded(stack) {
+		if mustUseErrorDiscarded(stack) {
 			m.r.report(call.Pos(), idMustUse, "the error returned by lockstep.Spawn is ignored")
 		}
 	}
@@ -94,14 +93,15 @@ func (m *mustUse) callee(call *ast.CallExpr) types.Object {
 	return nil
 }
 
-// valueContext returns the node that consumes the value of the expression at the end of stack and
-// the expression whose value it consumes: parentheses and the address operator are looked through,
-// since the address of a reply holds the reply.
-func valueContext(stack []ast.Node) (parent, child ast.Node) {
+// mustUseValueContext returns the node that consumes the value of the expression at the end of
+// stack and the expression whose value it consumes: parentheses, the address operator and
+// dereferences are looked through, since the address of a reply holds the reply and the value a
+// pointer to it points to is the reply.
+func mustUseValueContext(stack []ast.Node) (parent, child ast.Node) {
 	child = stack[len(stack)-1]
 	for i := len(stack) - 2; i >= 0; i-- {
 		switch p := stack[i].(type) {
-		case *ast.ParenExpr:
+		case *ast.ParenExpr, *ast.StarExpr:
 			child = p
 			continue
 		case *ast.UnaryExpr:
@@ -115,8 +115,8 @@ func valueContext(stack []ast.Node) (parent, child ast.Node) {
 	return nil, child
 }
 
-// indexIn returns the index of e in list, or -1.
-func indexIn(list []ast.Expr, e ast.Node) int {
+// mustUseIndex returns the index of e in list, or -1.
+func mustUseIndex(list []ast.Expr, e ast.Node) int {
 	for i, x := range list {
 		if x == e {
 			return i
@@ -125,8 +125,8 @@ func indexIn(list []ast.Expr, e ast.Node) int {
 	return -1
 }
 
-// isBlank reports whether e is the blank identifier.
-func isBlank(e ast.Expr) bool {
+// mustUseBlank reports whether e is the blank identifier.
+func mustUseBlank(e ast.Expr) bool {
 	id, ok := ast.Unparen(e).(*ast.Ident)
 	return ok && id.Name == "_"
 }
@@ -145,12 +145,12 @@ func (m *mustUse) replyUsed(stack []ast.Node) bool {
 // consumed classifies the use of the expression at the end of stack: used is true when it is
 // used; otherwise v is the local variable it is assigned to, if any.
 func (m *mustUse) consumed(stack []ast.Node) (used bool, v *types.Var) {
-	parent, child := valueContext(stack)
+	parent, child := mustUseValueContext(stack)
 	switch p := parent.(type) {
 	case *ast.SelectorExpr:
 		return p.X == child && isAPI(m.info.Uses[p.Sel], "Reply.Await"), nil
 	case *ast.CallExpr:
-		return indexIn(p.Args, child) >= 0, nil
+		return mustUseIndex(p.Args, child) >= 0, nil
 	case *ast.ReturnStmt:
 		return true, nil
 	case *ast.SendStmt:
@@ -158,11 +158,11 @@ func (m *mustUse) consumed(stack []ast.Node) (used bool, v *types.Var) {
 	case *ast.CompositeLit, *ast.KeyValueExpr:
 		return true, nil
 	case *ast.AssignStmt:
-		if i := indexIn(p.Rhs, child); i >= 0 && len(p.Lhs) == len(p.Rhs) {
+		if i := mustUseIndex(p.Rhs, child); i >= 0 && len(p.Lhs) == len(p.Rhs) {
 			return m.stored(p.Lhs[i])
 		}
 	case *ast.ValueSpec:
-		if i := indexIn(p.Values, child); i >= 0 && len(p.Names) == len(p.Values) {
+		if i := mustUseIndex(p.Values, child); i >= 0 && len(p.Names) == len(p.Values) {
 			return m.stored(p.Names[i])
 		}
 	}
@@ -222,7 +222,7 @@ func (m *mustUse) variableUsed(v *types.Var, root ast.Node, seen map[*types.Var]
 			if m.info.Uses[n] != v {
 				return true
 			}
-			if capturedAt(stack, v) {
+			if mustUseCapturedAt(stack, v) {
 				used = true
 				return false
 			}
@@ -257,9 +257,9 @@ func (m *mustUse) declares(fields *ast.FieldList, v *types.Var) bool {
 	return false
 }
 
-// capturedAt reports whether the identifier at the end of stack names v inside a function literal
-// that does not declare v: the literal captures v, by reading or by assigning it.
-func capturedAt(stack []ast.Node, v *types.Var) bool {
+// mustUseCapturedAt reports whether the identifier at the end of stack names v inside a function
+// literal that does not declare v: the literal captures v, by reading or by assigning it.
+func mustUseCapturedAt(stack []ast.Node, v *types.Var) bool {
 	for _, n := range stack {
 		if lit, ok := n.(*ast.FuncLit); ok && (v.Pos() < lit.Pos() || v.Pos() >= lit.End()) {
 			return true
@@ -268,32 +268,32 @@ func capturedAt(stack []ast.Node, v *types.Var) bool {
 	return false
 }
 
-// errorDiscarded reports whether the error result of the Send or Spawn call at the end of stack is
-// thrown away: the call is a statement, is started with go or defer, or its error goes to the
-// blank identifier (ANL-300). An error assigned to a named variable is not checked further.
-func errorDiscarded(stack []ast.Node) bool {
-	parent, child := valueContext(stack)
+// mustUseErrorDiscarded reports whether the error result of the Send or Spawn call at the end of
+// stack is thrown away: the call is a statement, is started with go or defer, or its error goes
+// to the blank identifier (ANL-300). An error assigned to a named variable is not checked further.
+func mustUseErrorDiscarded(stack []ast.Node) bool {
+	parent, child := mustUseValueContext(stack)
 	var target ast.Expr
 	switch p := parent.(type) {
 	case *ast.ExprStmt, *ast.GoStmt, *ast.DeferStmt:
 		return true
 	case *ast.AssignStmt:
-		target = errorTarget(p.Lhs, p.Rhs, child)
+		target = mustUseErrorTarget(p.Lhs, p.Rhs, child)
 	case *ast.ValueSpec:
 		names := make([]ast.Expr, len(p.Names))
 		for i, name := range p.Names {
 			names[i] = name
 		}
-		target = errorTarget(names, p.Values, child)
+		target = mustUseErrorTarget(names, p.Values, child)
 	}
-	return target != nil && isBlank(target)
+	return target != nil && mustUseBlank(target)
 }
 
-// errorTarget returns the assignment target that receives the error result of the call at rhs
-// position child: the target at the same index, or the last one when a single call returns all
-// the values.
-func errorTarget(lhs, rhs []ast.Expr, child ast.Node) ast.Expr {
-	i := indexIn(rhs, child)
+// mustUseErrorTarget returns the assignment target that receives the error result of the call at
+// rhs position child: the target at the same index, or the last one when a single call returns
+// all the values.
+func mustUseErrorTarget(lhs, rhs []ast.Expr, child ast.Node) ast.Expr {
+	i := mustUseIndex(rhs, child)
 	switch {
 	case i < 0:
 		return nil
