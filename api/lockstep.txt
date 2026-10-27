@@ -196,6 +196,13 @@ pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch ideal-int
 pkg github.com/hmdsefi/lockstep/persist, const MaxIDLen = 80
 pkg github.com/hmdsefi/lockstep/persist, const MaxIDLen ideal-int
 pkg github.com/hmdsefi/lockstep/persist, func JSON[T any]() Codec[T]
+pkg github.com/hmdsefi/lockstep/persist, func Spawn[C any, E any, S any](lockstep.Spawner, string, string, func() EventSourced[C, E, S], Config[E, S], ...lockstep.SpawnOption) (lockstep.PID[C], error)
+pkg github.com/hmdsefi/lockstep/persist, method (*Context[C, E, S]) Fail(error)
+pkg github.com/hmdsefi/lockstep/persist, method (*Context[C, E, S]) LastSeq() uint64
+pkg github.com/hmdsefi/lockstep/persist, method (*Context[C, E, S]) PersistenceID() string
+pkg github.com/hmdsefi/lockstep/persist, method (*Context[C, E, S]) Snapshot()
+pkg github.com/hmdsefi/lockstep/persist, method (*Context[C, E, S]) Stop()
+pkg github.com/hmdsefi/lockstep/persist, method (*Context[C, E, S]) Then(func(*Context[C, E, S], S))
 pkg github.com/hmdsefi/lockstep/persist, type Bounds struct
 pkg github.com/hmdsefi/lockstep/persist, type Bounds struct, First uint64
 pkg github.com/hmdsefi/lockstep/persist, type Bounds struct, Last uint64
@@ -203,20 +210,38 @@ pkg github.com/hmdsefi/lockstep/persist, type Bounds struct, Repaired int64
 pkg github.com/hmdsefi/lockstep/persist, type Codec[T any] interface { Decode, Encode }
 pkg github.com/hmdsefi/lockstep/persist, type Codec[T any] interface, Decode([]byte) (T, error)
 pkg github.com/hmdsefi/lockstep/persist, type Codec[T any] interface, Encode(T) ([]byte, error)
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, Events Codec[E]
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, Journal Journal
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, PruneEvents bool
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, ReplayBatch int
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, SnapshotEvery uint64
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, Snapshots SnapshotStore
+pkg github.com/hmdsefi/lockstep/persist, type Config[E any, S any] struct, State Codec[S]
+pkg github.com/hmdsefi/lockstep/persist, type Context[C any, E any, S any] struct
+pkg github.com/hmdsefi/lockstep/persist, type Context[C any, E any, S any] struct, embedded *lockstep.Context[C]
 pkg github.com/hmdsefi/lockstep/persist, type Event struct
 pkg github.com/hmdsefi/lockstep/persist, type Event struct, Data []byte
 pkg github.com/hmdsefi/lockstep/persist, type Event struct, Seq uint64
+pkg github.com/hmdsefi/lockstep/persist, type EventSourced[C any, E any, S any] interface { Apply, Handle, Initial }
+pkg github.com/hmdsefi/lockstep/persist, type EventSourced[C any, E any, S any] interface, Apply(S, E) S
+pkg github.com/hmdsefi/lockstep/persist, type EventSourced[C any, E any, S any] interface, Handle(*Context[C, E, S], S, C) []E
+pkg github.com/hmdsefi/lockstep/persist, type EventSourced[C any, E any, S any] interface, Initial() S
 pkg github.com/hmdsefi/lockstep/persist, type Journal interface { Commit, DeleteEvents, Read, Recover, Write }
 pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Commit(context.Context, string) error
 pkg github.com/hmdsefi/lockstep/persist, type Journal interface, DeleteEvents(context.Context, string, uint64) error
 pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Read(context.Context, string, uint64, int) ([]Event, error)
 pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Recover(context.Context, string) (Bounds, error)
 pkg github.com/hmdsefi/lockstep/persist, type Journal interface, Write(context.Context, string, []Event) error
+pkg github.com/hmdsefi/lockstep/persist, type Recoverer[C any, E any, S any] interface { Recovered }
+pkg github.com/hmdsefi/lockstep/persist, type Recoverer[C any, E any, S any] interface, Recovered(*Context[C, E, S], S, Recovery)
 pkg github.com/hmdsefi/lockstep/persist, type Recovery struct
 pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, Events uint64
 pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, LastSeq uint64
 pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, Repaired int64
 pkg github.com/hmdsefi/lockstep/persist, type Recovery struct, SnapshotSeq uint64
+pkg github.com/hmdsefi/lockstep/persist, type SignalReceiver[C any, E any, S any] interface { Signal }
+pkg github.com/hmdsefi/lockstep/persist, type SignalReceiver[C any, E any, S any] interface, Signal(*Context[C, E, S], S, lockstep.Signal)
 pkg github.com/hmdsefi/lockstep/persist, type Snapshot struct
 pkg github.com/hmdsefi/lockstep/persist, type Snapshot struct, Data []byte
 pkg github.com/hmdsefi/lockstep/persist, type Snapshot struct, Seq uint64
@@ -224,6 +249,8 @@ pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface { DeleteSn
 pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface, DeleteSnapshots(context.Context, string, uint64) error
 pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface, Load(context.Context, string) (Snapshot, bool, error)
 pkg github.com/hmdsefi/lockstep/persist, type SnapshotStore interface, Save(context.Context, string, Snapshot) error
+pkg github.com/hmdsefi/lockstep/persist, type Stopper[C any, E any, S any] interface { Stopped }
+pkg github.com/hmdsefi/lockstep/persist, type Stopper[C any, E any, S any] interface, Stopped(*Context[C, E, S], S, lockstep.StopReason)
 pkg github.com/hmdsefi/lockstep/persist, var ErrInconsistent error
 pkg github.com/hmdsefi/lockstep/persist, var ErrInvalidConfig error
 pkg github.com/hmdsefi/lockstep/persist, var ErrInvalidID error
