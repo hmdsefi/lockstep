@@ -485,11 +485,53 @@ they make inside the same package. Its checks are:
 - `LS100`: wall-clock time, global `math/rand`, `crypto/rand`, goroutines, `select`, channel
   operations, map ranges, environment reads and blocking calls in actor code.
 - `LS110`: `Reply.Await` reachable from actor code.
+- `LS200`: use of a variable after it was placed in a message. At every call of `lockstep.Send`,
+  `lockstep.Ask` or `ReplyTo.Send`, in any function, it tracks the variables whose references the
+  message carries. It reports the first use that the function's control-flow graph reaches, of the
+  part of the variable that was sent: sending `s.items` leaves `s.count` free. Assigning the
+  variable ends the tracking, except when the message holds the variable's own storage, its
+  address or a slice of an array variable, because the assignment then overwrites what was sent.
+  A path through the branch on which the send's error is not nil reaches no use: a failed
+  `lockstep.Send` delivered nothing.
+- `LS201`: the contents of types marked `//lockstep:immutable`. It checks the type of every field
+  (pointers to unmarked types, channels, functions, interfaces other than `error`, type parameters
+  and `unsafe.Pointer` are not allowed) and then every write in the package to a slice or map
+  field of such a type, or through a pointer to one. Writes to a local variable that the function
+  initializes from `T{...}`, `&T{...}` or `new(T)` and assigns nothing else are construction and
+  are not reported.
+- `LS210`: actor code that writes a package variable, and actor code that places the actor, a
+  reference-holding field of the actor, the address of a field or a `*lockstep.Context` in a
+  message.
+- `LS220`: a `lockstep.Ask` reply that nothing awaits or pipes, and a discarded error from
+  `lockstep.Send` or `lockstep.Spawn`.
+- `LS230`: message types that `Receive` has no case for. It collects the cases of every type switch
+  and type assertion on the message in `Receive` and in the same-package functions that
+  `Receive` passes the message to, and compares them with the members of a sealed message
+  interface and with the types the actor sends to itself.
+- `LS240`: actor fields that hold a resource and are neither owned with `ctx.Own` nor released in
+  `Stopped`, and `//lockstep:resource` types without a `Close`, `Stop` or `Release` method. A field
+  holding a resource the actor does not own, such as a shared `*sql.DB`, takes
+  `//lockstep:allow LS240 <reason>` in its doc comment.
 - `LS001` and `LS002`: malformed and unknown `//lockstep:` directives.
 
 `LS100` ports most of faultline's determinism rules to actor code and adds the blocking calls.
-The same analyzers run in golangci-lint as a
-module plugin.
+`LS200`, `LS201` and `LS220` need no actor code: they look at every function of the package,
+because messages are sent, and immutable types written, from any function. `LS210`, `LS230` and
+`LS240` start from the actor types and their roots, and `LS240` also checks every
+`//lockstep:resource` type of the package.
+
+The checks that need to know about other packages use analysis facts, which `go vet` carries from
+one package to the next. The index analyzer exports a fact for every type marked
+`//lockstep:immutable` or `//lockstep:resource`, so a type marked in one package is immutable or a
+resource in every package that imports it. `LS230` exports a fact for every sealed interface, an
+interface with an unexported method, that lists its exported members. A message interface from
+another package then yields the types a `case` can name, and never an unexported one.
+
+A directive `//lockstep:allow LSnnn <reason>` suppresses the findings of the named checks on its
+line, on the line below it, or inside the declaration whose doc comment holds it. `LS001` and
+`LS002` can't be suppressed.
+
+The same analyzers run in golangci-lint as a module plugin.
 
 ## Modules and the production boundary
 

@@ -201,10 +201,25 @@ command that replays it.
 `raft`, `kv`, and `client` import the standard library, `lockstep`, and each other, never
 `lockstep/sim` or faultline. A test in `raftsim` checks this with `go list -deps`.
 
-The module passes `lockstep-vet` with no findings, and it suppresses none: it has no `allow`
-directive, the comment that suppresses a finding. `lockstep-vet` reports actor code that blocks, starts a
-goroutine, reads the wall clock or global randomness, or waits on a reply with `Reply.Await`. To
-run it from the repository root:
+The module passes `lockstep-vet` with no findings, and it suppresses none: it has no allow
+directive, the comment that suppresses a finding. `lockstep-vet` reports actor code that blocks,
+starts a goroutine, reads the wall clock or global randomness (`LS100`), or waits on a reply with
+`Reply.Await` (`LS110`). It also reports:
+
+- a variable that the code uses after it sent it in a message (`LS200`);
+- a type marked `//lockstep:immutable` that holds a pointer to an unmarked type, a channel, a
+  function, an interface other than `error`, or a type parameter, or that code writes into
+  (`LS201`);
+- actor code that writes a package variable, or puts the actor, one of its fields that holds
+  references, or its `*lockstep.Context` in a message (`LS210`);
+- an `Ask` reply that nobody awaits or pipes, and an ignored error from `Send` or `Spawn`
+  (`LS220`);
+- a message type that `Receive` has no case for (`LS230`);
+- an actor field that holds a resource and is neither passed to `ctx.Own` nor released in
+  `Stopped` (`LS240`);
+- a malformed or unknown directive (`LS001`, `LS002`).
+
+To run it from the repository root:
 
 ```sh
 go -C analysis build -o /tmp/lockstep-vet ./cmd/lockstep-vet
