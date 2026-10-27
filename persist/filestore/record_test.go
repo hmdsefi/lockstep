@@ -138,9 +138,12 @@ func TestRecordCodec(t *testing.T) {
 	})
 
 	t.Run("empty batch", func(t *testing.T) {
-		if _, err := encodeJournalRecord(nil); err == nil {
-			t.Fatal("encodeJournalRecord(nil) = nil error")
-		}
+		defer func() {
+			if r := recover(); r != "filestore: encodeJournalRecord: empty batch" {
+				t.Fatalf("encodeJournalRecord(nil) panic = %#v, want the empty-batch panic", r)
+			}
+		}()
+		_, _ = encodeJournalRecord(nil)
 	})
 }
 
