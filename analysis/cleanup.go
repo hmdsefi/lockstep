@@ -39,9 +39,16 @@ type cleanup struct {
 	// here so that the analyzed package need not import io.
 	closer *types.Interface
 
-	// recvs maps the receiver variable of every method declared in the package to the type name
-	// of its receiver's base type, for the <recv> of ANL-340 and ANL-350. It is only looked up.
-	recvs map[*types.Var]*types.TypeName
+	// locals records how often each local variable of the package is assigned and, for the last
+	// assignment seen, the initializer, so that a variable assigned once from <recv>.<field> can
+	// stand for the field (ANL-340, ANL-350). It is only looked up.
+	locals map[*types.Var]*localAssign
+}
+
+// localAssign is what the package assigns to one local variable.
+type localAssign struct {
+	n    int      // assignments, declarations with an initializer, range heads, ++ and --, and &v
+	init ast.Expr // the right-hand side of the last counted assignment, nil when it has none
 }
 
 func runCleanup(pass *analysis.Pass) (any, error) {
@@ -59,9 +66,9 @@ func runCleanup(pass *analysis.Pass) (any, error) {
 		idx:    idx,
 		rep:    newReporter(pass, idx),
 		closer: closerInterface(),
-		recvs:  map[*types.Var]*types.TypeName{},
+		locals: map[*types.Var]*localAssign{},
 	}
-	c.collectReceivers()
+	c.collectLocals()
 	for _, a := range code.Actors {
 		c.checkActor(a)
 	}
@@ -78,26 +85,70 @@ func closerInterface() *types.Interface {
 	return types.NewInterfaceType([]*types.Func{closeFn}, nil).Complete()
 }
 
-// collectReceivers fills c.recvs from the method declarations of the package.
-func (c *cleanup) collectReceivers() {
-	for _, file := range c.pass.Files {
-		for _, decl := range file.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Recv == nil || len(fd.Recv.List) != 1 || len(fd.Recv.List[0].Names) != 1 {
-				continue
-			}
-			v, ok := c.pass.TypesInfo.Defs[fd.Recv.List[0].Names[0]].(*types.Var)
-			if !ok {
-				continue
-			}
-			t := types.Unalias(v.Type())
-			if p, ok := t.(*types.Pointer); ok {
-				t = types.Unalias(p.Elem())
-			}
-			if named, ok := t.(*types.Named); ok {
-				c.recvs[v] = named.Origin().Obj()
-			}
+// collectLocals fills c.locals from every function of the package. A variable whose address is
+// taken counts as assigned once more, because it can then change out of sight.
+func (c *cleanup) collectLocals() {
+	note := func(e ast.Expr, init ast.Expr) {
+		id, ok := e.(*ast.Ident)
+		if !ok {
+			return
 		}
+		v, ok := c.pass.TypesInfo.ObjectOf(id).(*types.Var)
+		if !ok || v.IsField() {
+			return
+		}
+		la := c.locals[v]
+		if la == nil {
+			la = &localAssign{}
+			c.locals[v] = la
+		}
+		la.n++
+		la.init = init
+	}
+	pairs := func(lhs []ast.Expr, rhs []ast.Expr) {
+		for i, l := range lhs {
+			var init ast.Expr
+			if len(lhs) == len(rhs) {
+				init = rhs[i]
+			}
+			note(l, init)
+		}
+	}
+	for _, file := range c.pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.AssignStmt:
+				if n.Tok == token.ASSIGN || n.Tok == token.DEFINE {
+					pairs(n.Lhs, n.Rhs)
+				} else {
+					for _, l := range n.Lhs {
+						note(l, nil)
+					}
+				}
+			case *ast.ValueSpec:
+				idents := make([]ast.Expr, len(n.Names))
+				for i, name := range n.Names {
+					idents[i] = name
+				}
+				if len(n.Values) > 0 {
+					pairs(idents, n.Values)
+				}
+			case *ast.IncDecStmt:
+				note(ast.Unparen(n.X), nil)
+			case *ast.RangeStmt:
+				if n.Key != nil {
+					note(n.Key, nil)
+				}
+				if n.Value != nil {
+					note(n.Value, nil)
+				}
+			case *ast.UnaryExpr:
+				if n.Op == token.AND {
+					note(ast.Unparen(n.X), nil)
+				}
+			}
+			return true
+		})
 	}
 }
 
@@ -188,32 +239,58 @@ func (c *cleanup) checkActor(a *actorType) {
 	}
 }
 
-// fieldOf returns the index of the field of actor a that e selects as <recv>.<field>, where <recv>
-// is the receiver of a method of a's type (ANL-340).
+// fieldOf returns the index of the field of actor a that e selects as x.<field>, where x has the
+// actor's type or a pointer to it: the method receiver, a parameter or a local (ANL-340,
+// ANL-350).
 func (c *cleanup) fieldOf(e ast.Expr, a *actorType) (int, bool) {
 	sel, ok := ast.Unparen(e).(*ast.SelectorExpr)
 	if !ok {
 		return 0, false
 	}
 	s := c.pass.TypesInfo.Selections[sel]
-	if s == nil || s.Kind() != types.FieldVal || len(s.Index()) != 1 || !c.isReceiver(sel.X, a) {
+	if s == nil || s.Kind() != types.FieldVal || len(s.Index()) != 1 || !c.isActor(sel.X, a) {
 		return 0, false
 	}
 	return s.Index()[0], true
 }
 
-// isReceiver reports whether e is the receiver variable of a method of a's type.
-func (c *cleanup) isReceiver(e ast.Expr, a *actorType) bool {
+// fieldRef is fieldOf, or, for a local variable that the package assigns exactly once, from
+// x.<field>, the field that variable stands for (ANL-340, ANL-350).
+func (c *cleanup) fieldRef(e ast.Expr, a *actorType) (int, bool) {
+	if field, ok := c.fieldOf(e, a); ok {
+		return field, true
+	}
 	id, ok := ast.Unparen(e).(*ast.Ident)
 	if !ok {
-		return false
+		return 0, false
 	}
 	v, ok := c.pass.TypesInfo.Uses[id].(*types.Var)
-	return ok && c.recvs[v] == a.Type.Obj()
+	if !ok {
+		return 0, false
+	}
+	if la := c.locals[v]; la != nil && la.n == 1 && la.init != nil {
+		return c.fieldOf(la.init, a)
+	}
+	return 0, false
+}
+
+// isActor reports whether e has the type of actor a or a pointer to it.
+func (c *cleanup) isActor(e ast.Expr, a *actorType) bool {
+	t := c.pass.TypesInfo.TypeOf(e)
+	if t == nil {
+		return false
+	}
+	t = types.Unalias(t)
+	if p, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(p.Elem())
+	}
+	named, ok := t.(*types.Named)
+	return ok && named.Origin().Obj() == a.Type.Obj()
 }
 
 // findOwned sets done for every field that ctx.Own receives in a's actor code (ANL-340): the
-// selector <recv>.<field>, or a local variable that the same function also assigns to it.
+// selector x.<field>, a local variable that stands for it, or a local variable that the same
+// function also assigns to it.
 func (c *cleanup) findOwned(a *actorType, done []bool) {
 	info := c.pass.TypesInfo
 	for _, f := range c.code.reach(a.Roots...) {
@@ -245,7 +322,7 @@ func (c *cleanup) findOwned(a *actorType, done []bool) {
 			if arg == nil {
 				return true
 			}
-			if field, ok := c.fieldOf(arg, a); ok {
+			if field, ok := c.fieldRef(arg, a); ok {
 				done[field] = true
 			}
 			if id, ok := ast.Unparen(arg).(*ast.Ident); ok {
@@ -277,8 +354,9 @@ func ownedArg(info *types.Info, call *ast.CallExpr) ast.Expr {
 }
 
 // findReleased sets done for every field that a's Stopped root, or a function reachable from it,
-// releases (ANL-350): a release method of the field's type called on <recv>.<field>, promoted
-// through an embedded field or not, deferred or not, or <recv>.<field> passed to any call.
+// releases (ANL-350): a release method of the field's type called on x.<field> or on a local
+// variable that stands for it, promoted through an embedded field or not, deferred or not, or
+// x.<field> or such a local passed to any call.
 func (c *cleanup) findReleased(a *actorType, st *types.Struct, release [][]string, done []bool) {
 	var stopped *actorFunc
 	for _, root := range a.Roots {
@@ -305,7 +383,7 @@ func (c *cleanup) findReleased(a *actorType, st *types.Struct, release [][]strin
 				return true // a conversion is not a call
 			}
 			for _, arg := range call.Args {
-				if field, ok := c.fieldOf(arg, a); ok {
+				if field, ok := c.fieldRef(arg, a); ok {
 					done[field] = true
 				}
 			}
@@ -314,17 +392,18 @@ func (c *cleanup) findReleased(a *actorType, st *types.Struct, release [][]strin
 	}
 }
 
-// releasedField returns the field of a on which the method selector sel is called: <recv>.<field>
-// as the operand, or, for a method promoted from an embedded field, <recv> itself.
+// releasedField returns the field of a on which the method selector sel is called: x.<field> (or
+// a local standing for it) as the operand, or, for a method promoted from an embedded field, x
+// itself.
 func (c *cleanup) releasedField(sel *ast.SelectorExpr, a *actorType, st *types.Struct) (int, bool) {
 	s := c.pass.TypesInfo.Selections[sel]
 	if s == nil || s.Kind() != types.MethodVal {
 		return 0, false
 	}
-	if field, ok := c.fieldOf(sel.X, a); ok {
+	if field, ok := c.fieldRef(sel.X, a); ok {
 		return field, true
 	}
-	if path := s.Index(); len(path) > 1 && c.isReceiver(sel.X, a) && path[0] < st.NumFields() && st.Field(path[0]).Embedded() {
+	if path := s.Index(); len(path) > 1 && c.isActor(sel.X, a) && path[0] < st.NumFields() && st.Field(path[0]).Embedded() {
 		return path[0], true
 	}
 	return 0, false
@@ -334,7 +413,7 @@ func (c *cleanup) releasedField(sel *ast.SelectorExpr, a *actorType, st *types.S
 // Close, Stop or Release method (ANL-360).
 func (c *cleanup) checkResourceTypes() {
 	for _, tn := range c.idx.marked {
-		if c.idx.markers[tn]&markResource == 0 {
+		if !c.idx.hasMarker(tn, markResource) {
 			continue
 		}
 		named, ok := tn.Type().(*types.Named)

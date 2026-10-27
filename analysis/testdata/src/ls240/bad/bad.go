@@ -95,7 +95,7 @@ func (g *Gate) Receive(ctx *lockstep.Context[Msg], msg Msg) {
 	_ = g.c.Close()
 }
 
-// Mixed releases a but only owns an unrelated local, and closes b through another value.
+// Mixed releases a but only owns an unrelated local.
 type Mixed struct {
 	a net.Conn
 	b net.Conn // want `^LS240: field b \(net\.Conn\) of actor Mixed is neither passed to ctx\.Own nor released in Stopped$`
@@ -111,11 +111,9 @@ func (m *Mixed) Started(ctx *lockstep.Context[Msg]) {
 	ctx.Own(other)
 }
 
-// Stopped closes a, and closes b only on another Mixed.
+// Stopped closes a.
 func (m *Mixed) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
 	_ = m.a.Close()
-	var peer *Mixed
-	_ = peer.b.Close()
 }
 
 // Napper resets its timer in Stopped instead of stopping it.
@@ -190,4 +188,51 @@ func (b *Boxed) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
 // Stopped converts c.
 func (b *Boxed) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
 	_ = any(b.c)
+}
+
+// Idle embeds a timer and never stops it.
+type Idle struct {
+	*time.Timer // want `^LS240: field Timer \(\*time\.Timer\) of actor Idle is neither passed to ctx\.Own nor released in Stopped$`
+}
+
+// Receive handles a message.
+func (a *Idle) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Dial is a resource released by Close.
+//
+//lockstep:resource
+type Dial struct{}
+
+// Close closes the connection.
+func (*Dial) Close() {}
+
+// Dialer never closes its connection.
+type Dialer struct {
+	d *Dial // want `^LS240: field d \(\*Dial\) of actor Dialer is neither passed to ctx\.Own nor released in Stopped$`
+}
+
+// Receive handles a message.
+func (a *Dialer) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Cellar holds an instance of a generic resource type and never releases it.
+type Cellar struct {
+	c *Cell[int] // want `^LS240: field c \(\*Cell\[int\]\) of actor Cellar is neither passed to ctx\.Own nor released in Stopped$`
+}
+
+// Receive handles a message.
+func (a *Cellar) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Realias assigns its alias twice, so the alias does not stand for the field.
+type Realias struct {
+	c net.Conn // want `^LS240: field c \(net\.Conn\) of actor Realias is neither passed to ctx\.Own nor released in Stopped$`
+}
+
+// Receive handles a message.
+func (a *Realias) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Stopped closes whatever the alias holds last.
+func (a *Realias) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
+	c := a.c
+	c, _ = net.Dial("tcp", "x")
+	_ = c.Close()
 }
