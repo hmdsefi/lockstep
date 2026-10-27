@@ -37,6 +37,8 @@ type Move struct{ X *int }
 
 type Work struct{ Data []int }
 
+type Point struct{ X, Y int }
+
 type Job struct {
 	Data    []int
 	ID      int
@@ -306,4 +308,45 @@ func sharedDeclared(sys *lockstep.System, pid lockstep.PID[Count], in []int) {
 		n := x
 		lockstep.Send(sys, pid, Count{N: &n})
 	}
+}
+
+// sliceReset sends part of a slice and drops the slice: the assignment replaces the header, not
+// the elements the receiver holds (ANL-230).
+func sliceReset(sys *lockstep.System, pid lockstep.PID[Batch], buf []int) {
+	lockstep.Send(sys, pid, Batch{Items: buf[:2]})
+	buf = nil
+	_ = buf
+}
+
+// batching sends full batches and starts each next one in a fresh buffer.
+func batching(sys *lockstep.System, pid lockstep.PID[Batch], in []int) {
+	var buf []int
+	for _, x := range in {
+		buf = append(buf, x)
+		if len(buf) == 4 {
+			lockstep.Send(sys, pid, Batch{Items: buf[:]})
+			buf = make([]int, 0, 4)
+		}
+	}
+}
+
+// elementAddressReset sends the address of a slice element and drops the slice.
+func elementAddressReset(sys *lockstep.System, pid lockstep.PID[Count], s []int) {
+	lockstep.Send(sys, pid, Count{N: &s[0]})
+	s = nil
+	_ = s
+}
+
+// pointeeAddressReset sends the address of a field through a pointer and drops the pointer.
+func pointeeAddressReset(sys *lockstep.System, pid lockstep.PID[Count], p *Point) {
+	lockstep.Send(sys, pid, Count{N: &p.X})
+	p = nil
+	_ = p
+}
+
+// fieldSliceReset sends part of a slice field and replaces the struct.
+func fieldSliceReset(sys *lockstep.System, pid lockstep.PID[Batch], m Job) {
+	lockstep.Send(sys, pid, Batch{Items: m.Data[:1]})
+	m = Job{}
+	_ = m
 }

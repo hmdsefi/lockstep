@@ -500,8 +500,9 @@ func kernelCrashes(s *sim.Sim, setups *[3]int, systems *[]*lockstep.System) {
 			started: func(ctx *lockstep.Context[Tick]) { ctx.After(100*time.Millisecond, Tick{}) },
 			receive: func(ctx *lockstep.Context[Tick], _ Tick) {
 				for _, name := range crashServers {
-					//lockstep:allow LS220 a send to a crashed server may fail; the run needs only the attempts
-					_ = lockstep.Send(ctx, lockstep.PIDAt[CMsg](name, "/user/counter"), CMsg(Inc{}))
+					if err := lockstep.Send(ctx, lockstep.PIDAt[CMsg](name, "/user/counter"), CMsg(Inc{})); err != nil {
+						w.T().Errorf("send Inc to %s: %v", name, err)
+					}
 				}
 				ctx.After(100*time.Millisecond, Tick{})
 			},
