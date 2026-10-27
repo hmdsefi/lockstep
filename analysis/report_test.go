@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"slices"
 	"testing"
 
@@ -51,6 +52,9 @@ func TestReporter(t *testing.T) {
 		Files:    files,
 		Report:   func(d analysis.Diagnostic) { got = append(got, d) },
 		ReadFile: func(name string) ([]byte, error) { return contents[name], nil },
+		// runIndex reads the facts of imported packages and exports its own; there are none.
+		AllObjectFacts:   func() []analysis.ObjectFact { return nil },
+		ExportObjectFact: func(types.Object, analysis.Fact) {},
 	}
 	res, err := runIndex(pass)
 	if err != nil {

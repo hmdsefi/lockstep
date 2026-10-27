@@ -16,12 +16,14 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// indexAnalyzer parses directives and markers (ANL-070 to ANL-090).
+// indexAnalyzer parses directives and markers (ANL-070 to ANL-090). It exports a markerFact for
+// every marked type, so the checks see markers on types of imported packages.
 var indexAnalyzer = &analysis.Analyzer{
 	Name:       "lsindex",
 	Doc:        "index //lockstep: directives",
 	Run:        runIndex,
 	ResultType: reflect.TypeFor[*directiveIndex](),
+	FactTypes:  []analysis.Fact{new(markerFact)},
 }
 
 // directivePrefix starts every directive comment (ANL-070).
@@ -41,6 +43,25 @@ const (
 	markImmutable marker = 1 << iota
 	markResource
 )
+
+// markerFact is the fact indexAnalyzer exports for a marked type (ANL-090). Its fields are exported
+// for gob encoding.
+type markerFact struct{ Immutable, Resource bool }
+
+// AFact marks markerFact as an analysis fact.
+func (*markerFact) AFact() {}
+
+// marker returns the markers the fact records.
+func (f *markerFact) marker() marker {
+	var m marker
+	if f.Immutable {
+		m |= markImmutable
+	}
+	if f.Resource {
+		m |= markResource
+	}
+	return m
+}
 
 // placement says whether a marker directive sits where ANL-090 allows it.
 type placement uint8
@@ -89,9 +110,27 @@ type allowScope struct {
 // directiveIndex is the result of indexAnalyzer.
 type directiveIndex struct {
 	fset       *token.FileSet
-	directives []*directive // every directive of the package, in file and source order
-	markers    map[*types.TypeName]marker
+	directives []*directive               // every directive of the package, in file and source order
+	markers    map[*types.TypeName]marker // the marked types of this package
+	marked     []*types.TypeName          // the keys of markers, in the order they were first marked
+	imported   map[*types.TypeName]marker // marked types of imported packages, from their markerFact
 	scopes     map[*token.File][]allowScope
+}
+
+// hasMarker reports whether the type named tn carries marker m (ANL-090): through a directive of
+// this package, or through the markerFact of a type of an imported package. Pass the TypeName of
+// a named type (types.Named.Obj, which for an instance is the generic type's name).
+func (x *directiveIndex) hasMarker(tn *types.TypeName, m marker) bool {
+	if x == nil || tn == nil {
+		return false
+	}
+	return (x.markers[tn]|x.imported[tn])&m != 0
+}
+
+// typeHasMarker reports whether t, without aliases, is a named type that carries marker m.
+func (x *directiveIndex) typeHasMarker(t types.Type, m marker) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	return ok && x.hasMarker(named.Obj(), m)
 }
 
 // suppressed reports whether a //lockstep:allow directive covers the diagnostic of check id at pos
@@ -124,12 +163,24 @@ func indexOf(pass *analysis.Pass) (*directiveIndex, bool) {
 
 func runIndex(pass *analysis.Pass) (any, error) {
 	idx := &directiveIndex{
-		fset:    pass.Fset,
-		markers: make(map[*types.TypeName]marker),
-		scopes:  make(map[*token.File][]allowScope),
+		fset:     pass.Fset,
+		markers:  make(map[*types.TypeName]marker),
+		imported: make(map[*types.TypeName]marker),
+		scopes:   make(map[*token.File][]allowScope),
+	}
+	for _, f := range pass.AllObjectFacts() {
+		tn, isType := f.Object.(*types.TypeName)
+		fact, isMarker := f.Fact.(*markerFact)
+		if isType && isMarker && tn.Pkg() != pass.Pkg {
+			idx.imported[tn] = fact.marker()
+		}
 	}
 	for _, file := range pass.Files {
 		idx.addFile(pass, file)
+	}
+	for _, tn := range idx.marked {
+		m := idx.markers[tn]
+		pass.ExportObjectFact(tn, &markerFact{Immutable: m&markImmutable != 0, Resource: m&markResource != 0})
 	}
 	return idx, nil
 }
@@ -283,6 +334,9 @@ func (x *directiveIndex) addMarker(pass *analysis.Pass, d *directive, spec *ast.
 	}
 	if d.place != placedOK || d.args != "" {
 		return
+	}
+	if x.markers[obj] == 0 {
+		x.marked = append(x.marked, obj)
 	}
 	if d.name == "immutable" {
 		x.markers[obj] |= markImmutable
