@@ -94,7 +94,11 @@ type uasFunc struct {
 	// paths are the access paths of the identifiers of fn that are the root of a chain of field
 	// selectors, index and slice expressions and dereferences; a bare identifier has none.
 	paths map[*ast.Ident][]uasStep
-	graph *cfg.CFG
+	// outer is the outermost expression of each identifier's chain, the identifier itself when
+	// it is bare; lengths are the slice, array and string arguments of len and cap.
+	outer   map[*ast.Ident]ast.Expr
+	lengths map[ast.Expr]bool
+	graph   *cfg.CFG
 }
 
 func newUASFunc(pass *analysis.Pass, fn ast.Node) *uasFunc {
@@ -120,12 +124,14 @@ func newUASFunc(pass *analysis.Pass, fn ast.Node) *uasFunc {
 	return f
 }
 
-// scanIdents fills lhs, notUses and paths.
+// scanIdents fills lhs, notUses, paths, outer and lengths.
 func (f *uasFunc) scanIdents() {
 	info := f.pass.TypesInfo
 	f.lhs = make(map[*ast.Ident]bool)
 	f.notUses = make(map[*ast.Ident]bool)
 	f.paths = make(map[*ast.Ident][]uasStep)
+	f.outer = make(map[*ast.Ident]ast.Expr)
+	f.lengths = make(map[ast.Expr]bool)
 	mark := func(set map[*ast.Ident]bool, e ast.Expr) {
 		if id, ok := ast.Unparen(e).(*ast.Ident); ok {
 			set[id] = true
@@ -155,12 +161,16 @@ func (f *uasFunc) scanIdents() {
 		case *ast.CallExpr:
 			if (uasIsBuiltin(info, n, "len") || uasIsBuiltin(info, n, "cap")) && uasHasLength(info.TypeOf(n.Args[0])) {
 				mark(f.notUses, n.Args[0])
+				f.lengths[ast.Unparen(n.Args[0])] = true
 			}
 		case ast.Expr:
 			// Inspect visits the outermost chain first; the identifier keeps its path.
-			if root, path := uasPath(info, n); root != nil && len(path) > 0 {
-				if _, ok := f.paths[root]; !ok {
-					f.paths[root] = path
+			if root, path := uasPath(info, n); root != nil {
+				if _, ok := f.outer[root]; !ok {
+					f.outer[root] = ast.Unparen(n)
+					if len(path) > 0 {
+						f.paths[root] = path
+					}
 				}
 			}
 		}
@@ -180,7 +190,8 @@ type uasStep struct {
 // uasPath returns the root identifier of e's chain of field selectors (embedded fields spelled
 // out), index and slice expressions and dereferences, and the chain's steps from the root.
 // Dereferences, explicit or implicit, and slice expressions are not steps: a path names memory
-// reached from the root whatever pointers it follows, and a slice names the same elements. The root is nil when the chain starts at another expression.
+// reached from the root whatever pointers it follows, and a slice names the same elements. The
+// root is nil when the chain starts at another expression.
 func uasPath(info *types.Info, e ast.Expr) (*ast.Ident, []uasStep) {
 	var rev []uasStep // the steps from e back to the root
 	for {
@@ -365,10 +376,8 @@ func uasSliced(exprs []ast.Expr) map[ast.Expr]bool {
 // bare root then writes the memory the receiver holds. A slice, a pointer or a map leads
 // elsewhere, so assigning the root only replaces a header or a pointer.
 func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
-	if sliced {
-		if _, ok := info.TypeOf(e).Underlying().(*types.Array); !ok {
-			return false
-		}
+	if sliced && !uasIsArray(info.TypeOf(e)) {
+		return false
 	}
 	for {
 		switch x := e.(type) {
@@ -383,7 +392,7 @@ func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
 			}
 			e = x.X
 		case *ast.IndexExpr:
-			if _, ok := info.TypeOf(x.X).Underlying().(*types.Array); !ok {
+			if !uasIsArray(info.TypeOf(x.X)) {
 				return false
 			}
 			e = x.X
@@ -393,11 +402,42 @@ func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
 	}
 }
 
+// uasIsArray reports whether t is an array, or a type parameter with an array in its type set:
+// its values may then be arrays, held in the variable's own storage.
+func uasIsArray(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	tp, ok := types.Unalias(t).(*types.TypeParam)
+	if !ok {
+		_, ok := t.Underlying().(*types.Array)
+		return ok
+	}
+	iface, ok := tp.Constraint().Underlying().(*types.Interface)
+	if !ok {
+		return false
+	}
+	for e := range iface.EmbeddedTypes() {
+		if u, ok := e.(*types.Union); ok {
+			for term := range u.Terms() {
+				if uasIsArray(term.Type()) {
+					return true
+				}
+			}
+		} else if uasIsArray(e) {
+			return true
+		}
+	}
+	return false
+}
+
 // isUse reports whether id is a use of t's variable for the send call (ANL-220): an identifier
 // referring to it outside the call and outside the initializers placed expanded for the send
 // (evaluating one again reads its sources, not what was sent), not exempt, and on an access
 // path compatible with a placed leaf. When a shared leaf lies in the variable's own storage, the
-// bare variable on the left of an assignment writes what was sent, so it is a use.
+// bare variable on the left of an assignment writes what was sent, so it is a use. Otherwise a
+// chain that stays in the variable's own storage and holds no references, such as job.ID or
+// len(job.Payload) after sending the struct value job, reads the sender's copy: not a use.
 func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []ast.Expr) bool {
 	if f.pass.TypesInfo.Uses[id] != t.v || uasWithin(id.Pos(), call) || f.notUses[id] {
 		return false
@@ -409,6 +449,10 @@ func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []
 		if uasWithin(id.Pos(), init) {
 			return false
 		}
+	}
+	if x := f.outer[id]; !t.shared && x != nil && uasInStorage(f.pass.TypesInfo, x, false) &&
+		(f.lengths[x] || !containsRefs(f.pass, f.pass.TypesInfo.TypeOf(x))) {
+		return false
 	}
 	path := f.paths[id]
 	for _, p := range t.paths {
