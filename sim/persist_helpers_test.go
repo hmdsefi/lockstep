@@ -5,7 +5,9 @@ package sim_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"testing"
 	"time"
 
@@ -86,6 +88,7 @@ type counterRun struct {
 	opts      []lockstep.SpawnOption                         // passed to persist.Spawn
 	directive func(err error) lockstep.Directive             // the parent's decision after errs grew; nil: restart
 	apply     func(e Added)                                  // called at the start of every Apply; nil: none
+	recovered func(ctx *counterCtx)                          // called at the end of every Recovered; nil: none
 	pid       lockstep.PID[CounterCmd]                       // the counter of the latest boot
 
 	boots     int                // runs of n1's setup
@@ -238,9 +241,12 @@ func (c *pcounter) Apply(state CounterState, event Added) CounterState {
 	return state
 }
 
-func (c *pcounter) Recovered(_ *counterCtx, state CounterState, rec persist.Recovery) {
+func (c *pcounter) Recovered(ctx *counterCtx, state CounterState, rec persist.Recovery) {
 	c.r.recs = append(c.r.recs, rec)
 	c.r.log = append(c.r.log, fmt.Sprintf("recovered %d", state.Sum))
+	if c.r.recovered != nil {
+		c.r.recovered(ctx)
+	}
 }
 
 func (c *pcounter) Signal(_ *counterCtx, state CounterState, _ lockstep.Signal) {
@@ -259,6 +265,66 @@ func vol(s *sim.Sim) *simdisk.Volume {
 
 // vseg returns the volume path of segment i of the counter's journal.
 func vseg(i int) string { return fmt.Sprintf("/journal/id-c-1/%020d.seg", i) }
+
+// vsnap returns the volume path of the counter's snapshot of sequence number i.
+func vsnap(i int) string { return fmt.Sprintf("/snapshots/id-c-1/%020d.snap", i) }
+
+// names returns the names of the entries of the directory dir of v, in order, or nil if dir does
+// not exist.
+func names(tt testing.TB, v *simdisk.Volume, dir string) []string {
+	tt.Helper()
+	infos, err := v.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		tt.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	out := make([]string, len(infos))
+	for i, in := range infos {
+		out[i] = in.Name
+	}
+	return out
+}
+
+// snapSeqs returns the seq attributes of the lockstep.persist.snapshot records of the persistence
+// ID c-1, in order, whichever incarnation emitted them.
+func snapSeqs(s *sim.Sim) []string {
+	var out []string
+	for _, rec := range ofKind(s.World().Sim.Records(), "lockstep.persist.snapshot") {
+		if attr(rec, "id") == "c-1" {
+			out = append(out, attr(rec, "seq"))
+		}
+	}
+	return out
+}
+
+// failOps returns the op attributes of the lockstep.persist.fail records of the persistence ID
+// c-1, in order.
+func failOps(s *sim.Sim) []string {
+	var out []string
+	for _, rec := range ofKind(s.World().Sim.Records(), "lockstep.persist.fail") {
+		if attr(rec, "id") == "c-1" {
+			out = append(out, attr(rec, "op"))
+		}
+	}
+	return out
+}
+
+// stateFailCodec is the JSON codec of CounterState whose Encode fails with err for a state whose
+// Sum is sum.
+type stateFailCodec struct {
+	persist.Codec[CounterState]
+	sum int64
+	err error
+}
+
+func (c stateFailCodec) Encode(s CounterState) ([]byte, error) {
+	if s.Sum == c.sum {
+		return nil, c.err
+	}
+	return c.Codec.Encode(s)
+}
 
 // fakeJournal is a Journal that passes every call to Journal unless a function replaces it.
 type fakeJournal struct {
@@ -297,6 +363,54 @@ type fakeSnapshots struct {
 
 func (f *fakeSnapshots) Load(context.Context, string) (persist.Snapshot, bool, error) {
 	return f.load()
+}
+
+// storeLog is a Journal and SnapshotStore around a Store that logs the snapshot, deletion and
+// event write calls in one list, in call order: "Save 4", "DeleteSnapshots 1", "DeleteEvents 2",
+// "Write 7". The calls of Recover, Read, Commit and Load are not logged. The deletions it logs
+// fail with failSnapshots and failEvents when those are set, and the save of seq failSave fails
+// with errSaveFailed; a failed call changes nothing.
+type storeLog struct {
+	*filestore.Store
+	calls                     []string
+	failSnapshots, failEvents error
+	failSave                  uint64
+}
+
+// errSaveFailed is the error of the save that storeLog fails.
+var errSaveFailed = errors.New("save failed")
+
+func (l *storeLog) note(name string, n uint64) {
+	l.calls = append(l.calls, fmt.Sprintf("%s %d", name, n))
+}
+
+func (l *storeLog) Save(ctx context.Context, id string, snap persist.Snapshot) error {
+	l.note("Save", snap.Seq)
+	if l.failSave != 0 && snap.Seq == l.failSave {
+		return errSaveFailed
+	}
+	return l.Store.Save(ctx, id, snap)
+}
+
+func (l *storeLog) DeleteSnapshots(ctx context.Context, id string, to uint64) error {
+	l.note("DeleteSnapshots", to)
+	if l.failSnapshots != nil {
+		return l.failSnapshots
+	}
+	return l.Store.DeleteSnapshots(ctx, id, to)
+}
+
+func (l *storeLog) DeleteEvents(ctx context.Context, id string, to uint64) error {
+	l.note("DeleteEvents", to)
+	if l.failEvents != nil {
+		return l.failEvents
+	}
+	return l.Store.DeleteEvents(ctx, id, to)
+}
+
+func (l *storeLog) Write(ctx context.Context, id string, events []persist.Event) error {
+	l.note("Write", events[0].Seq)
+	return l.Store.Write(ctx, id, events)
 }
 
 // recJournal is a Journal around Journal that logs the name of every call and, in bad, the calls

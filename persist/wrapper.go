@@ -21,6 +21,12 @@ const (
 	effectWrite   = "lockstep.persist.write"
 	effectCommit  = "lockstep.persist.commit"
 	recordFail    = "lockstep.persist.fail"
+
+	effectSave            = "lockstep.persist.save"
+	effectDeleteSnapshots = "lockstep.persist.delete-snapshots"
+	effectDeleteEvents    = "lockstep.persist.delete-events"
+	recordSnapshot        = "lockstep.persist.snapshot"
+	recordDelete          = "lockstep.persist.delete"
 )
 
 // phase is where a wrapper's incarnation stands (PER §11).
@@ -54,6 +60,11 @@ var (
 // leave delivery paused for good. The next turn of a resumed incarnation that reaches the wrapper
 // recovers again from the store (PER §5.4): a command is kept and handled after that recovery,
 // a signal is kept as during any recovery, and an effect completion is dropped.
+//
+// A snapshot (PER §5.5) is saved by internal effects that do not pause user delivery. One snapshot
+// cycle, the save and then the deletions that follow it, is in flight at a time; a snapshot that
+// falls due meanwhile is evaluated again when the cycle ends. A failure in a cycle is recorded and
+// otherwise ignored.
 type wrapper[C, E, S any] struct {
 	id  string
 	cfg Config[E, S]
@@ -85,6 +96,16 @@ type wrapper[C, E, S any] struct {
 	bounds  Bounds
 	next    uint64
 	kept    []lockstep.Signal
+
+	// Snapshots (PER-170, PER-190): lastSnap is the sequence number of the newest snapshot saved or
+	// recovered; saving is set while a snapshot cycle is in flight, with saveSeq the sequence
+	// number being saved, cancelSave the cancel function of the cycle's current effect, and again
+	// set if a snapshot fell due during the cycle.
+	lastSnap   uint64
+	saving     bool
+	again      bool
+	saveSeq    uint64
+	cancelSave func()
 
 	// The batch in flight (PER-100): its original events, sequence numbers first..last, the Then
 	// callbacks of the Handle call that returned it, and whether that call asked to stop (PER-120).
@@ -130,6 +151,7 @@ func (w *wrapper[C, E, S]) startRecovery(ctx *lockstep.Context[C]) {
 	hooks.Control(ctx).PauseUser(true)
 	w.broken = false
 	w.gen++
+	w.dropSnapshot()
 	w.phase = recovering
 	w.snapSeq, w.bounds, w.next = 0, Bounds{}, 0
 	w.events, w.thens, w.stopAfter = nil, nil, false
@@ -139,6 +161,17 @@ func (w *wrapper[C, E, S]) startRecovery(ctx *lockstep.Context[C]) {
 		return
 	}
 	w.recover(ctx)
+}
+
+// dropSnapshot forgets the snapshot cycle in flight and the pending snapshot request, when a
+// recovery starts over: the cycle's effect is cancelled, and a completion that is already queued is
+// dropped as it is of an earlier recovery.
+func (w *wrapper[C, E, S]) dropSnapshot() {
+	if w.cancelSave != nil {
+		w.cancelSave()
+	}
+	w.cancelSave, w.saving, w.again = nil, false, false
+	w.ctx.snapshot = false
 }
 
 // loaded is the result of Snapshots.Load.
@@ -174,8 +207,8 @@ func (w *wrapper[C, E, S]) loaded(ctx *lockstep.Context[C], v any, err error) {
 	w.recover(ctx)
 }
 
-// recover starts recovery step 2 (PER-050): Journal.Recover, once per incarnation and before any
-// Write (PER-220).
+// recover starts recovery step 2 (PER-050): Journal.Recover, once per recovery and before any
+// Write of it (PER-220).
 func (w *wrapper[C, E, S]) recover(ctx *lockstep.Context[C]) {
 	j, id := w.cfg.Journal, w.id
 	w.start(ctx, effectRecover, func(c context.Context) (any, error) {
@@ -261,7 +294,7 @@ func (w *wrapper[C, E, S]) replayed(ctx *lockstep.Context[C], v any, err error) 
 // and user delivery.
 func (w *wrapper[C, E, S]) finishRecovery(ctx *lockstep.Context[C]) {
 	b := w.bounds
-	w.lastSeq = b.Last
+	w.lastSeq, w.lastSnap = b.Last, w.snapSeq
 	r := Recovery{SnapshotSeq: w.snapSeq, Events: b.Last - w.snapSeq, LastSeq: b.Last, Repaired: b.Repaired}
 	if ctl := hooks.Control(ctx); ctl.TraceEnabled() {
 		w.record(ctl, effectRecover,
@@ -274,6 +307,7 @@ func (w *wrapper[C, E, S]) finishRecovery(ctx *lockstep.Context[C]) {
 	if w.recoverer != nil {
 		w.recoverer.Recovered(w.ctx, w.state, r)
 	}
+	w.snapshotCheck(ctx, false)
 	kept := w.kept
 	w.kept = nil
 	for _, sig := range kept {
@@ -336,6 +370,7 @@ func (w *wrapper[C, E, S]) receive(ctx *lockstep.Context[C], cmd C) {
 			for _, fn := range thens {
 				fn(pc, w.state)
 			}
+			w.snapshotCheck(ctx, false)
 		}
 		if stop {
 			w.stop(ctx)
@@ -417,11 +452,119 @@ func (w *wrapper[C, E, S]) committed(ctx *lockstep.Context[C], _ any, err error)
 	for _, fn := range thens {
 		fn(w.ctx, w.state)
 	}
+	w.snapshotCheck(ctx, true)
 	if stop {
 		w.stop(ctx)
 		return
 	}
 	w.proceed(ctx)
+}
+
+// snapshotCheck starts a snapshot if one is due (PER-170): after a commit, when SnapshotEvery
+// events were committed since the last snapshot, and whenever Snapshot was called since the last
+// snapshot started and an event came after it. A snapshot that falls due while a cycle is in
+// flight waits for the cycle's end. A state that does not encode is recorded and retried at the
+// next check (PER-180); the state is encoded in the turn, so the save sees a value that later
+// commands cannot change.
+func (w *wrapper[C, E, S]) snapshotCheck(ctx *lockstep.Context[C], afterCommit bool) {
+	if w.cfg.Snapshots == nil || w.halted {
+		return
+	}
+	seq := w.lastSeq
+	due := w.ctx.snapshot && seq > w.lastSnap
+	if afterCommit && w.cfg.SnapshotEvery > 0 && seq-w.lastSnap >= w.cfg.SnapshotEvery {
+		due = true
+	}
+	switch {
+	case !due:
+		return
+	case w.saving:
+		w.again = true
+		return
+	}
+	data, err := w.cfg.State.Encode(w.state)
+	if err != nil {
+		w.note(ctx, "encode-state", fmt.Errorf("persist: %s: encode state at seq %d: %w", w.id, seq, err))
+		return
+	}
+	w.ctx.snapshot = false
+	w.saving, w.saveSeq = true, seq
+	snaps, id := w.cfg.Snapshots, w.id
+	w.cancelSave = w.start(ctx, effectSave, func(c context.Context) (any, error) {
+		return len(data), snaps.Save(c, id, Snapshot{Seq: seq, Data: data})
+	}, w.saved)
+}
+
+// saved ends the save (PER-190): on success it advances lastSnap, emits lockstep.persist.snapshot
+// and starts the deletions that the previous snapshot P allows; on failure it records and ends the
+// cycle, leaving lastSnap for the next check.
+func (w *wrapper[C, E, S]) saved(ctx *lockstep.Context[C], v any, err error) {
+	seq, prev := w.saveSeq, w.lastSnap
+	if err != nil {
+		w.note(ctx, "save", fmt.Errorf("persist: %s: save snapshot seq %d: %w", w.id, seq, err))
+		w.endSnapshot(ctx)
+		return
+	}
+	w.lastSnap = seq
+	if ctl := hooks.Control(ctx); ctl.TraceEnabled() {
+		bytes, _ := v.(int)
+		w.record(ctl, recordSnapshot, "seq", strconv.FormatUint(seq, 10), "bytes", strconv.Itoa(bytes))
+	}
+	if prev == 0 {
+		w.endSnapshot(ctx)
+		return
+	}
+	w.deleteSnapshots(ctx, prev)
+}
+
+// deleteSnapshots deletes the snapshots below prev, the snapshot before the one just saved: the
+// newest two stay (PER-190). The deletion of events follows, also if this one fails.
+func (w *wrapper[C, E, S]) deleteSnapshots(ctx *lockstep.Context[C], prev uint64) {
+	snaps, id, to := w.cfg.Snapshots, w.id, prev-1
+	w.cancelSave = w.start(ctx, effectDeleteSnapshots, func(c context.Context) (any, error) {
+		return nil, snaps.DeleteSnapshots(c, id, to)
+	}, func(ctx *lockstep.Context[C], _ any, err error) {
+		w.deleted(ctx, "snapshots", "delete-snapshots", to, err)
+		w.deleteEvents(ctx, prev)
+	})
+}
+
+// deleteEvents deletes the events up to prev if PruneEvents is set: the events after the older of
+// the two newest snapshots stay, so a damaged newest snapshot falls back to the older one. prev is
+// the sequence number of a snapshot that an earlier save made durable or recovery loaded.
+func (w *wrapper[C, E, S]) deleteEvents(ctx *lockstep.Context[C], prev uint64) {
+	if !w.cfg.PruneEvents {
+		w.endSnapshot(ctx)
+		return
+	}
+	j, id := w.cfg.Journal, w.id
+	w.cancelSave = w.start(ctx, effectDeleteEvents, func(c context.Context) (any, error) {
+		return nil, j.DeleteEvents(c, id, prev)
+	}, func(ctx *lockstep.Context[C], _ any, err error) {
+		w.deleted(ctx, "events", "delete-events", prev, err)
+		w.endSnapshot(ctx)
+	})
+}
+
+// deleted emits lockstep.persist.delete for a deletion that succeeded and records the failure of
+// one that did not, with the fail op op.
+func (w *wrapper[C, E, S]) deleted(ctx *lockstep.Context[C], store, op string, to uint64, err error) {
+	if err != nil {
+		w.note(ctx, op, fmt.Errorf("persist: %s: delete %s up to seq %d: %w", w.id, store, to, err))
+		return
+	}
+	if ctl := hooks.Control(ctx); ctl.TraceEnabled() {
+		w.record(ctl, recordDelete, "store", store, "to", strconv.FormatUint(to, 10))
+	}
+}
+
+// endSnapshot ends the snapshot cycle and evaluates again a snapshot that fell due during it.
+func (w *wrapper[C, E, S]) endSnapshot(ctx *lockstep.Context[C]) {
+	w.saving, w.cancelSave = false, nil
+	if w.again {
+		w.again = false
+		w.snapshotCheck(ctx, true)
+	}
 }
 
 // Signal passes sig to the user's Signal; during recovery it keeps sig until recovery finishes
@@ -458,9 +601,9 @@ func (w *wrapper[C, E, S]) Stopped(ctx *lockstep.Context[C], reason lockstep.Sto
 // instead; a completion of an effect started before the latest recovery began is dropped. A
 // panic in done breaks the wrapper (guarded).
 func (w *wrapper[C, E, S]) start(ctx *lockstep.Context[C], name string, run func(context.Context) (any, error),
-	done func(ctx *lockstep.Context[C], v any, err error)) {
+	done func(ctx *lockstep.Context[C], v any, err error)) (cancel func()) {
 	gen := w.gen
-	hooks.Control(ctx).StartInternal(hooks.InternalEffect{
+	return hooks.Control(ctx).StartInternal(hooks.InternalEffect{
 		Name:   name,
 		Inline: true,
 		Run:    run,
@@ -505,12 +648,18 @@ func (w *wrapper[C, E, S]) breakDown(ctx *lockstep.Context[C]) {
 // err through the lockstep context's Fail (PER-070, PER-100 step 1, PER-140). A deferred stop is
 // dropped with the batch.
 func (w *wrapper[C, E, S]) fail(ctx *lockstep.Context[C], op string, err error) {
-	if ctl := hooks.Control(ctx); ctl.TraceEnabled() {
-		w.record(ctl, recordFail, "op", op, "err", err.Error())
-	}
+	w.note(ctx, op, err)
 	w.breakDown(ctx)
 	w.halted = true
 	ctx.Fail(err)
+}
+
+// note emits lockstep.persist.fail with op and err's text, for a failure that does not fail the
+// actor.
+func (w *wrapper[C, E, S]) note(ctx *lockstep.Context[C], op string, err error) {
+	if ctl := hooks.Control(ctx); ctl.TraceEnabled() {
+		w.record(ctl, recordFail, "op", op, "err", err.Error())
+	}
 }
 
 // stop calls the lockstep context's Stop: the incarnation handles no further command.
