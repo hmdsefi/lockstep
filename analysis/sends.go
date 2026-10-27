@@ -19,7 +19,9 @@ type sendSite struct {
 	msgs []ast.Expr // the message expressions: one, or the Ask build literal's return results
 }
 
-// leaf is one placed expression of a message (ANL-200).
+// leaf is one placed expression of a message (ANL-200). An identifier leaf need not name a
+// variable: constants, nil, true, false and function names are identifiers too, so a consumer that
+// tracks variables checks that the root's object is a *types.Var.
 type leaf struct {
 	expr   ast.Expr
 	root   *ast.Ident // base of the selector, index and dereference chain
@@ -28,10 +30,12 @@ type leaf struct {
 
 // sendSites returns the send sites in body, in source order (ANL-200). body is usually an
 // *ast.FuncDecl or *ast.FuncLit; function literals nested in it are not entered, so that each
-// function's sites are found once, when that function is the body (ANL-050). The return results
-// of an Ask build literal belong to the Ask site all the same: they are the messages of the
-// literal's own return statements, without those of literals nested in it. An Ask whose build
-// function is not a literal has no message expressions.
+// function's sites are found once, when that function is the body (ANL-050). The function F of a
+// site (ANL-220) is therefore the body passed here: the innermost FuncDecl or FuncLit holding the
+// send call. The return results of an Ask build literal belong to the Ask site all the same: they
+// are the messages of the literal's own return statements, without those of literals nested in
+// it, so the leaves of an Ask lie inside the build literal while F is the function holding the
+// Ask call. An Ask whose build function is not a literal has no message expressions.
 func sendSites(pass *analysis.Pass, body ast.Node) []sendSite {
 	var sites []sendSite
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -90,25 +94,45 @@ func returnResults(build ast.Expr) []ast.Expr {
 }
 
 // placed returns the leaves of the placed expressions P(e) of message expression e, in the order
-// of the walk of ANL-200. fn is the function (an *ast.FuncDecl or *ast.FuncLit) whose body holds
-// the send site. A leaf that is a local variable declared in fn's syntax (in a function literal
-// nested in it too, such as an Ask build literal) and assigned only by its declaration's
-// initializer also yields the leaves of that initializer, each variable once per call. The shared
-// mark passes through parentheses, & and slicing to the leaf they apply to; it does not pass
-// through conversions, type assertions, composite literals or initializers.
+// of the walk of ANL-200. fn is the function F of the send site, as sendSites defines it: the
+// innermost *ast.FuncDecl or *ast.FuncLit holding the send call, also for the leaves of an Ask,
+// which lie in its build literal.
+//
+// A leaf that is a local variable declared in fn's syntax (in a function literal nested in it
+// too, such as an Ask build literal) and assigned only by its declaration's initializer also
+// yields the leaves of that initializer, each variable once per call. The shared mark passes
+// through parentheses, & and slicing to the leaf they apply to; it does not pass through
+// conversions, type assertions, composite literals or initializers. A composite literal whose
+// type does not contain references (containsRefs false, for example a type marked
+// //lockstep:immutable) places nothing: the receiver gets a safe value (ANL-200, AT-ANL-14).
+//
+// Each call scans fn for its assignments; a check with several sites in one function uses
+// newPlacer once and calls its placed method per message instead.
 func placed(pass *analysis.Pass, fn ast.Node, e ast.Expr) []leaf {
-	p := &placer{pass: pass, fn: fn, expanded: make(map[*types.Var]bool)}
-	p.walk(e, false)
-	return p.leaves
+	return newPlacer(pass, fn).placed(e)
 }
 
-// placer holds the state of one placed call.
+// placer computes P(e) for the send sites of one function F. It scans F's assignments once, on
+// the first leaf that needs them.
 type placer struct {
 	pass     *analysis.Pass
 	fn       ast.Node
 	inits    map[*types.Var]ast.Expr // single-assignment locals of fn; built on first need
-	expanded map[*types.Var]bool
-	leaves   []leaf
+	expanded map[*types.Var]bool     // per placed call
+	leaves   []leaf                  // per placed call
+}
+
+// newPlacer returns a placer for the send sites of fn, as placed defines fn.
+func newPlacer(pass *analysis.Pass, fn ast.Node) *placer {
+	return &placer{pass: pass, fn: fn}
+}
+
+// placed returns the leaves of P(e), as the function placed does.
+func (p *placer) placed(e ast.Expr) []leaf {
+	p.expanded = make(map[*types.Var]bool)
+	p.leaves = nil
+	p.walk(e, false)
+	return p.leaves
 }
 
 // walk appends the leaves of P(e); shared marks e's own leaf as reached through & or slicing.
@@ -118,10 +142,11 @@ func (p *placer) walk(e ast.Expr, shared bool) {
 	case *ast.ParenExpr:
 		p.walk(e.X, shared)
 	case *ast.CompositeLit:
-		isMap := false
-		if t := info.TypeOf(e); t != nil {
-			_, isMap = t.Underlying().(*types.Map)
+		t := info.TypeOf(e)
+		if t == nil || !containsRefs(p.pass, t) {
+			return
 		}
+		_, isMap := t.Underlying().(*types.Map)
 		for _, elt := range e.Elts {
 			kv, ok := elt.(*ast.KeyValueExpr)
 			if !ok {
@@ -193,10 +218,12 @@ func isLeaf(info *types.Info, e ast.Expr) bool {
 	return false
 }
 
-// leafRoot returns the identifier at the base of e's chain of field selectors, index expressions
-// and dereferences (parentheses ignored), or nil when the chain starts at another expression,
-// such as a call. For a qualified identifier such as os.Args it returns the selected name, which
-// refers to the package variable.
+// leafRoot returns the root of e as ANL-200 defines it: the identifier at the base of e's chain of
+// field selectors, index expressions and dereferences (parentheses ignored), or nil when the
+// chain starts at another expression, such as a call. For a qualified identifier such as os.Args
+// it returns the selected name, which refers to the package variable. It applies to any
+// expression, not only to leaves, so the checks that need the root of a written expression
+// (ANL-270) use it too.
 func leafRoot(info *types.Info, e ast.Expr) *ast.Ident {
 	for {
 		switch x := ast.Unparen(e).(type) {

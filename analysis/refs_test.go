@@ -53,7 +53,8 @@ var markerProbe = &analysis.Analyzer{
 }
 
 // TestMarkerFacts checks the markerFact of ANL-090: a package sees the markers of the types it
-// imports, and of its own types, through the directive index.
+// imports, and of its own types, through the directive index. The probes of this file report
+// texts without an LSnnn prefix, so they run through analysistest.Run rather than runCorpus.
 func TestMarkerFacts(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), markerProbe, "facts/importer")
 }

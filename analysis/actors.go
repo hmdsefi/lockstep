@@ -37,6 +37,8 @@ type actorCode struct {
 	Funcs []*actorFunc
 
 	byBody map[ast.Node]*actorFunc
+	succ   map[*actorFunc][]*actorFunc // the edges of ANL-050 between actor-code functions
+	fset   *token.FileSet
 }
 
 // actorType is an actor type of the analyzed package.
@@ -85,6 +87,31 @@ func (f *actorFunc) inspect(visit func(ast.Node) bool) {
 	})
 }
 
+// reach returns the actor-code functions reachable from the given ones over the edges of ANL-050,
+// the given ones included, each once. It searches breadth first like ANL-060: the given functions
+// in source order (file name, then offset), then the successors of each in source order of their
+// declarations. Unlike the chains, it is per call, so a helper that two actors share is in the
+// result for each of them: "T's actor code" is reach(T.Roots...), and the functions reachable
+// from a Stopped root are reach(stopped).
+func (c *actorCode) reach(from ...*actorFunc) []*actorFunc {
+	queue := slices.Clone(from)
+	slices.SortStableFunc(queue, func(x, y *actorFunc) int { return comparePos(c.fset, x.Fn.Pos(), y.Fn.Pos()) })
+	queue = slices.Compact(queue)
+	seen := make(map[*actorFunc]bool, len(queue))
+	for _, f := range queue {
+		seen[f] = true
+	}
+	for i := 0; i < len(queue); i++ {
+		for _, g := range c.succ[queue[i]] {
+			if !seen[g] {
+				seen[g] = true
+				queue = append(queue, g)
+			}
+		}
+	}
+	return queue
+}
+
 // funcOf returns the actor-code function whose Body is body, or nil when body is not the body of
 // an actor-code function.
 func (c *actorCode) funcOf(body ast.Node) *actorFunc {
@@ -115,14 +142,18 @@ type actorSearch struct {
 func runActors(pass *analysis.Pass) (any, error) {
 	ssaResult, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {
-		return &actorCode{byBody: map[ast.Node]*actorFunc{}}, nil
+		return &actorCode{byBody: map[ast.Node]*actorFunc{}, fset: pass.Fset}, nil
 	}
 	s := &actorSearch{
 		pass:     pass,
 		declared: map[*types.Func]*ssa.Function{},
 		own:      map[*ssa.Function]bool{},
 		goLits:   map[*ast.FuncLit]bool{},
-		code:     &actorCode{byBody: map[ast.Node]*actorFunc{}},
+		code: &actorCode{
+			byBody: map[ast.Node]*actorFunc{},
+			succ:   map[*actorFunc][]*actorFunc{},
+			fset:   pass.Fset,
+		},
 	}
 	for _, fn := range ssaResult.SrcFuncs {
 		s.own[fn] = true
@@ -247,7 +278,8 @@ func contextTypeArg(t types.Type) types.Type {
 	return named.TypeArgs().At(0)
 }
 
-// search runs the breadth-first search of ANL-060 from all roots and fills code.Funcs.
+// search runs the breadth-first search of ANL-060 from all roots and fills code.Funcs and the
+// edges between them, code.succ.
 func (s *actorSearch) search() {
 	owners := map[*types.TypeName]*actorType{}
 	var queue []*actorFunc
@@ -256,9 +288,9 @@ func (s *actorSearch) search() {
 		queue = append(queue, a.Roots...)
 	}
 	slices.SortFunc(queue, func(x, y *actorFunc) int { return s.comparePos(x.Fn.Pos(), y.Fn.Pos()) })
-	reached := map[*ssa.Function]bool{}
+	reached := map[*ssa.Function]*actorFunc{}
 	for _, f := range queue {
-		reached[f.Fn] = true
+		reached[f.Fn] = f
 	}
 	for len(queue) > 0 {
 		f := queue[0]
@@ -266,16 +298,18 @@ func (s *actorSearch) search() {
 		s.code.Funcs = append(s.code.Funcs, f)
 		s.code.byBody[f.Body] = f
 		for _, g := range s.successors(f.Fn) {
-			if reached[g] {
-				continue
+			next := reached[g]
+			if next == nil {
+				next = &actorFunc{
+					Fn:    g,
+					Body:  g.Syntax(),
+					Chain: f.Chain + " -> " + s.name(g),
+					Actor: owners[receiverTypeNameObj(g)],
+				}
+				reached[g] = next
+				queue = append(queue, next)
 			}
-			reached[g] = true
-			queue = append(queue, &actorFunc{
-				Fn:    g,
-				Body:  g.Syntax(),
-				Chain: f.Chain + " -> " + s.name(g),
-				Actor: owners[receiverTypeNameObj(g)],
-			})
+			s.code.succ[f] = append(s.code.succ[f], next)
 		}
 	}
 }
@@ -376,7 +410,12 @@ func (s *actorSearch) name(fn *ssa.Function) string {
 
 // comparePos orders positions by file name, then offset, ignoring //line directives.
 func (s *actorSearch) comparePos(x, y token.Pos) int {
-	px := s.pass.Fset.PositionFor(x, false)
-	py := s.pass.Fset.PositionFor(y, false)
+	return comparePos(s.pass.Fset, x, y)
+}
+
+// comparePos orders positions of fset by file name, then offset, ignoring //line directives.
+func comparePos(fset *token.FileSet, x, y token.Pos) int {
+	px := fset.PositionFor(x, false)
+	py := fset.PositionFor(y, false)
 	return cmp.Or(cmp.Compare(px.Filename, py.Filename), cmp.Compare(px.Offset, py.Offset))
 }

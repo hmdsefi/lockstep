@@ -87,7 +87,9 @@ func qualified(sys *lockstep.System, spid lockstep.PID[[]string]) {
 }
 
 func locals(sys *lockstep.System, pid lockstep.PID[Msg], ppid lockstep.PID[Pair], cpid lockstep.PID[*[]int], items []int) {
-	m := Msg{Items: items}         // want `^leaf items root=items shared=false$`
+	// m is expanded at each of its two sites.
+	m := Msg{Items: items}         // want `^leaf items root=items shared=false$` `^leaf items root=items shared=false$`
+	_ = lockstep.Send(sys, pid, m) // want `^send lockstep\.Send$` `^leaf m root=m shared=false$`
 	_ = lockstep.Send(sys, pid, m) // want `^send lockstep\.Send$` `^leaf m root=m shared=false$`
 
 	// Each variable is expanded once per message: items is reported once.
@@ -165,4 +167,30 @@ func closures(sys *lockstep.System, pid lockstep.PID[Msg], items []int) {
 	func() {
 		_ = lockstep.Send(sys, pid, Msg{Items: items}) // want `^send lockstep\.Send$` `^leaf items root=items shared=false$`
 	}()
+}
+
+// Snap is immutable, so a Snap literal places nothing: the receiver gets a safe value.
+//
+//lockstep:immutable
+type Snap struct {
+	Rows []int
+}
+
+// Open has the same field without the marker.
+type Open struct {
+	Rows []int
+}
+
+type Point struct {
+	X, Y int
+}
+
+func safeLiterals(sys *lockstep.System, spid lockstep.PID[Snap], ppid lockstep.PID[*Snap], opid lockstep.PID[Open], xpid lockstep.PID[Point], rows []int, x int) {
+	_ = lockstep.Send(sys, spid, Snap{Rows: rows})  // want `^send lockstep\.Send$`
+	_ = lockstep.Send(sys, ppid, &Snap{Rows: rows}) // want `^send lockstep\.Send$`
+	_ = lockstep.Send(sys, opid, Open{Rows: rows})  // want `^send lockstep\.Send$` `^leaf rows root=rows shared=false$`
+	_ = lockstep.Send(sys, xpid, Point{X: x})       // want `^send lockstep\.Send$`
+
+	s := Snap{Rows: rows}
+	_ = lockstep.Send(sys, spid, s) // want `^send lockstep\.Send$` `^leaf s root=s shared=false$`
 }
