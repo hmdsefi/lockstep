@@ -39,6 +39,8 @@ type immutableCheck struct {
 	idx  *directiveIndex
 	r    *reporter
 	qual types.Qualifier
+	// fresh maps each local variable under construction to the immutable type it was built as.
+	fresh map[*types.Var]*types.Named
 }
 
 func runImmutable(pass *analysis.Pass) (any, error) {
@@ -61,6 +63,7 @@ func runImmutable(pass *analysis.Pass) (any, error) {
 			return p.Name()
 		},
 	}
+	c.fresh = c.freshLocals(insp)
 	nodes := []ast.Node{
 		(*ast.TypeSpec)(nil), (*ast.AssignStmt)(nil), (*ast.RangeStmt)(nil), (*ast.IncDecStmt)(nil),
 		(*ast.UnaryExpr)(nil), (*ast.CallExpr)(nil),
@@ -202,7 +205,8 @@ func (w *immutableWalk) allowed(t *types.Named) bool {
 type immutableWrite struct {
 	field *types.Var
 	named *types.Named
-	elem  bool // the write is to an element of a slice or map field, not to the field itself
+	elem  bool     // the write is to an element of a slice or map field, not to the field itself
+	base  ast.Expr // x in the field selection x.f
 }
 
 // writeTarget finds the field of an immutable type that a write to the location e changes
@@ -215,7 +219,7 @@ func (c *immutableCheck) writeTarget(e ast.Expr) (immutableWrite, bool) {
 		switch x := ast.Unparen(e).(type) {
 		case *ast.IndexExpr:
 			if f, named, _, ok := c.immutableField(x.X); ok && immutableSliceOrMap(f.Type()) {
-				return immutableWrite{field: f, named: named, elem: true}, true
+				return immutableWrite{field: f, named: named, elem: true, base: immutableBase(x.X)}, true
 			}
 			t := c.pass.TypesInfo.TypeOf(x.X)
 			if t == nil {
@@ -227,7 +231,7 @@ func (c *immutableCheck) writeTarget(e ast.Expr) (immutableWrite, bool) {
 			e = x.X
 		case *ast.SelectorExpr:
 			if f, named, ptr, ok := c.immutableField(x); ok && ptr {
-				return immutableWrite{field: f, named: named}, true
+				return immutableWrite{field: f, named: named, base: x.X}, true
 			}
 			s := c.pass.TypesInfo.Selections[x]
 			if s == nil || s.Kind() != types.FieldVal || s.Indirect() {
@@ -317,7 +321,7 @@ func (c *immutableCheck) checkCall(call *ast.CallExpr) {
 		arg = ast.Unparen(s.X)
 	}
 	if f, named, _, ok := c.immutableField(arg); ok && immutableSliceOrMap(f.Type()) {
-		c.report(call.Pos(), op, immutableWrite{field: f, named: named, elem: true})
+		c.report(call.Pos(), op, immutableWrite{field: f, named: named, elem: true, base: immutableBase(arg)})
 	}
 }
 
@@ -330,8 +334,111 @@ func (c *immutableCheck) sameBound(a, b ast.Expr) bool {
 	return x != nil && y != nil && constant.Compare(x, token.EQL, y)
 }
 
-// report adds the LS201 finding of the write t at pos.
+// immutableBase returns x of the field selection e, x.f.
+func immutableBase(e ast.Expr) ast.Expr {
+	if sel, ok := ast.Unparen(e).(*ast.SelectorExpr); ok {
+		return sel.X
+	}
+	return nil
+}
+
+// freshLocals returns the local variables under construction (ANL-260): those that a function
+// initializes from T{...}, &T{...} or new(T), for a type T marked immutable, and assigns nothing
+// else. Each maps to its T.
+func (c *immutableCheck) freshLocals(insp *inspector.Inspector) map[*types.Var]*types.Named {
+	info := c.pass.TypesInfo
+	built := make(map[*types.Var]*types.Named)
+	assigned := make(map[*types.Var]bool)
+	define := func(id *ast.Ident, init ast.Expr) {
+		v, ok := info.Defs[id].(*types.Var)
+		if !ok || v.Parent() == c.pass.Pkg.Scope() {
+			return
+		}
+		if named := c.builtType(init); named != nil {
+			built[v] = named
+		}
+	}
+	assign := func(e ast.Expr) {
+		if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+			if v, ok := info.Uses[id].(*types.Var); ok {
+				assigned[v] = true
+			}
+		}
+	}
+	nodes := []ast.Node{(*ast.AssignStmt)(nil), (*ast.ValueSpec)(nil), (*ast.RangeStmt)(nil)}
+	insp.Preorder(nodes, func(n ast.Node) {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range n.Lhs {
+				assign(lhs)
+				if id, ok := lhs.(*ast.Ident); ok && n.Tok == token.DEFINE && len(n.Lhs) == len(n.Rhs) {
+					define(id, n.Rhs[i])
+				}
+			}
+		case *ast.ValueSpec:
+			if len(n.Names) == len(n.Values) {
+				for i, id := range n.Names {
+					define(id, n.Values[i])
+				}
+			}
+		case *ast.RangeStmt:
+			if n.Tok == token.ASSIGN {
+				assign(n.Key)
+				assign(n.Value)
+			}
+		}
+	})
+	for v := range assigned {
+		delete(built, v)
+	}
+	return built
+}
+
+// builtType returns T when e is T{...}, &T{...} or new(T) for a type T marked immutable, or nil.
+func (c *immutableCheck) builtType(e ast.Expr) *types.Named {
+	info := c.pass.TypesInfo
+	var t types.Type
+	switch x := ast.Unparen(e).(type) {
+	case *ast.CompositeLit:
+		t = info.TypeOf(x)
+	case *ast.UnaryExpr:
+		if lit, ok := ast.Unparen(x.X).(*ast.CompositeLit); ok && x.Op == token.AND {
+			t = info.TypeOf(lit)
+		}
+	case *ast.CallExpr:
+		if id, ok := ast.Unparen(x.Fun).(*ast.Ident); ok && len(x.Args) == 1 {
+			if b, ok := info.Uses[id].(*types.Builtin); ok && b.Name() == "new" {
+				t = info.TypeOf(x.Args[0])
+			}
+		}
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || !c.idx.hasMarker(named.Obj(), markImmutable) {
+		return nil
+	}
+	return named
+}
+
+// constructing reports whether the write t is to a field of a local variable under construction,
+// directly or through a dereference of it.
+func (c *immutableCheck) constructing(t immutableWrite) bool {
+	x := ast.Unparen(t.base)
+	if star, ok := x.(*ast.StarExpr); ok {
+		x = ast.Unparen(star.X)
+	}
+	id, ok := x.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	v, ok := c.pass.TypesInfo.Uses[id].(*types.Var)
+	return ok && c.fresh[v] != nil && types.Identical(c.fresh[v], t.named)
+}
+
+// report adds the LS201 finding of the write t at pos, unless t is construction.
 func (c *immutableCheck) report(pos token.Pos, op string, t immutableWrite) {
+	if c.constructing(t) {
+		return
+	}
 	c.r.report(pos, idImmutable, op+" writes to field "+t.field.Name()+" of immutable type "+
 		types.TypeString(t.named, c.qual))
 }

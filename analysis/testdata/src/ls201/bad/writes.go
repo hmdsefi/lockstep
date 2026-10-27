@@ -142,3 +142,36 @@ var literal = func(b Batch) {
 var shared Batch
 
 var appended = append(shared.Items, 1) // want `^LS201: append writes to field Items of immutable type Batch$`
+
+// Snapshot is immutable; the functions below write to one they did not build.
+//
+//lockstep:immutable
+type Snapshot struct {
+	Rows  []string
+	Index map[string]int
+}
+
+// fillParam fills a Snapshot it got as a parameter.
+func fillParam(p *Snapshot, rows []string) {
+	p.Rows = rows        // want `^LS201: assignment through a pointer writes to field Rows of immutable type Snapshot$`
+	sort.Strings(p.Rows) // want `^LS201: sort\.Strings writes to field Rows of immutable type Snapshot$`
+}
+
+// reassigned builds a Snapshot and then takes another one, which others may hold.
+func reassigned(other *Snapshot) {
+	s := &Snapshot{}
+	s = other
+	s.Rows = nil // want `^LS201: assignment through a pointer writes to field Rows of immutable type Snapshot$`
+}
+
+// loaded fills a Snapshot it got from a call.
+func loaded(load func() *Snapshot) {
+	s := load()
+	s.Index["x"] = 1 // want `^LS201: element assignment writes to field Index of immutable type Snapshot$`
+}
+
+// UnmarshalJSON decodes into its receiver, which it did not build.
+func (s *Snapshot) UnmarshalJSON(b []byte) error {
+	s.Rows = []string{string(b)} // want `^LS201: assignment through a pointer writes to field Rows of immutable type Snapshot$`
+	return nil
+}
