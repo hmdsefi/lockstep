@@ -227,3 +227,21 @@ func (b *Box[T]) handle(m AccountMsg) {
 	case Deposit, Withdraw, GetBalance, *Close:
 	}
 }
+
+// Wide passes the message to a delegate whose parameter has type any; the delegate is followed
+// because it inspects the parameter for members (ANL-330).
+type Wide struct{}
+
+func (w *Wide) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	switch m := msg.(type) {
+	case Deposit, GetBalance:
+	default:
+		wideRest(m)
+	}
+}
+
+func wideRest(m any) {
+	switch m.(type) {
+	case Withdraw, *Close:
+	}
+}
