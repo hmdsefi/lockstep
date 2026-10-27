@@ -413,3 +413,100 @@ func genericArrayReset[A ~[4]int](sys *lockstep.System, pid lockstep.PID[Chunk])
 	lockstep.Send(sys, pid, Chunk{S: a[:]})
 	a = A{} // want `^LS200: a is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }
+
+// usedAfterCheck returns when the send fails and writes the items when it succeeds.
+func usedAfterCheck(sys *lockstep.System, pid lockstep.PID[Batch], items []int) {
+	if err := lockstep.Send(sys, pid, Batch{Items: items}); err != nil {
+		return
+	}
+	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// loggedFailure goes on after the failure branch: the path where the send succeeded reaches the
+// write.
+func loggedFailure(sys *lockstep.System, pid lockstep.PID[Batch], items []int, logf func(error)) {
+	err := lockstep.Send(sys, pid, Batch{Items: items})
+	if err != nil {
+		logf(err)
+	}
+	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// successBranch writes the items where the send succeeded.
+func successBranch(sys *lockstep.System, pid lockstep.PID[Batch], items []int) {
+	if lockstep.Send(sys, pid, Batch{Items: items}) == nil {
+		items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	}
+}
+
+// otherError tests another error: whether the send failed is not known there.
+func otherError(sys *lockstep.System, pid lockstep.PID[Batch], items []int, prev error) ([]int, error) {
+	err := lockstep.Send(sys, pid, Batch{Items: items})
+	if prev != nil {
+		return items, err // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	}
+	return nil, err
+}
+
+type Order struct{ Status string }
+
+type Envelope struct {
+	Data []int
+	Body any
+}
+
+// interfacePartWrite sends a struct value whole and writes through its interface part, which
+// may hold a pointer the receiver shares.
+func interfacePartWrite(sys *lockstep.System, pid lockstep.PID[Envelope], e Envelope) {
+	lockstep.Send(sys, pid, e)
+	e.Body.(*Order).Status = "x" // want `^LS200: e is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// interfacePartPassed passes the interface part of a struct value it sent whole.
+func interfacePartPassed(sys *lockstep.System, pid lockstep.PID[Envelope], e Envelope, use func(any)) {
+	lockstep.Send(sys, pid, e)
+	use(e.Body) // want `^LS200: e is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+type Gen[T any] struct {
+	Data []int
+	V    T
+}
+
+type Mutator interface{ Mutate() }
+
+// typeParamPart passes the part of a type parameter's type, which may be a pointer.
+func typeParamPart[T any](sys *lockstep.System, pid lockstep.PID[Gen[T]], g Gen[T], use func(T)) {
+	lockstep.Send(sys, pid, g)
+	use(g.V) // want `^LS200: g is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// typeParamMethod calls a method of the part of a type parameter's type.
+func typeParamMethod[T Mutator](sys *lockstep.System, pid lockstep.PID[Gen[T]], g Gen[T]) {
+	lockstep.Send(sys, pid, g)
+	g.V.Mutate() // want `^LS200: g is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+type Arr4 interface{ ~[4]int }
+
+type Arr4b interface{ Arr4 }
+
+// nestedArrayReset sends a slice of an array whose type parameter takes its array type from an
+// embedded constraint, and assigns the array.
+func nestedArrayReset[A Arr4b](sys *lockstep.System, pid lockstep.PID[Chunk]) {
+	var a A
+	lockstep.Send(sys, pid, Chunk{S: a[:]})
+	a = A{} // want `^LS200: a is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+type Mixed[A ~[4]int | ~[]int] struct {
+	Data  []int
+	Items A
+}
+
+// mixedElementWrite sends a struct value whole and writes an element of a part that may be a
+// slice, whose elements the receiver shares.
+func mixedElementWrite[A ~[4]int | ~[]int](sys *lockstep.System, pid lockstep.PID[Mixed[A]], m Mixed[A]) {
+	lockstep.Send(sys, pid, m)
+	m.Items[0] = 1 // want `^LS200: m is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}

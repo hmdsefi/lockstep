@@ -72,8 +72,9 @@ func checkUseAfterSend(pass *analysis.Pass, r *reporter, fn ast.Node) {
 			continue
 		}
 		tracks, inits := f.tracked(s)
+		failed := f.failureEdge(s)
 		for _, t := range tracks {
-			if use := f.firstUse(s.call, start, at, t, inits); use != nil {
+			if use := f.firstUse(s.call, start, at, t, inits, failed); use != nil {
 				line := pass.Fset.Position(s.call.Pos()).Line
 				r.report(use.Pos(), idUseAfterSend, fmt.Sprintf(useAfterSendText, t.v.Name(), s.api, line))
 			}
@@ -402,30 +403,82 @@ func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
 	}
 }
 
-// uasIsArray reports whether t is an array, or a type parameter with an array in its type set:
-// its values may then be arrays, held in the variable's own storage.
+// uasIsArray reports whether t is an array, or a type parameter whose type set holds only
+// arrays: its values are then held in the variable's own storage.
 func uasIsArray(t types.Type) bool {
 	if t == nil {
 		return false
 	}
-	tp, ok := types.Unalias(t).(*types.TypeParam)
-	if !ok {
-		_, ok := t.Underlying().(*types.Array)
-		return ok
+	if tp, ok := types.Unalias(t).(*types.TypeParam); ok {
+		return uasOnlyArrays(tp.Constraint())
 	}
-	iface, ok := tp.Constraint().Underlying().(*types.Interface)
-	if !ok {
+	_, ok := t.Underlying().(*types.Array)
+	return ok
+}
+
+// uasOnlyArrays reports whether every type in the type set of t is an array. The type set of an
+// interface is the intersection of those of its embedded elements, and a union's is the union of
+// its terms'; an interface without embedded elements holds every type.
+func uasOnlyArrays(t types.Type) bool {
+	if u, ok := t.(*types.Union); ok {
+		for term := range u.Terms() {
+			if !uasOnlyArrays(term.Type()) {
+				return false
+			}
+		}
+		return u.Len() > 0
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Array:
+		return true
+	case *types.Interface:
+		for e := range u.EmbeddedTypes() {
+			if uasOnlyArrays(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// uasMayHoldRefs reports whether a value of type t may share memory when it is copied: it
+// contains references (ANL-210), or a part of interface or type parameter type, whose value may
+// be a pointer.
+func uasMayHoldRefs(pass *analysis.Pass, t types.Type) bool {
+	if containsRefs(pass, t) {
+		return true
+	}
+	idx, _ := indexOf(pass)
+	w := refsWalk{idx: idx, seen: make(map[*types.Named]bool)}
+	return uasHasOpaque(&w, t)
+}
+
+// uasHasOpaque reports whether t, other than a type ANL-210 names as safe, is or holds in its
+// fields and array elements an interface or a type parameter.
+func uasHasOpaque(w *refsWalk, t types.Type) bool {
+	t = types.Unalias(t)
+	if w.safe(t) {
 		return false
 	}
-	for e := range iface.EmbeddedTypes() {
-		if u, ok := e.(*types.Union); ok {
-			for term := range u.Terms() {
-				if uasIsArray(term.Type()) {
-					return true
-				}
+	switch t := t.(type) {
+	case *types.TypeParam:
+		return true
+	case *types.Named:
+		if w.seen[t] {
+			return false
+		}
+		w.seen[t] = true
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Interface:
+		return true
+	case *types.Array:
+		return uasHasOpaque(w, u.Elem())
+	case *types.Struct:
+		for f := range u.Fields() {
+			if uasHasOpaque(w, f.Type()) {
+				return true
 			}
-		} else if uasIsArray(e) {
-			return true
 		}
 	}
 	return false
@@ -437,7 +490,8 @@ func uasIsArray(t types.Type) bool {
 // path compatible with a placed leaf. When a shared leaf lies in the variable's own storage, the
 // bare variable on the left of an assignment writes what was sent, so it is a use. Otherwise a
 // chain that stays in the variable's own storage and holds no references, such as job.ID or
-// len(job.Payload) after sending the struct value job, reads the sender's copy: not a use.
+// len(job.Payload) after sending the struct value job, reads the sender's copy: not a use. An
+// interface or a type parameter part may hold a pointer, so it counts as holding references.
 func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []ast.Expr) bool {
 	if f.pass.TypesInfo.Uses[id] != t.v || uasWithin(id.Pos(), call) || f.notUses[id] {
 		return false
@@ -451,7 +505,7 @@ func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []
 		}
 	}
 	if x := f.outer[id]; !t.shared && x != nil && uasInStorage(f.pass.TypesInfo, x, false) &&
-		(f.lengths[x] || !containsRefs(f.pass, f.pass.TypesInfo.TypeOf(x))) {
+		(f.lengths[x] || !uasMayHoldRefs(f.pass, f.pass.TypesInfo.TypeOf(x))) {
 		return false
 	}
 	path := f.paths[id]
@@ -465,9 +519,11 @@ func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []
 
 // firstUse returns the use of t's variable that comes first in the source among those a path of
 // the function's control-flow graph leads to from the end of call, the node at of block start,
-// without passing a kill (ANL-220, ANL-230), or nil. A use in a function literal counts where
-// the literal is, since the literal may run later.
-func (f *uasFunc) firstUse(call *ast.CallExpr, start *cfg.Block, at int, t *uasTrack, inits []ast.Expr) *ast.Ident {
+// without passing a kill or the edge failed (ANL-220, ANL-230), or nil. A use in a function
+// literal counts where the literal is, since the literal may run later.
+func (f *uasFunc) firstUse(call *ast.CallExpr, start *cfg.Block, at int, t *uasTrack, inits []ast.Expr,
+	failed uasEdge,
+) *ast.Ident {
 	var first *ast.Ident
 	// scan records the uses in node n positioned at or after from and reports whether n kills
 	// the variable; the uses in a killing node come before the kill.
@@ -493,8 +549,15 @@ func (f *uasFunc) firstUse(call *ast.CallExpr, start *cfg.Block, at int, t *uasT
 	}
 	visited := make(map[*cfg.Block]bool)
 	var queue []*cfg.Block
+	next := func(b *cfg.Block) {
+		for _, succ := range b.Succs {
+			if b != failed.from || succ != failed.to {
+				queue = append(queue, succ)
+			}
+		}
+	}
 	if walk(start, at, call.End()) {
-		queue = append(queue, start.Succs...)
+		next(start)
 	}
 	for len(queue) > 0 {
 		b := queue[0]
@@ -506,9 +569,81 @@ func (f *uasFunc) firstUse(call *ast.CallExpr, start *cfg.Block, at int, t *uasT
 		if f.killsOnEntry(b, t) || !walk(b, 0, token.NoPos) {
 			continue
 		}
-		queue = append(queue, b.Succs...)
+		next(b)
 	}
 	return first
+}
+
+// uasEdge is an edge of a control-flow graph, from a block to one of its successors.
+type uasEdge struct{ from, to *cfg.Block }
+
+// failureEdge returns the edge of the branch on which the error result of the lockstep.Send site
+// s is not nil, or the zero edge (ANL-220): the branch of an if statement whose condition
+// compares with nil the send call itself or a variable that the if statement's init statement,
+// or the statement just before the if statement, assigns the call. A path through that edge
+// reaches no use: the message was not delivered. ReplyTo.Send and Ask return no error.
+func (f *uasFunc) failureEdge(s sendSite) uasEdge {
+	if s.api != "lockstep.Send" {
+		return uasEdge{}
+	}
+	info := f.pass.TypesInfo
+	// assigns reports whether st assigns the send call alone to the variable x names.
+	assigns := func(st ast.Stmt, x ast.Expr) bool {
+		a, ok := st.(*ast.AssignStmt)
+		if !ok || len(a.Lhs) != 1 || len(a.Rhs) != 1 || ast.Unparen(a.Rhs[0]) != s.call {
+			return false
+		}
+		id, ok := x.(*ast.Ident)
+		lhs, isIdent := ast.Unparen(a.Lhs[0]).(*ast.Ident)
+		return ok && isIdent && info.ObjectOf(id) != nil && info.ObjectOf(lhs) == info.ObjectOf(id)
+	}
+	prev := make(map[*ast.IfStmt]ast.Stmt) // the statement before each if statement in its list
+	var ifs *ast.IfStmt
+	var neq bool
+	ast.Inspect(f.fn, func(n ast.Node) bool {
+		var list []ast.Stmt
+		switch n := n.(type) {
+		case *ast.BlockStmt:
+			list = n.List
+		case *ast.CaseClause:
+			list = n.Body
+		case *ast.CommClause:
+			list = n.Body
+		case *ast.IfStmt:
+			cond, ok := ast.Unparen(n.Cond).(*ast.BinaryExpr)
+			if !ok || cond.Op != token.EQL && cond.Op != token.NEQ {
+				break
+			}
+			x := cond.X
+			if info.Types[x].IsNil() {
+				x = cond.Y
+			} else if !info.Types[cond.Y].IsNil() {
+				break
+			}
+			x = ast.Unparen(x)
+			if x == s.call || n.Init != nil && assigns(n.Init, x) || prev[n] != nil && assigns(prev[n], x) {
+				ifs, neq = n, cond.Op == token.NEQ
+			}
+		}
+		for i := 1; i < len(list); i++ {
+			if n, ok := list[i].(*ast.IfStmt); ok {
+				prev[n] = list[i-1]
+			}
+		}
+		return ifs == nil
+	})
+	if ifs == nil {
+		return uasEdge{}
+	}
+	for _, b := range f.graph.Blocks {
+		if len(b.Succs) == 2 && b.Succs[0].Kind == cfg.KindIfThen && b.Succs[0].Stmt == ifs {
+			if neq {
+				return uasEdge{b, b.Succs[0]}
+			}
+			return uasEdge{b, b.Succs[1]}
+		}
+	}
+	return uasEdge{}
 }
 
 // nodeOf returns the block holding call and the index of the innermost node holding it.
