@@ -61,8 +61,11 @@ func TestPlugin(t *testing.T) {
 	})
 
 	t.Run("disable", func(t *testing.T) {
-		got := build(t, map[string]any{"disable": []any{"determinism"}})
-		want := []*analysis.Analyzer{lsanalysis.Directives, lsanalysis.AwaitInActor}
+		got := build(t, map[string]any{"disable": []any{"exhaustive"}})
+		want := []*analysis.Analyzer{
+			lsanalysis.Directives, lsanalysis.Determinism, lsanalysis.AwaitInActor, lsanalysis.UseAfterSend,
+			lsanalysis.Immutable, lsanalysis.SharedState, lsanalysis.MustUse, lsanalysis.Cleanup,
+		}
 		if !slices.Equal(got, want) {
 			t.Errorf("BuildAnalyzers = %v, want %v", names(got), names(want))
 		}
@@ -70,7 +73,10 @@ func TestPlugin(t *testing.T) {
 
 	t.Run("typed settings", func(t *testing.T) {
 		got := build(t, golangci.Settings{Disable: []string{"directives", "awaitinactor"}})
-		want := []*analysis.Analyzer{lsanalysis.Determinism}
+		want := []*analysis.Analyzer{
+			lsanalysis.Determinism, lsanalysis.UseAfterSend, lsanalysis.Immutable, lsanalysis.SharedState,
+			lsanalysis.MustUse, lsanalysis.Exhaustive, lsanalysis.Cleanup,
+		}
 		if !slices.Equal(got, want) {
 			t.Errorf("BuildAnalyzers = %v, want %v", names(got), names(want))
 		}
@@ -78,7 +84,8 @@ func TestPlugin(t *testing.T) {
 
 	t.Run("unknown analyzer", func(t *testing.T) {
 		_, err := golangci.New(map[string]any{"disable": []any{"nope"}})
-		const want = `lockstep: unknown analyzer "nope" in settings.disable; known: directives, determinism, awaitinactor`
+		const want = `lockstep: unknown analyzer "nope" in settings.disable; known: directives, determinism, awaitinactor, ` +
+			`useaftersend, immutable, sharedstate, mustuse, exhaustive, cleanup`
 		if err == nil || err.Error() != want {
 			t.Errorf("New error = %v, want %q", err, want)
 		}

@@ -14,7 +14,7 @@ const (
 
 // suppressibleIDs are the check IDs of this release that a //lockstep:allow may name, ascending
 // (ANL-100).
-var suppressibleIDs = []string{"LS100", "LS110"}
+var suppressibleIDs = []string{"LS100", "LS110", "LS200", "LS201", "LS210", "LS220", "LS230", "LS240"}
 
 // isSuppressibleID reports whether id is one of suppressibleIDs.
 func isSuppressibleID(id string) bool {

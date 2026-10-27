@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -31,11 +32,15 @@ func runCorpus(t *testing.T, a *analysis.Analyzer, pkgs ...string) {
 }
 
 // corpusIDs are the check IDs of this release that have a bad and a good corpus package (ANL-380).
-var corpusIDs = []string{"ls001", "ls002", "ls100", "ls110"}
+var corpusIDs = []string{
+	"ls001", "ls002", "ls100", "ls110",
+	"ls200", "ls201", "ls210", "ls220", "ls230", "ls240",
+}
 
 // TestCorpusComplete checks AT-ANL-26: for every check ID of the release, testdata/src holds the
 // packages lsNNN/bad and lsNNN/good with at least one .go file each; every bad package has a want
-// comment and no good package has one.
+// comment for a diagnostic and no good package has one. Want comments for facts (name:`pattern`)
+// are not counted.
 func TestCorpusComplete(t *testing.T) {
 	src := filepath.Join(analysistest.TestData(), "src")
 	for _, id := range corpusIDs {
@@ -63,9 +68,10 @@ func TestCorpusComplete(t *testing.T) {
 	}
 }
 
-// countWants returns the number of want comments in the Go file at path. A comment is a want
-// comment when its text, after the // or /* marker and any spaces, starts with "want", or when it
-// contains "// want": the rule analysistest uses to find expectations.
+// countWants returns the number of want comments for diagnostics in the Go file at path. A comment
+// is a want comment when its text, after the // or /* marker and any spaces, starts with "want",
+// or when it contains "// want": the rule analysistest uses to find expectations. A want comment
+// whose first expectation is a fact (name:`pattern`) is not counted.
 func countWants(t *testing.T, path string) int {
 	t.Helper()
 	src, err := os.ReadFile(path)
@@ -79,7 +85,7 @@ func countWants(t *testing.T, path string) int {
 	n := 0
 	for _, group := range f.Comments {
 		for _, c := range group.List {
-			if isWantComment(c.Text) {
+			if isWantComment(c.Text) && !isFactWant(c.Text) {
 				n++
 			}
 		}
@@ -97,6 +103,19 @@ func isWantComment(text string) bool {
 		return true
 	}
 	return strings.HasPrefix(strings.TrimSpace(body), "want")
+}
+
+// factWant matches a want comment whose first expectation is a fact: an identifier followed by a
+// colon, as in want Msg:`^sealed\(A, B\)$`.
+var factWant = regexp.MustCompile(`(^|// )\s*want\s+[\pL_][\pL\pN_]*:`)
+
+// isFactWant reports whether the want comment text (with its // or /* */ markers) expects a fact.
+func isFactWant(text string) bool {
+	body, ok := strings.CutPrefix(text, "//")
+	if !ok {
+		body = strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/")
+	}
+	return factWant.MatchString(body)
 }
 
 // TestIsWantComment checks the want-comment rule of TestCorpusComplete on both comment forms.
@@ -117,6 +136,26 @@ func TestIsWantComment(t *testing.T) {
 	for _, tt := range tests {
 		if got := isWantComment(tt.text); got != tt.want {
 			t.Errorf("isWantComment(%q) = %v, want %v", tt.text, got, tt.want)
+		}
+	}
+}
+
+// TestIsFactWant checks which want comments TestCorpusComplete leaves out of its count.
+func TestIsFactWant(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"// want Msg:`^sealed\\(A\\)$`", true},
+		{"/* want Msg:`x` */", true},
+		{"// note // want Msg:`x`", true},
+		{"// want `^LS230: x$`", false},
+		{`// want "LS100: x"`, false},
+		{"// want `a` Msg:`x`", false},
+	}
+	for _, tt := range tests {
+		if got := isFactWant(tt.text); got != tt.want {
+			t.Errorf("isFactWant(%q) = %v, want %v", tt.text, got, tt.want)
 		}
 	}
 }
