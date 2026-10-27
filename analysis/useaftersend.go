@@ -170,7 +170,7 @@ func (f *uasFunc) scanIdents() {
 
 // uasStep is one step of an access path: a field (by its origin, so that the fields of generic
 // instances compare equal) or an element. index is the constant index or key of an element, or
-// empty when it is not constant or the step is a slice expression.
+// empty when it is not constant or indexes a slice expression.
 type uasStep struct {
 	field   *types.Var
 	element bool
@@ -179,8 +179,8 @@ type uasStep struct {
 
 // uasPath returns the root identifier of e's chain of field selectors (embedded fields spelled
 // out), index and slice expressions and dereferences, and the chain's steps from the root.
-// Dereferences, explicit or implicit, are not steps: a path names memory reached from the root
-// whatever pointers it follows. The root is nil when the chain starts at another expression.
+// Dereferences, explicit or implicit, and slice expressions are not steps: a path names memory
+// reached from the root whatever pointers it follows, and a slice names the same elements. The root is nil when the chain starts at another expression.
 func uasPath(info *types.Info, e ast.Expr) (*ast.Ident, []uasStep) {
 	var rev []uasStep // the steps from e back to the root
 	for {
@@ -219,7 +219,11 @@ func uasPath(info *types.Info, e ast.Expr) (*ast.Ident, []uasStep) {
 			rev = append(rev, step)
 			e = x.X
 		case *ast.SliceExpr:
-			rev = append(rev, uasStep{element: true})
+			// A slice denotes the same elements, shifted by its low bound: it is not a step, but
+			// the index applied to it may name any element.
+			if len(rev) > 0 && rev[len(rev)-1].element {
+				rev[len(rev)-1].index = ""
+			}
 			e = x.X
 		default:
 			return nil, nil
@@ -291,7 +295,7 @@ func uasHasLength(t types.Type) bool {
 // uasTrack is a variable a send site tracks.
 type uasTrack struct {
 	v      *types.Var
-	shared bool        // a leaf rooted at v is shared: assigning the bare v writes what was sent
+	shared bool        // a shared leaf lies in v's own storage: assigning the bare v writes it
 	paths  [][]uasStep // the access paths of the leaves rooted at v
 }
 
@@ -306,6 +310,7 @@ func (f *uasFunc) tracked(s sendSite) ([]*uasTrack, []ast.Expr) {
 	byVar := make(map[*types.Var]*uasTrack)
 	for _, msg := range s.msgs {
 		leaves := f.placer.placed(msg)
+		first := len(inits)
 		for _, l := range leaves {
 			if id, ok := l.expr.(*ast.Ident); ok {
 				if v, ok := info.Uses[id].(*types.Var); ok && f.placer.expanded[v] {
@@ -313,6 +318,7 @@ func (f *uasFunc) tracked(s sendSite) ([]*uasTrack, []ast.Expr) {
 				}
 			}
 		}
+		sliced := uasSliced(append([]ast.Expr{msg}, inits[first:]...))
 		for _, l := range leaves {
 			if l.root == nil {
 				continue
@@ -331,18 +337,67 @@ func (f *uasFunc) tracked(s sendSite) ([]*uasTrack, []ast.Expr) {
 				tracks = append(tracks, t)
 			}
 			_, path := uasPath(info, l.expr)
-			t.shared = t.shared || l.shared
+			t.shared = t.shared || l.shared && uasInStorage(info, l.expr, sliced[l.expr])
 			t.paths = append(t.paths, path)
 		}
 	}
 	return tracks, inits
 }
 
+// uasSliced returns the operands of the slice expressions in exprs, without parentheses: the
+// leaves the shared mark reached through slicing rather than through &.
+func uasSliced(exprs []ast.Expr) map[ast.Expr]bool {
+	sliced := make(map[ast.Expr]bool)
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
+			if x, ok := n.(*ast.SliceExpr); ok {
+				sliced[ast.Unparen(x.X)] = true
+			}
+			return true
+		})
+	}
+	return sliced
+}
+
+// uasInStorage reports whether the shared leaf e lies in the storage of its root variable itself
+// (ANL-230): every step from the root is a field of a struct value, reached without a
+// dereference, or an element of an array value, and a sliced leaf is an array. Assigning the
+// bare root then writes the memory the receiver holds. A slice, a pointer or a map leads
+// elsewhere, so assigning the root only replaces a header or a pointer.
+func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
+	if sliced {
+		if _, ok := info.TypeOf(e).Underlying().(*types.Array); !ok {
+			return false
+		}
+	}
+	for {
+		switch x := e.(type) {
+		case *ast.Ident:
+			return true
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.SelectorExpr:
+			sel := info.Selections[x]
+			if sel == nil || sel.Kind() != types.FieldVal || sel.Indirect() {
+				return false
+			}
+			e = x.X
+		case *ast.IndexExpr:
+			if _, ok := info.TypeOf(x.X).Underlying().(*types.Array); !ok {
+				return false
+			}
+			e = x.X
+		default:
+			return false
+		}
+	}
+}
+
 // isUse reports whether id is a use of t's variable for the send call (ANL-220): an identifier
 // referring to it outside the call and outside the initializers placed expanded for the send
 // (evaluating one again reads its sources, not what was sent), not exempt, and on an access
-// path compatible with a placed leaf. For a shared variable, the bare variable on the left of
-// an assignment writes what was sent, so it is a use.
+// path compatible with a placed leaf. When a shared leaf lies in the variable's own storage, the
+// bare variable on the left of an assignment writes what was sent, so it is a use.
 func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []ast.Expr) bool {
 	if f.pass.TypesInfo.Uses[id] != t.v || uasWithin(id.Pos(), call) || f.notUses[id] {
 		return false
