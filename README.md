@@ -638,6 +638,14 @@ three or five servers and their clients through partitions, crashes, paused serv
 links, checks Raft's safety properties after every event, and replays any failing seed exactly.
 Three planted bugs show what a failing seed looks like.
 
+## Example: retries and cancellations
+
+lockstep delivers each message at most once, in send order between one sender and one receiver,
+and never retries. [Message delivery](docs/delivery.md) explains what your actors must handle
+themselves: a retried request that arrives twice, and a Cancel that arrives before its Create.
+[`examples/orders`](examples/orders/README.md) is an order service whose simulation tests find
+both bugs from a seed and pin the fixes.
+
 ## Why the name "lockstep"
 
 **Marching in lockstep** means moving in exact unison, every step identical.

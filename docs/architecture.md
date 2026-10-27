@@ -101,6 +101,10 @@ There is no order across different senders. A message to an actor that has stopp
 *dead letter*: it is traced and counted, and `Send` returns nil, because the sender cannot know
 whether the message was already in flight.
 
+lockstep delivers a message at most once and never retries one. [Message delivery](delivery.md)
+explains where duplicates and out-of-order requests come from in application code, and the
+patterns that handle them.
+
 ## Requests and replies
 
 `Ask` sends a request that carries a typed `ReplyTo[R]` and returns a `*Reply[R]`. The reply
