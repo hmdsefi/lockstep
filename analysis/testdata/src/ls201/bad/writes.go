@@ -92,13 +92,15 @@ func ledger(l Ledger, pl *Ledger, src []Row) {
 	l.Rows[0].N = 1   // want `^LS201: element assignment writes to field Rows of immutable type Ledger$`
 	p := &l.Rows[0].N // want `^LS201: taking the address of an element writes to field Rows of immutable type Ledger$`
 	_ = p
-	l.Names[0] = "x"               // want `^LS201: element assignment writes to field Names of immutable type Ledger$`
-	sort.Strings(l.Names)          // want `^LS201: sort\.Strings writes to field Names of immutable type Ledger$`
-	sort.Float64s(l.Floats)        // want `^LS201: sort\.Float64s writes to field Floats of immutable type Ledger$`
-	copy(l.Rows[1:], src)          // want `^LS201: copy writes to field Rows of immutable type Ledger$`
-	_ = append(l.Rows[:0], src...) // want `^LS201: append writes to field Rows of immutable type Ledger$`
-	pl.Grid[0] = 1                 // want `^LS201: assignment through a pointer writes to field Grid of immutable type Ledger$`
-	pl.Meta.N = 2                  // want `^LS201: assignment through a pointer writes to field Meta of immutable type Ledger$`
+	l.Names[0] = "x"                         // want `^LS201: element assignment writes to field Names of immutable type Ledger$`
+	sort.Strings(l.Names)                    // want `^LS201: sort\.Strings writes to field Names of immutable type Ledger$`
+	sort.Float64s(l.Floats)                  // want `^LS201: sort\.Float64s writes to field Floats of immutable type Ledger$`
+	copy(l.Rows[1:], src)                    // want `^LS201: copy writes to field Rows of immutable type Ledger$`
+	_ = append(l.Rows[:0], src...)           // want `^LS201: append writes to field Rows of immutable type Ledger$`
+	_ = append(l.Rows[:1:3], src...)         // want `^LS201: append writes to field Rows of immutable type Ledger$`
+	_ = slices.Insert(l.Names[:1:2], 0, "x") // want `^LS201: slices\.Insert writes to field Names of immutable type Ledger$`
+	pl.Grid[0] = 1                           // want `^LS201: assignment through a pointer writes to field Grid of immutable type Ledger$`
+	pl.Meta.N = 2                            // want `^LS201: assignment through a pointer writes to field Meta of immutable type Ledger$`
 }
 
 // Tagged embeds a Batch, so Items is a field of Tagged too.
