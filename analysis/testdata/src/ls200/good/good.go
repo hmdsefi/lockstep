@@ -35,6 +35,14 @@ type Count struct{ N *int }
 
 type Move struct{ X *int }
 
+type Work struct{ Data []int }
+
+type Job struct {
+	Data    []int
+	ID      int
+	ReplyTo lockstep.ReplyTo[int]
+}
+
 // noReferences sends an int and changes it.
 func noReferences(sys *lockstep.System, pid lockstep.PID[Deposit], n int) {
 	lockstep.Send(sys, pid, Deposit{Amount: n})
@@ -252,4 +260,50 @@ func deferredSend(sys *lockstep.System, pid lockstep.PID[Batch]) {
 	items := []int{1}
 	defer lockstep.Send(sys, pid, Batch{Items: items})
 	items[0] = 2
+}
+
+// typeSwitchLoop writes the clause's variable before the send: every pass through the clause
+// declares a new one (ANL-230).
+func typeSwitchLoop(sys *lockstep.System, pid lockstep.PID[Batch], in []any) {
+	for _, m := range in {
+		switch x := m.(type) {
+		case []int:
+			x[0] = 1
+			lockstep.Send(sys, pid, Batch{Items: x})
+		}
+	}
+}
+
+// Forwarder forwards one field of a message and replies with another.
+type Forwarder struct{ next lockstep.PID[Work] }
+
+// Receive forwards m.Data and replies with m.ID: neither the reply nor its ID is on the path of
+// the forwarded slice (ANL-220).
+func (w *Forwarder) Receive(ctx *lockstep.Context[Job], m Job) {
+	lockstep.Send(ctx, w.next, Work{Data: m.Data})
+	m.ReplyTo.Send(ctx, m.ID)
+}
+
+// aliasPerIteration sends each element through an alias: reading the source again for the next
+// alias does not touch what was sent (ANL-220).
+func aliasPerIteration(sys *lockstep.System, pid lockstep.PID[Batch], batches [][]int) {
+	for i := range batches {
+		b := batches[i]
+		lockstep.Send(sys, pid, Batch{Items: b})
+	}
+}
+
+// otherElement sends one element and reads another by a different constant index.
+func otherElement(sys *lockstep.System, pid lockstep.PID[Batch], batches [][]int) int {
+	lockstep.Send(sys, pid, Batch{Items: batches[0]})
+	return len(batches[1])
+}
+
+// sharedDeclared sends the address of a variable declared in the loop: each iteration declares a
+// new one.
+func sharedDeclared(sys *lockstep.System, pid lockstep.PID[Count], in []int) {
+	for _, x := range in {
+		n := x
+		lockstep.Send(sys, pid, Count{N: &n})
+	}
 }

@@ -25,12 +25,20 @@ type Row struct{ ID int }
 
 type Query struct{ ReplyTo lockstep.ReplyTo[[]*Row] }
 
+type Work struct{ Data []int }
+
+type Job struct {
+	Data    []int
+	ID      int
+	ReplyTo lockstep.ReplyTo[int]
+}
+
 // sendThenWrite is AT-ANL-13(a): the sent slice is written after the send. The line in the
 // message is the line of the send.
 func sendThenWrite(sys *lockstep.System, pid lockstep.PID[Batch]) {
 	items := []int{1}
 	lockstep.Send(sys, pid, Batch{Items: items})
-	items[0] = 2 // want `^LS200: items is used after it was sent with lockstep\.Send on line 32; the receiver owns it now, so copy it before sending or stop using it$`
+	items[0] = 2 // want `^LS200: items is used after it was sent with lockstep\.Send on line 40; the receiver owns it now, so copy it before sending or stop using it$`
 }
 
 // expandedLocal is AT-ANL-13(b): m's initializer places xs in the message.
@@ -236,11 +244,12 @@ outer:
 }
 
 // gotoRetry jumps back to a use written before the send.
-func gotoRetry(sys *lockstep.System, pid lockstep.PID[Batch]) {
+func gotoRetry(sys *lockstep.System, pid lockstep.PID[Batch], more func() bool) {
 	items := []int{1}
 retry:
 	items[0]++ // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
-	if lockstep.Send(sys, pid, Batch{Items: items}) != nil {
+	lockstep.Send(sys, pid, Batch{Items: items})
+	if more() {
 		goto retry
 	}
 }
@@ -253,4 +262,106 @@ func rangeAssignAfterLoop(sys *lockstep.System, pid lockstep.PID[Batch], bufs []
 		lockstep.Send(sys, pid, Batch{Items: buf})
 	}
 	buf[0] = 1 // want `^LS200: buf is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// typeSwitchClause uses the clause's variable after the send in the same clause.
+func typeSwitchClause(sys *lockstep.System, pid lockstep.PID[Batch], in []any) {
+	for _, m := range in {
+		switch x := m.(type) {
+		case []int:
+			lockstep.Send(sys, pid, Batch{Items: x})
+			x[0] = 1 // want `^LS200: x is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+		}
+	}
+}
+
+// sharedAssign assigns the bare variable whose address was sent: the receiver sees the write
+// (ANL-230), so the assignment is a use, not a kill.
+func sharedAssign(sys *lockstep.System, pid lockstep.PID[Count]) {
+	n := 0
+	lockstep.Send(sys, pid, Count{N: &n})
+	n = 5 // want `^LS200: n is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// sharedOpAssign adds to the bare variable whose address was sent.
+func sharedOpAssign(sys *lockstep.System, pid lockstep.PID[Count]) {
+	n := 0
+	lockstep.Send(sys, pid, Count{N: &n})
+	n += 1 // want `^LS200: n is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// aliasSourceWritten sends an element through a per-iteration alias and then clears that element
+// of the source: the write is on the sent element's path.
+func aliasSourceWritten(sys *lockstep.System, pid lockstep.PID[Batch], batches [][]int) {
+	for i := range batches {
+		b := batches[i]
+		lockstep.Send(sys, pid, Batch{Items: b})
+		batches[i] = nil // want `^LS200: batches is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	}
+}
+
+// sameElement writes inside the element that was sent.
+func sameElement(sys *lockstep.System, pid lockstep.PID[Batch], batches [][]int) {
+	lockstep.Send(sys, pid, Batch{Items: batches[0]})
+	batches[0][0] = 1 // want `^LS200: batches is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// Worker forwards work and keeps reading what it forwarded.
+type Worker struct {
+	next lockstep.PID[Work]
+	log  func(Job)
+}
+
+// Receive forwards m.Data and then writes into it.
+func (w *Worker) Receive(ctx *lockstep.Context[Job], m Job) {
+	lockstep.Send(ctx, w.next, Work{Data: m.Data})
+	m.Data[0] = 1 // want `^LS200: m is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// forwardAll forwards m.Data and then passes all of m on.
+func (w *Worker) forwardAll(ctx *lockstep.Context[Job], m Job) {
+	lockstep.Send(ctx, w.next, Work{Data: m.Data})
+	w.log(m) // want `^LS200: m is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// selectCase sends in one case of a select; the use after the select is reached.
+func selectCase(sys *lockstep.System, pid lockstep.PID[Batch], items []int, done <-chan struct{}) {
+	select {
+	case <-done:
+		lockstep.Send(sys, pid, Batch{Items: items})
+	default:
+	}
+	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// goSend sends from a new goroutine: the write after it races with the send.
+func goSend(sys *lockstep.System, pid lockstep.PID[Batch], items []int) {
+	go lockstep.Send(sys, pid, Batch{Items: items})
+	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// sendInPost sends in the for loop's post statement; the next iteration's append is reached.
+func sendInPost(sys *lockstep.System, pid lockstep.PID[Batch], n int) {
+	var buf []int
+	for i := 0; i < n; lockstep.Send(sys, pid, Batch{Items: buf}) {
+		buf = append(buf, i) // want `^LS200: buf is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+		i++
+	}
+}
+
+// fallthroughCase falls through from the send's case into a use.
+func fallthroughCase(sys *lockstep.System, pid lockstep.PID[Batch], items []int, k int) {
+	switch k {
+	case 0:
+		lockstep.Send(sys, pid, Batch{Items: items})
+		fallthrough
+	case 1:
+		items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	}
+}
+
+// deferArgument sends while the defer statement runs: only the deferred call waits.
+func deferArgument(sys *lockstep.System, pid lockstep.PID[Batch], items []int, check func(error)) {
+	defer check(lockstep.Send(sys, pid, Batch{Items: items}))
+	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }
