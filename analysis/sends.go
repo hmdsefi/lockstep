@@ -102,9 +102,10 @@ func returnResults(build ast.Expr) []ast.Expr {
 // too, such as an Ask build literal) and assigned only by its declaration's initializer also
 // yields the leaves of that initializer, each variable once per call. The shared mark passes
 // through parentheses, & and slicing to the leaf they apply to, except slicing a string, which
-// shares nothing mutable; it does not pass through conversions, type assertions, composite literals or initializers. A composite literal whose
-// type does not contain references (containsRefs false, for example a type marked
-// //lockstep:immutable) places nothing: the receiver gets a safe value (ANL-200, AT-ANL-14).
+// shares nothing mutable; it does not pass through conversions, type assertions, composite
+// literals or initializers. A composite literal whose type does not contain references
+// (containsRefs false, for example a type marked //lockstep:immutable) places nothing: the
+// receiver gets a safe value (ANL-200, AT-ANL-14).
 //
 // Each call scans fn for its assignments; a check with several sites in one function uses
 // newPlacer once and calls its placed method per message instead.
@@ -329,10 +330,4 @@ func singleAssignments(info *types.Info, fn ast.Node) map[*types.Var]ast.Expr {
 		}
 	}
 	return inits
-}
-
-// isStringType reports whether t's underlying type is a string type.
-func isStringType(t types.Type) bool {
-	b, ok := types.Unalias(t).Underlying().(*types.Basic)
-	return ok && b.Info()&types.IsString != 0
 }
