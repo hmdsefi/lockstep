@@ -64,8 +64,8 @@ func (w *refsWalk) refs(t types.Type) bool {
 // safe reports whether t is one of the types ANL-210 names as safe: string, time.Time,
 // lockstep.PID, lockstep.Address, lockstep.ReplyTo or an immutable type.
 func (w *refsWalk) safe(t types.Type) bool {
-	if b, ok := t.(*types.Basic); ok {
-		return b.Info()&types.IsString != 0
+	if _, ok := t.(*types.Basic); ok {
+		return isStringType(t)
 	}
 	named, ok := t.(*types.Named)
 	if !ok {
@@ -77,4 +77,13 @@ func (w *refsWalk) safe(t types.Type) bool {
 	}
 	return isAPI(obj, "PID") || isAPI(obj, "Address") || isAPI(obj, "ReplyTo") ||
 		w.idx.hasMarker(obj, markImmutable)
+}
+
+// isStringType reports whether t's underlying type is a string type.
+func isStringType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := types.Unalias(t).Underlying().(*types.Basic)
+	return ok && b.Info()&types.IsString != 0
 }

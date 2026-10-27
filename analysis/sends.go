@@ -101,10 +101,11 @@ func returnResults(build ast.Expr) []ast.Expr {
 // A leaf that is a local variable declared in fn's syntax (in a function literal nested in it
 // too, such as an Ask build literal) and assigned only by its declaration's initializer also
 // yields the leaves of that initializer, each variable once per call. The shared mark passes
-// through parentheses, & and slicing to the leaf they apply to; it does not pass through
-// conversions, type assertions, composite literals or initializers. A composite literal whose
-// type does not contain references (containsRefs false, for example a type marked
-// //lockstep:immutable) places nothing: the receiver gets a safe value (ANL-200, AT-ANL-14).
+// through parentheses, & and slicing to the leaf they apply to, except slicing a string, which
+// shares nothing mutable; it does not pass through conversions, type assertions, composite
+// literals or initializers. A composite literal whose type does not contain references
+// (containsRefs false, for example a type marked //lockstep:immutable) places nothing: the
+// receiver gets a safe value (ANL-200, AT-ANL-14).
 //
 // Each call scans fn for its assignments; a check with several sites in one function uses
 // newPlacer once and calls its placed method per message instead.
@@ -163,7 +164,8 @@ func (p *placer) walk(e ast.Expr, shared bool) {
 			p.walk(e.X, true)
 		}
 	case *ast.SliceExpr:
-		p.walk(e.X, true)
+		// Strings are immutable: a slice of one shares nothing the receiver could change.
+		p.walk(e.X, !isStringType(p.pass.TypesInfo.TypeOf(e.X)))
 	case *ast.TypeAssertExpr:
 		p.walk(e.X, false)
 	case *ast.CallExpr:
