@@ -35,6 +35,7 @@ func replayFaults(s *sim.Sim) {
 		spawn(sys, "spawner", &actor[Tick]{
 			started: func(ctx *lockstep.Context[Tick]) { ctx.After(100*time.Millisecond, Tick{}) },
 			receive: func(ctx *lockstep.Context[Tick], _ Tick) {
+				//lockstep:allow LS220 the replay compares the records, not the result of each send
 				_ = lockstep.Send(ctx, sink, Deposit{N: children})
 				children++
 				child, err := lockstep.Spawn(ctx, "c"+strconv.Itoa(children), func() lockstep.Actor[Deposit] { return &actor[Deposit]{} })

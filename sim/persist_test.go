@@ -544,6 +544,7 @@ func TestATPER10EncodeFailure(t *testing.T) {
 		}
 		r.node()
 		w.RunFor(time.Millisecond)
+		//lockstep:allow LS220 encoding the event fails on purpose; the test reads the actor's error
 		lockstep.Ask(s.System("n1"), r.pid, addCmd(13))
 		w.RunFor(50 * time.Millisecond)
 
@@ -763,6 +764,7 @@ func TestATPER14Panics(t *testing.T) {
 			r.directive = r.restartUpTo(3)
 			r.node()
 			w.RunFor(time.Millisecond)
+			//lockstep:allow LS220 applying the command panics on purpose; the test reads the commits
 			lockstep.Ask(s.System("n1"), r.pid, addCmd(99))
 			w.RunFor(500 * time.Millisecond)
 			commits := r.ofActor(w.Sim.Records(), "lockstep.persist.commit")
@@ -819,6 +821,7 @@ func TestATPER15WriteCommitFailure(t *testing.T) {
 			r.directive = func(error) lockstep.Directive { return lockstep.DirectiveStop }
 			r.node()
 			w.RunFor(time.Millisecond)
+			//lockstep:allow LS220 the journal write fails on purpose; the test reads the actor's error
 			lockstep.Ask(s.System("n1"), r.pid, addCmd(7))
 			w.RunFor(50 * time.Millisecond)
 			want := fmt.Errorf("persist: %s: write seq %d..%d: %w", "c-1", 1, 1, errX)
@@ -940,6 +943,7 @@ func TestPersistResumeRecoversAgain(t *testing.T) {
 		w.RunFor(time.Millisecond)
 		r.mustHaveRecovered(tt)
 		vol(s).FailSyncs(1)
+		//lockstep:allow LS220 the sync fails on purpose; the test reads the actor's error
 		lockstep.Ask(s.System("n1"), r.pid, addCmd(7))
 		w.RunFor(50 * time.Millisecond)
 		if len(r.errs) != 1 {
@@ -1020,11 +1024,13 @@ func TestPersistResumeRecoversAgain(t *testing.T) {
 			}
 			commitFails(s, r)
 			logged := len(r.log)
+			//lockstep:allow LS220 the commit fails on purpose; the test reads the actor's error
 			lockstep.Ask(s.System("n1"), r.pid, addCmd(1))
 			w.RunFor(10 * time.Millisecond)
 			if len(r.errs) != 2 || !errors.Is(r.errs[1], errX) {
 				tt.Fatalf("errs %v, want a second error wrapping %v", r.errs, errX)
 			}
+			//lockstep:allow LS220 the test reads the recovered state, not the reply
 			lockstep.Ask(s.System("n1"), r.pid, addCmd(2))
 			w.RunFor(50 * time.Millisecond)
 			sum := recovered(tt, r)
@@ -1058,6 +1064,7 @@ func TestPersistResumeRecoversAgain(t *testing.T) {
 			r.directive = resume
 			r.node()
 			w.RunFor(time.Millisecond)
+			//lockstep:allow LS220 applying the command panics on purpose; the test reads the actor's error
 			lockstep.Ask(s.System("n1"), r.pid, addCmd(99))
 			w.RunFor(50 * time.Millisecond)
 			if len(r.errs) != 1 || !isPanic(r.errs[0], "apply 99") {

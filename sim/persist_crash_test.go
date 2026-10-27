@@ -252,6 +252,7 @@ func TestATPER18RecoverCommitsWritten(t *testing.T) {
 			tt.Fatal("the counter has not recovered after 20 ms")
 		}
 		start, sentAt := len(w.Sim.Records()), w.Sim.Now()
+		//lockstep:allow LS220 the injected failure cuts the command off; the test reads the records
 		lockstep.Ask(s.System("n1"), r.pid, addCmd(1))
 		w.RunFor(time.Millisecond)
 		if err := s.InjectFail(r.pid.Address(), errors.New("injected")); err != nil {
