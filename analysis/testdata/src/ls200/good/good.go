@@ -350,3 +350,43 @@ func fieldSliceReset(sys *lockstep.System, pid lockstep.PID[Batch], m Job) {
 	m = Job{}
 	_ = m
 }
+
+type Task struct {
+	ID      string
+	N       int
+	Payload []byte
+}
+
+// Recorder forwards each task and records its ID.
+type Recorder struct {
+	next    lockstep.PID[Task]
+	pending map[string]bool
+}
+
+// Receive forwards task whole and then records task.ID: the receiver got a copy of the struct,
+// and the reference-free parts of task are the sender's own (ANL-220).
+func (r *Recorder) Receive(ctx *lockstep.Context[Task], task Task) {
+	if err := lockstep.Send(ctx, r.next, task); err != nil {
+		return
+	}
+	r.pending[task.ID] = true
+}
+
+// taskID returns the ID of the task it sent.
+func taskID(sys *lockstep.System, pid lockstep.PID[Task], t Task) string {
+	lockstep.Send(sys, pid, t)
+	return t.ID
+}
+
+// payloadSize returns the length of the payload it sent: the slice header is the sender's copy.
+func payloadSize(sys *lockstep.System, pid lockstep.PID[Task], t Task) int {
+	lockstep.Send(sys, pid, t)
+	return len(t.Payload)
+}
+
+// countAfter increments a counter in its own copy of the task it sent.
+func countAfter(sys *lockstep.System, pid lockstep.PID[Task], t Task) int {
+	lockstep.Send(sys, pid, t)
+	t.N++
+	return t.N
+}
