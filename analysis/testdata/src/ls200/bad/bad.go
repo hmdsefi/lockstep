@@ -365,3 +365,31 @@ func deferArgument(sys *lockstep.System, pid lockstep.PID[Batch], items []int, c
 	defer check(lockstep.Send(sys, pid, Batch{Items: items}))
 	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }
+
+// arrayReset sends a slice of an array and assigns the array: the receiver's elements change.
+func arrayReset(sys *lockstep.System, pid lockstep.PID[Chunk]) {
+	var a [4]int
+	lockstep.Send(sys, pid, Chunk{S: a[:]})
+	a = [4]int{} // want `^LS200: a is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// aliasAddress sends the address of n through an alias and assigns n.
+func aliasAddress(sys *lockstep.System, pid lockstep.PID[Count]) {
+	n := 0
+	b := &n
+	lockstep.Send(sys, pid, Count{N: b})
+	n = 5 // want `^LS200: n is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// slicedThenIndexed sends one element's slice and writes it through a full slice of the source.
+func slicedThenIndexed(sys *lockstep.System, pid lockstep.PID[Batch], v []Batch) {
+	lockstep.Send(sys, pid, Batch{Items: v[2].Items})
+	v[:][2].Items[0] = 1 // want `^LS200: v is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// shiftedSlice reaches the sent element through a slice that starts later: after a slice, any
+// index may name it.
+func shiftedSlice(sys *lockstep.System, pid lockstep.PID[Batch], v []Batch) {
+	lockstep.Send(sys, pid, Batch{Items: v[2].Items})
+	v[1:][1].Items[0] = 1 // want `^LS200: v is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
