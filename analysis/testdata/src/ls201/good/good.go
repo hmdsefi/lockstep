@@ -4,6 +4,7 @@ package good
 
 import (
 	"slices"
+	"sort"
 	"time"
 
 	"github.com/hmdsefi/lockstep"
@@ -141,4 +142,40 @@ func methods(b Batch) {
 func unmarked() {
 	type local struct{ C chan int }
 	_ = local{}
+}
+
+// Snapshot is immutable; the functions below build one before they hand it out.
+//
+//lockstep:immutable
+type Snapshot struct {
+	Rows  []string
+	Index map[string]int
+}
+
+// build fills a Snapshot it has just allocated: writes to a local built from a literal of the
+// type, and assigned nothing else, are construction.
+func build(rows []string) *Snapshot {
+	s := &Snapshot{Index: map[string]int{}}
+	s.Rows = slices.Clone(rows)
+	sort.Strings(s.Rows)
+	for i, r := range s.Rows {
+		s.Index[r] = i
+	}
+	return s
+}
+
+// buildValue fills a Snapshot value declared from a literal.
+func buildValue(rows []string) Snapshot {
+	var s = Snapshot{Rows: slices.Clone(rows), Index: map[string]int{}}
+	s.Rows[0] = "first"
+	s.Index["first"]++
+	return s
+}
+
+// buildNew fills a Snapshot allocated with new.
+func buildNew(rows []string) *Snapshot {
+	s := new(Snapshot)
+	s.Rows = append(s.Rows, rows...)
+	s.Index = make(map[string]int)
+	return s
 }
