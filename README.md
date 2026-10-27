@@ -579,7 +579,7 @@ format, the fsync order, and how recovery tells a torn write from corruption.
 ## Static analysis: lockstep-vet and golangci-lint
 
 A replay is exact only if actor code takes time, randomness, and I/O from the runtime, and actors
-share nothing but messages. `lockstep-vet` runs nine checks:
+share nothing but messages. `lockstep-vet` runs nine analyzers, which report ten check codes:
 
 - `LS100`: nondeterminism and blocking in actor code, such as `time.Now`, global `math/rand`,
   `crypto/rand`, a `go` statement, `select`, a range over a map, environment variables, channel
@@ -587,19 +587,26 @@ share nothing but messages. `lockstep-vet` runs nine checks:
 - `LS110`: `Reply.Await` in actor code, which blocks the actor; use `lockstep.Pipe` instead.
 - `LS200`: a variable used after it was sent. Once `lockstep.Send`, `lockstep.Ask`, or
   `ReplyTo.Send` returns, the receiver owns the slice, map, or pointer in the message, so the
-  sender must copy it before sending or stop using it. The check follows control flow: a
-  reassignment ends the tracking, and a send followed by `return` reports nothing.
-- `LS201`: a type marked `//lockstep:immutable` that isn't. A field may not hold a pointer,
-  channel, function, or interface (`error` is fine), and no code may write into a slice or map
-  field of the type or assign through a pointer to it.
+  sender must copy it before sending or stop using it. `lockstep-vet` reports a use that the
+  function's control flow can reach after the send, and only a use of the part that was sent:
+  sending `s.items` and then reading `s.count` is fine. Assigning the variable again ends the
+  tracking, unless the message holds the variable's own storage, such as its address or a slice of
+  an array variable, where the assignment overwrites what was sent and is reported. A message
+  type marked `//lockstep:immutable` is safe to send and keep.
+- `LS201`: a type marked `//lockstep:immutable` that isn't. A field may hold basic values,
+  `error`, `time.Time`, `lockstep.PID`, `lockstep.Address`, `lockstep.ReplyTo`, other immutable
+  types and pointers to them, and arrays, slices, maps, and structs of those. Any other pointer,
+  a channel, a function, an interface, a type parameter, and `unsafe.Pointer` are reported. No
+  code may write into a slice or map field of the type or assign through a pointer to it.
 - `LS210`: shared mutable state. Actor code that writes a package variable is reported, and so is
   actor code that places the actor itself, a field that holds references, the address of a field,
-  or a `*lockstep.Context` in a message.
+  or a `*lockstep.Context` in a message. A field whose type is marked `//lockstep:immutable` may
+  go in a message.
 - `LS220`: the reply of `lockstep.Ask` that is never awaited or piped, and the error of
   `lockstep.Send` or `lockstep.Spawn` that is ignored.
 - `LS230`: a message type with no case in `Receive`. When the actor's message type is an interface
-  with an unexported method, every type of its package that implements it needs a case, and so
-  does every type the actor sends to itself through `ctx.After`, `ctx.Every`, `lockstep.Do`, or
+  with an unexported method, every type of its package that implements it needs a case. So does
+  every type the actor sends to itself through `ctx.After`, `ctx.Every`, `lockstep.Do`, or
   `lockstep.Pipe`.
 - `LS240`: an actor field that holds a resource and is neither passed to `ctx.Own` nor released in
   `Stopped`. A resource is a field whose type implements `io.Closer`, a `*time.Timer` or
@@ -607,11 +614,14 @@ share nothing but messages. `lockstep-vet` runs nine checks:
   or `Release` method is reported too.
 - `LS001` and `LS002`: malformed and unknown `//lockstep:` directives.
 
-`LS100`, `LS110`, `LS210`, `LS230`, and `LS240` look at actor code. `LS200`, `LS201`, and `LS220`
-look at every function, because a message is sent from anywhere. The markers
-`//lockstep:immutable` and `//lockstep:resource` go in the doc comment of a type declaration. They
-work across packages: a type marked in one package is immutable or a resource in every package
-that imports it.
+`LS100`, `LS110`, `LS210`, `LS230`, and `LS240` look at actor code, except that `LS240` also
+reports a `//lockstep:resource` type with no release method wherever the type is declared. `LS200`,
+`LS201`, and `LS220` look at every function, because a message is sent from anywhere.
+
+The markers `//lockstep:immutable` and `//lockstep:resource` go in the doc comment of a type
+declaration. A marker on an alias is misplaced, and `//lockstep:immutable` cannot mark an
+interface type. They work across packages: a type marked in one package is immutable or a
+resource in every package that imports it.
 
 Install it and run it through `go vet`:
 

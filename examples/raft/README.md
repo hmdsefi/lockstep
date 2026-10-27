@@ -207,8 +207,9 @@ starts a goroutine, reads the wall clock or global randomness (`LS100`), or wait
 `Reply.Await` (`LS110`). It also reports:
 
 - a variable that the code uses after it sent it in a message (`LS200`);
-- a type marked `//lockstep:immutable` that holds a pointer, channel, function or interface field,
-  or that code writes into (`LS201`);
+- a type marked `//lockstep:immutable` that holds a pointer to an unmarked type, a channel, a
+  function, an interface other than `error`, or a type parameter, or that code writes into
+  (`LS201`);
 - actor code that writes a package variable, or puts the actor, one of its fields that holds
   references, or its `*lockstep.Context` in a message (`LS210`);
 - an `Ask` reply that nobody awaits or pipes, and an ignored error from `Send` or `Spawn`

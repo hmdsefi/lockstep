@@ -483,11 +483,14 @@ they make inside the same package. Its checks are:
 - `LS110`: `Reply.Await` reachable from actor code.
 - `LS200`: use of a variable after it was placed in a message. At every call of `lockstep.Send`,
   `lockstep.Ask` or `ReplyTo.Send`, in any function, it tracks the variables whose references the
-  message carries and reports the first use that the function's control-flow graph reaches before
-  the variable is assigned again.
+  message carries. It reports the first use that the function's control-flow graph reaches, of the
+  part of the variable that was sent: sending `s.items` leaves `s.count` free. Assigning the
+  variable ends the tracking, except when the message holds the variable's own storage, its
+  address or a slice of an array variable, because the assignment then overwrites what was sent.
 - `LS201`: the contents of types marked `//lockstep:immutable`. It checks the type of every field
-  and then every write in the package to a slice or map field of such a type, or through a pointer
-  to one.
+  (pointers to unmarked types, channels, functions, interfaces other than `error`, type parameters
+  and `unsafe.Pointer` are not allowed) and then every write in the package to a slice or map
+  field of such a type, or through a pointer to one.
 - `LS210`: actor code that writes a package variable, and actor code that places the actor, a
   reference-holding field of the actor, the address of a field or a `*lockstep.Context` in a
   message.
@@ -504,7 +507,7 @@ they make inside the same package. Its checks are:
 `LS100` ports most of faultline's determinism rules to actor code and adds the blocking calls.
 `LS200`, `LS201` and `LS220` need no actor code: they look at every function of the package,
 because a message is sent from anywhere. `LS210`, `LS230` and `LS240` start from the actor types and
-their roots.
+their roots, and `LS240` also checks every `//lockstep:resource` type of the package.
 
 The checks that need to know about other packages use analysis facts, which `go vet` carries from
 one package to the next. The index analyzer exports a fact for every type marked
