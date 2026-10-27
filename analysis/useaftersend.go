@@ -73,16 +73,17 @@ func checkUseAfterSend(pass *analysis.Pass, r *reporter, fn ast.Node) {
 
 // sendFunc is one function holding send sites, with the identifiers in it that use variables.
 type sendFunc struct {
-	pass *analysis.Pass
-	fn   ast.Node
-	recv *types.Var // the method receiver, never tracked; nil for other functions
+	pass   *analysis.Pass
+	fn     ast.Node
+	recv   *types.Var // the method receiver, never tracked; nil for other functions
+	placer *placer    // the placed expressions of fn's messages
 	// uses are the identifiers of fn (function literals included) that use a variable, in source
 	// order. The identifiers ANL-220 exempts are left out.
 	uses []*ast.Ident
 }
 
 func newSendFunc(pass *analysis.Pass, fn ast.Node) *sendFunc {
-	f := &sendFunc{pass: pass, fn: fn}
+	f := &sendFunc{pass: pass, fn: fn, placer: newPlacer(pass, fn)}
 	if fd, ok := fn.(*ast.FuncDecl); ok && fd.Recv != nil {
 		for _, field := range fd.Recv.List {
 			for _, name := range field.Names {
@@ -183,7 +184,7 @@ func (f *sendFunc) tracked(s sendSite) []*types.Var {
 	var vars []*types.Var
 	seen := make(map[*types.Var]bool)
 	for _, msg := range s.msgs {
-		for _, l := range placed(f.pass, f.fn, msg) {
+		for _, l := range f.placer.placed(msg) {
 			if l.root == nil {
 				continue
 			}
