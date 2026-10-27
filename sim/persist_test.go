@@ -1024,16 +1024,22 @@ func TestPersistResumeRecoversAgain(t *testing.T) {
 			}
 			commitFails(s, r)
 			logged := len(r.log)
-			//lockstep:allow LS220 the commit fails on purpose; the test reads the actor's error
-			lockstep.Ask(s.System("n1"), r.pid, addCmd(1))
+			r1 := lockstep.Ask(s.System("n1"), r.pid, addCmd(1))
 			w.RunFor(10 * time.Millisecond)
 			if len(r.errs) != 2 || !errors.Is(r.errs[1], errX) {
 				tt.Fatalf("errs %v, want a second error wrapping %v", r.errs, errX)
 			}
-			//lockstep:allow LS220 the test reads the recovered state, not the reply
-			lockstep.Ask(s.System("n1"), r.pid, addCmd(2))
+			r2 := lockstep.Ask(s.System("n1"), r.pid, addCmd(2))
 			w.RunFor(50 * time.Millisecond)
 			sum := recovered(tt, r)
+			for i, c := range []struct {
+				reply *lockstep.Reply[int64]
+				want  int64
+			}{{r1, sum + 1}, {r2, sum + 3}} {
+				if got, err := c.reply.Await(context.Background()); got != c.want || err != nil {
+					tt.Errorf("Add{%d} replied %d, %v; want %d, nil", i+1, got, err, c.want)
+				}
+			}
 			want := []string{
 				fmt.Sprintf("recovered %d", sum),
 				"handle sim_test.Add", fmt.Sprintf("reply %d", sum+1),
