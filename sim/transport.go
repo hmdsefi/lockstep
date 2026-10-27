@@ -94,11 +94,12 @@ func (e *simEngine) drop(env engine.Envelope, reason string) {
 // numbered below the next expected number of its stream is a duplicate or a late copy and is
 // dropped with a lockstep.drop record; a gap is a loss, and nothing waits for it. A payload that
 // is not a frame fails the seed with a misuse failure. A dead engine ignores every arrival
-// (SIM-120).
+// (SIM-120). An arrival is an event of the engine's node (PER-510).
 func (e *simEngine) arrive(from kernel.NodeID, payload any) {
 	if e.dead {
 		return
 	}
+	defer e.s.enter(execution{eng: e})()
 	f, ok := payload.(frame)
 	if !ok {
 		e.misuse(errors.New("lockstep: node " + e.n.Name() + " received a non-lockstep payload " + kernel.Describe(payload)))

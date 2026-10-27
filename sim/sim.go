@@ -45,6 +45,9 @@ type Sim struct {
 	// time lockstep/deadlock read the pending asks (SIM-260).
 	events, world    eventCounts
 	askGen, graphGen uint64
+
+	// exec is the node event running now, for the Volume adapter (PER-510, PER-540).
+	exec execution
 }
 
 // node is one lockstep node and the state of its latest boot.
@@ -60,6 +63,11 @@ type node struct {
 	// pressure counts the node's active pressure episodes. It belongs to the kernel node, so it
 	// survives crashes and restarts (SFT-125).
 	pressure int
+
+	// vol is the node's Volume, created by its first Volume call; files are the files opened
+	// through it and not closed, in open order, until a crash clears them (PER-540).
+	vol   *volume
+	files []*volFile
 }
 
 // World returns the faultline World of this run.
@@ -130,9 +138,11 @@ func (s *Sim) fifo(a, b kernel.NodeID) {
 }
 
 // boot is the boot function of lockstep node ln, run by the kernel at every boot of n (SIM-070).
+// The boot is an event of n (PER-510).
 func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e := newEngine(s, n, n.Incarnation())
 	ln.eng = e
+	defer s.enter(execution{eng: e})()
 	b, err := hooks.NewSystem(e.bundle, s.systemOptions())
 	if err != nil {
 		ln.sys = nil
@@ -163,7 +173,8 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 // asks, so none of that is recorded (SIM-120), and the ask timeouts that Discard cancels are
 // subtracted by their Cancel before the rest is dropped. Discarding runs no Stopped hook, closes
 // nothing and records no lockstep.stop (SUP-360), and the discarded actors are not checked for
-// leaks. Other nodes are not sim's.
+// leaks. It forgets the node's open files without checking them (PER-540). Other nodes are not
+// sim's.
 func (s *Sim) crashed(n *kernel.Node) {
 	ln, ok := s.byID[n.ID()]
 	if !ok {
@@ -179,6 +190,8 @@ func (s *Sim) crashed(n *kernel.Node) {
 	if ln.eng != nil {
 		ln.eng.dropPending()
 	}
+	clear(ln.files)
+	ln.files = nil
 }
 
 // System returns the System of node name's current incarnation, or nil while the node is down

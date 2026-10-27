@@ -131,7 +131,9 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 
 // startInline runs the inline internal effect req (PER-520): it schedules a lockstep/effect event
 // at the current time that calls req.Run with a background context, outside any turn, and then
-// schedules a second lockstep/effect event at the same time that calls done with Run's result.
+// schedules a second lockstep/effect event that calls done with Run's result, after the disk
+// latency Run's Volume calls sampled (PER-530). The incarnation that starts the effect, the
+// current one of req.Actor, owns the files Run opens (PER-540).
 // A panic in Run becomes the error the other engines give it (ENG-430), never a seed failure.
 // Handlers registered with HandleEffect are never consulted. Both events go through the counted
 // schedule path, so they are lockstep activity (SIM-250), and a node crash discards them. The
@@ -140,17 +142,21 @@ func (e *simEngine) Start(req engine.EffectRequest, done func(v any, err error))
 // done has been called or the effect was cancelled already; a cancelled effect never calls done.
 func (e *simEngine) startInline(req engine.EffectRequest, done func(v any, err error)) engine.Cancel {
 	actor, held := req.Actor.String(), &heldEffect{id: req.ID, name: req.Name}
+	own := e.ownerOf(actor)
 	var cancelled, finished bool
 	var pending engine.Cancel // the Cancel of the event to run next
 	pending = e.schedule(0, effectLabel, func() {
 		if cancelled || !e.canSchedule() {
 			return
 		}
+		run := &inlineRun{owner: own}
+		e.s.exec.run = run
 		v, err := runInline(req)
+		e.s.exec.run = nil
 		if cancelled || !e.canSchedule() { // the effect was cancelled, or the node crashed, during Run
 			return
 		}
-		pending = e.schedule(0, effectLabel, func() {
+		pending = e.schedule(run.latency, effectLabel, func() {
 			if cancelled || !e.canSchedule() {
 				return
 			}

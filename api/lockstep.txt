@@ -286,6 +286,7 @@ pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Pressure(string, PressureRule
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) PressureFor(string, time.Duration)
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) StopActor(lockstep.Address) error
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) System(string) *lockstep.System
+pkg github.com/hmdsefi/lockstep/sim, method (*Sim) Volume(string) filestore.FS
 pkg github.com/hmdsefi/lockstep/sim, method (*Sim) World() *faultline.World
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Effect() any
 pkg github.com/hmdsefi/lockstep/sim, method (EffectCall) Now() time.Time
