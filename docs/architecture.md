@@ -497,17 +497,20 @@ they make inside the same package. Its checks are:
 - `LS220`: a `lockstep.Ask` reply that nothing awaits or pipes, and a discarded error from
   `lockstep.Send` or `lockstep.Spawn`.
 - `LS230`: message types that `Receive` has no case for. It collects the cases of every type switch
-  and type assertion on the message in `Receive` and in the same-package functions that `Receive`
-  passes the message to, and compares them with the members of a sealed message interface and with
-  the types the actor sends to itself.
+  and comma-ok type assertion on the message in `Receive` and in the same-package functions that
+  `Receive` passes the message to, and compares them with the members of a sealed message
+  interface and with the types the actor sends to itself.
 - `LS240`: actor fields that hold a resource and are neither owned with `ctx.Own` nor released in
-  `Stopped`, and `//lockstep:resource` types without a `Close`, `Stop` or `Release` method.
+  `Stopped`, and `//lockstep:resource` types without a `Close`, `Stop` or `Release` method. A field
+  holding a resource the actor does not own, such as a shared `*sql.DB`, takes
+  `//lockstep:allow LS240 <reason>` in its doc comment.
 - `LS001` and `LS002`: malformed and unknown `//lockstep:` directives.
 
 `LS100` ports most of faultline's determinism rules to actor code and adds the blocking calls.
 `LS200`, `LS201` and `LS220` need no actor code: they look at every function of the package,
-because a message is sent from anywhere. `LS210`, `LS230` and `LS240` start from the actor types and
-their roots, and `LS240` also checks every `//lockstep:resource` type of the package.
+because messages are sent, and immutable types written, from any function. `LS210`, `LS230` and
+`LS240` start from the actor types and their roots, and `LS240` also checks every
+`//lockstep:resource` type of the package.
 
 The checks that need to know about other packages use analysis facts, which `go vet` carries from
 one package to the next. The index analyzer exports a fact for every type marked

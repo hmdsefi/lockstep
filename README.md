@@ -611,12 +611,14 @@ share nothing but messages. `lockstep-vet` runs nine analyzers, which report ten
 - `LS240`: an actor field that holds a resource and is neither passed to `ctx.Own` nor released in
   `Stopped`. A resource is a field whose type implements `io.Closer`, a `*time.Timer` or
   `*time.Ticker`, or a type marked `//lockstep:resource`. A marked type with no `Close`, `Stop`,
-  or `Release` method is reported too.
+  or `Release` method is reported too. A field holding a resource the actor does not own, such as
+  a shared `*sql.DB`, takes `//lockstep:allow LS240 <reason>` in its doc comment.
 - `LS001` and `LS002`: malformed and unknown `//lockstep:` directives.
 
 `LS100`, `LS110`, `LS210`, `LS230`, and `LS240` look at actor code, except that `LS240` also
 reports a `//lockstep:resource` type with no release method wherever the type is declared. `LS200`,
-`LS201`, and `LS220` look at every function, because a message is sent from anywhere.
+`LS201`, and `LS220` look at every function, because messages are sent, and immutable types
+written, from any function.
 
 The markers `//lockstep:immutable` and `//lockstep:resource` go in the doc comment of a type
 declaration. A marker on an alias is misplaced, and `//lockstep:immutable` cannot mark an
