@@ -150,3 +150,10 @@ func assignedOnlyInLiteral(sys *lockstep.System, pid lockstep.PID[Msg]) func() {
 	_ = reply == nil
 	return func() { reply = lockstep.Ask(sys, pid, build) }
 }
+
+// throughPointer awaits the reply through a pointer to the variable that holds it.
+func throughPointer(ctx context.Context, sys *lockstep.System, pid lockstep.PID[Msg]) {
+	r := lockstep.Ask(sys, pid, build)
+	p := &r
+	_, _ = (*p).Await(ctx)
+}
