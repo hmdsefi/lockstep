@@ -37,6 +37,12 @@ func TestHooksUnset(t *testing.T) {
 	if hooks.Address != nil {
 		t.Error("hooks.Address != nil without package lockstep")
 	}
+	if hooks.Control != nil {
+		t.Error("hooks.Control != nil without package lockstep")
+	}
+	if hooks.Signal != nil {
+		t.Error("hooks.Signal != nil without package lockstep")
+	}
 	if got := (hooks.PendingAsk{}); got.ByActor || got.Ask != (engine.Address{}) {
 		t.Errorf("zero PendingAsk = %+v", got)
 	}

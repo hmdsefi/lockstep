@@ -49,6 +49,9 @@ type actorCell interface {
 	// pushSystem appends m to the system queue and schedules the cell (ENG-350); a closed queue
 	// drops m. from is the cell whose turn pushes, or nil.
 	pushSystem(m sysMsg, from engine.ActorRef)
+	// offerSystem is pushSystem that reports whether the queue took m: false once the cell has
+	// completed its final stop.
+	offerSystem(m sysMsg, from engine.ActorRef) bool
 	// requestStop puts stop{reason} on the system queue unless the cell already has a stop
 	// request (ACT-710, SUP-050). from is the cell whose turn asks, or nil.
 	requestStop(reason StopReason, from engine.ActorRef)
@@ -129,6 +132,11 @@ type cell[M any] struct {
 	memSizer          MemSizer
 	handled, measured uint64
 
+	// paused stops the popping of user entries while the mailbox keeps taking them (MBX-190):
+	// ActorControl.PauseUser sets it during a turn of the incarnation (PER-250), and begin clears
+	// it for every new incarnation (SUP-030). Turn-owned.
+	paused bool
+
 	// rebuildSpawn reports that the cell was spawned from a rebuild context, so its first Started
 	// runs in one too (OVL §3). Set before the cell is registered, never changed.
 	rebuildSpawn bool
@@ -199,15 +207,20 @@ func (c *cell[M]) Slot() *engine.Slot { return &c.slot }
 // pushSystem appends m to the system queue and then schedules the cell (ENG-350). from is the
 // cell whose turn pushes, or nil. After the final stop the queue is closed and m is dropped
 // (SUP-060 step 5).
-func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) {
+func (c *cell[M]) pushSystem(m sysMsg, from engine.ActorRef) { c.offerSystem(m, from) }
+
+// offerSystem is pushSystem that reports whether the system queue took m: false, with m dropped,
+// after the final stop (actorCell).
+func (c *cell[M]) offerSystem(m sysMsg, from engine.ActorRef) bool {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	c.sysq.Push(m)
 	c.mu.Unlock()
 	c.schedule(from)
+	return true
 }
 
 // offerUser offers e to the user mailbox and then, if the mailbox took an entry, schedules the
@@ -301,12 +314,13 @@ func (c *cell[M]) requestStop(reason StopReason, from engine.ActorRef) {
 	c.schedule(from)
 }
 
-// closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160):
-// it returns the Sent entries and the Self entries of the user mailbox, each in queue order, and
-// the system messages left that the actor discards as not running, in queue order: each signal
-// message with its Watch sequence number (ACT-630), a cleanup failure's ChildFailed among them
-// (SUP-110), and each inject command (SFT-040). The other system messages are discarded. Later
-// enqueues are refused. The caller records what it returns, holding no lock.
+// closeQueues closes both queues for the final stop and empties them (SUP-060 step 5, MBX-160): it
+// returns the Sent entries and the Self entries of the user mailbox, each in queue order, and the
+// system messages left that the actor discards as not running, in queue order: each signal message
+// with its Watch sequence number (ACT-630), a cleanup failure's ChildFailed among them (SUP-110),
+// each inject command (SFT-040) and each internal effect outcome (PER-240). The other system
+// messages are discarded. Later enqueues are refused. The caller records what it returns, holding
+// no lock.
 func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []sysMsg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -325,7 +339,7 @@ func (c *cell[M]) closeQueues() (sent, self []entry, notRunning []sysMsg) {
 			notRunning = append(notRunning, m)
 		case cleanupFailed:
 			notRunning = append(notRunning, m.asSignal())
-		case inject:
+		case inject, internalResult:
 			notRunning = append(notRunning, m)
 		}
 	}
