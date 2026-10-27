@@ -302,3 +302,100 @@ func (l *Literal) Started(ctx *lockstep.Context[Msg]) {
 	func() { ctx.Own(l.a) }()
 	(*lockstep.Context[Msg]).Own(ctx, l.b)
 }
+
+// Aliasing closes its connection through local variables.
+type Aliasing struct {
+	conn  net.Conn
+	file  *os.File
+	timer *time.Timer
+	other io.Closer
+}
+
+// Receive handles a message.
+func (a *Aliasing) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Started owns the closer through a local variable.
+func (a *Aliasing) Started(ctx *lockstep.Context[Msg]) {
+	o := a.other
+	ctx.Own(o)
+}
+
+// Stopped releases conn through an alias, deferred, and the file and timer through aliases
+// passed to calls.
+func (a *Aliasing) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
+	c := a.conn
+	_ = c.Close()
+	var f = a.file
+	defer closeQuietly(f)
+	t := a.timer
+	defer t.Stop()
+}
+
+// Parameter releases its resources in functions that take the actor as a parameter or a local.
+type Parameter struct {
+	conn net.Conn
+	peer io.Closer
+}
+
+// Receive handles a message.
+func (a *Parameter) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Stopped calls helpers that receive the actor.
+func (a *Parameter) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
+	shut(a)
+	var self *Parameter = a
+	_ = self.peer.Close()
+}
+
+func shut(a *Parameter) {
+	_ = a.conn.Close()
+}
+
+// Slotted holds an instance of a generic resource type.
+type Slotted struct {
+	s *Slot[int]
+}
+
+// Receive handles a message.
+func (a *Slotted) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Stopped closes the slot.
+func (a *Slotted) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
+	a.s.Close()
+}
+
+// Closing embeds an io.Closer and releases it through the promoted Close.
+type Closing struct {
+	io.Closer
+}
+
+// Receive handles a message.
+func (a *Closing) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Stopped closes the embedded closer.
+func (a *Closing) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
+	_ = a.Close()
+}
+
+// Leasing releases a marked type through Stop, and a marked type through Close.
+type Leasing struct {
+	l *Lease
+	d *Dial
+}
+
+// Receive handles a message.
+func (a *Leasing) Receive(ctx *lockstep.Context[Msg], msg Msg) {}
+
+// Stopped stops the lease and closes the connection.
+func (a *Leasing) Stopped(ctx *lockstep.Context[Msg], reason lockstep.StopReason) {
+	a.l.Stop()
+	a.d.Close()
+}
+
+// Dial is a resource released by Close.
+//
+//lockstep:resource
+type Dial struct{}
+
+// Close closes the connection.
+func (*Dial) Close() {}
