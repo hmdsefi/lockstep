@@ -111,7 +111,8 @@ func (s *stubServer) Receive(ctx *lockstep.Context[raft.Msg], msg raft.Msg) {
 			return
 		}
 		m.ReplyTo.Send(ctx, s.spec.script.take())
-	default: // the stub ignores messages it does not know
+	case raft.RequestVote, raft.VoteReply, raft.AppendEntries, raft.AppendReply:
+		// The stub is a lone server: no peer sends it election or replication traffic.
 	}
 }
 
