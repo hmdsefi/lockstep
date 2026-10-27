@@ -204,9 +204,13 @@ func TestPipeLocalOrder(t *testing.T) {
 			if !ok {
 				return
 			}
-			_ = Send(ctx, a, any("m1"))
+			if err := Send(ctx, a, any("m1")); err != nil {
+				t.Errorf("Send m1: %v", err)
+			}
 			rt.Send(ctx, 5)
-			_ = Send(ctx, a, any("m2"))
+			if err := Send(ctx, a, any("m2")); err != nil {
+				t.Errorf("Send m2: %v", err)
+			}
 		},
 	}))
 	if err != nil {
