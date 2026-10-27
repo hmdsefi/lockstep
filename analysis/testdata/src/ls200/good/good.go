@@ -390,3 +390,46 @@ func countAfter(sys *lockstep.System, pid lockstep.PID[Task], t Task) int {
 	t.N++
 	return t.N
 }
+
+// retryFailed keeps the items when the send fails: a failed send delivered nothing, so the
+// sender still owns them.
+func retryFailed(sys *lockstep.System, pid lockstep.PID[Work], data []int) []int {
+	if err := lockstep.Send(sys, pid, Work{Data: data}); err != nil {
+		return data
+	}
+	return nil
+}
+
+// failedAssigned tests the error of the send in the statement after it.
+func failedAssigned(sys *lockstep.System, pid lockstep.PID[Batch], items []int) []int {
+	err := lockstep.Send(sys, pid, Batch{Items: items})
+	if err != nil {
+		return items
+	}
+	return nil
+}
+
+// failedCompared compares the result of the send itself with nil.
+func failedCompared(sys *lockstep.System, pid lockstep.PID[Batch], items []int) {
+	if lockstep.Send(sys, pid, Batch{Items: items}) != nil {
+		items[0] = 0
+	}
+}
+
+// failedAfterSuccess returns when the send succeeds: the code after the if runs only when it
+// failed.
+func failedAfterSuccess(sys *lockstep.System, pid lockstep.PID[Batch], items []int) []int {
+	if err := lockstep.Send(sys, pid, Batch{Items: items}); err == nil {
+		return nil
+	}
+	return items
+}
+
+// failedElse uses the items in the else branch of a test for success.
+func failedElse(sys *lockstep.System, pid lockstep.PID[Batch], items []int, logf func(int)) {
+	if err := lockstep.Send(sys, pid, Batch{Items: items}); err == nil {
+		logf(0)
+	} else {
+		items[0] = 0
+	}
+}
