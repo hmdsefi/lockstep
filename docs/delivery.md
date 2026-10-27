@@ -166,7 +166,9 @@ case CancelOrder:
 		p.cancelled = true // the Create is not sent yet: never send it
 		return
 	}
-	_ = lockstep.Send(ctx, c.cfg.Orders, Msg(Cancel{ID: m.ID}))
+	if err := lockstep.Send(ctx, c.cfg.Orders, Msg(Cancel{ID: m.ID})); err != nil {
+		// ... the mailbox refused it: try again from a timer, or report it
+	}
 ```
 
 When the messages for one entity must come from several senders, give each change a version
@@ -208,7 +210,7 @@ go test -run '^(TestRetry|TestCancelBeforeCreate)$' -v . | grep -E '^(--- |ok)'
 ```text
 --- PASS: TestRetry (0.01s)
 --- PASS: TestCancelBeforeCreate (0.01s)
-ok  	github.com/hmdsefi/lockstep/examples/orders	0.764s
+ok  	github.com/hmdsefi/lockstep/examples/orders	0.222s
 ```
 
 ### A retry that charges twice
@@ -221,15 +223,15 @@ ORDERS_BUG=no-dedup go test -run '^TestRetry$' .
 
 ```text
 --- FAIL: TestRetry (0.01s)
-    sim_test.go:35: faultline: running 200 seeds from base 0x087cc5272fcdf319 (test name)
+    sim_test.go:37: faultline: running 200 seeds from base 0x087cc5272fcdf319 (test name)
     --- FAIL: TestRetry/seed=0x56247cd01be260d5 (0.01s)
         faultline: final check "charge each order at most once" failed after the run at t=2.000000000s
           order o1 charged 2 times
         replay:    FAULTLINE_SEED=0x56247cd01be260d5 go test -v -run '^TestRetry$' github.com/hmdsefi/lockstep/examples/orders
         artifacts: $TMPDIR/faultline-501/github.com_hmdsefi_lockstep_examples_orders/TestRetry/56247cd01be260d5/
-    sim_test.go:35: faultline: stopping after failing seed 0x56247cd01be260d5; 199 of 200 seeds not run (set Options.KeepGoing to run all)
+    sim_test.go:37: faultline: stopping after failing seed 0x56247cd01be260d5; 199 of 200 seeds not run (set Options.KeepGoing to run all)
 FAIL
-FAIL	github.com/hmdsefi/lockstep/examples/orders	0.266s
+FAIL	github.com/hmdsefi/lockstep/examples/orders	0.228s
 FAIL
 ```
 
@@ -256,15 +258,15 @@ ORDERS_BUG=drop-early-cancel go test -run '^TestCancelBeforeCreate$' .
 
 ```text
 --- FAIL: TestCancelBeforeCreate (0.01s)
-    sim_test.go:46: faultline: running 200 seeds from base 0x2a6be864d313f470 (test name)
+    sim_test.go:48: faultline: running 200 seeds from base 0x2a6be864d313f470 (test name)
     --- FAIL: TestCancelBeforeCreate/seed=0x144668b471a38445 (0.01s)
         faultline: final check "a cancelled order ends up not charged" failed after the run at t=2.000000000s
           order o1 was cancelled but is still charged: charges=1 refunds=0
         replay:    FAULTLINE_SEED=0x144668b471a38445 go test -v -run '^TestCancelBeforeCreate$' github.com/hmdsefi/lockstep/examples/orders
         artifacts: $TMPDIR/faultline-501/github.com_hmdsefi_lockstep_examples_orders/TestCancelBeforeCreate/144668b471a38445/
-    sim_test.go:46: faultline: stopping after failing seed 0x144668b471a38445; 198 of 200 seeds not run (set Options.KeepGoing to run all)
+    sim_test.go:48: faultline: stopping after failing seed 0x144668b471a38445; 198 of 200 seeds not run (set Options.KeepGoing to run all)
 FAIL
-FAIL	github.com/hmdsefi/lockstep/examples/orders	0.200s
+FAIL	github.com/hmdsefi/lockstep/examples/orders	0.237s
 FAIL
 ```
 

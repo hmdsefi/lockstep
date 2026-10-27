@@ -4,6 +4,7 @@
 package orders_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -25,6 +26,7 @@ const (
 
 // The final checks every scenario registers.
 const (
+	checkSetup         = "every spawn and send succeeds"
 	checkChargedOnce   = "charge each order at most once"
 	checkCancelRefunds = "a cancelled order ends up not charged"
 )
@@ -98,6 +100,7 @@ type shop struct {
 	charges   map[string]int // order ID: times charged
 	refunds   map[string]int // order ID: times refunded
 	cancelled []string       // order IDs the shopper cancelled
+	errs      []error        // failed spawns and sends
 }
 
 // newShop boots the service with bugs planted, answers the payment effects after latencies
@@ -111,14 +114,16 @@ func newShop(s *sim.Sim, bugs orders.Bugs) *shop {
 		refunds:  map[string]int{},
 	}
 	s.Node("orders", func(sys *lockstep.System) {
-		_, _ = lockstep.Spawn(sys, "orders", orders.New(nil, bugs))
+		_, err := lockstep.Spawn(sys, "orders", orders.New(nil, bugs))
+		sh.note(err)
 	})
 	s.Node("web", func(sys *lockstep.System) {
-		_, _ = lockstep.Spawn(sys, "checkout", orders.NewCheckout(orders.CheckoutConfig{
+		_, err := lockstep.Spawn(sys, "checkout", orders.NewCheckout(orders.CheckoutConfig{
 			Orders:   sh.orders,
 			Timeout:  100 * time.Millisecond,
 			Attempts: 3,
 		}))
+		sh.note(err)
 	})
 	s.Client("shopper", func(*lockstep.System) {})
 
@@ -138,6 +143,7 @@ func newShop(s *sim.Sim, bugs orders.Bugs) *shop {
 	})
 
 	w := s.World()
+	w.Final(checkSetup, func() error { return errors.Join(sh.errs...) })
 	w.Final(checkChargedOnce, func() error {
 		for _, id := range sortedKeys(sh.charges) {
 			if n := sh.charges[id]; n > 1 {
@@ -159,13 +165,20 @@ func newShop(s *sim.Sim, bugs orders.Bugs) *shop {
 
 // submit sends Submit for an order to Checkout from the shopper.
 func (sh *shop) submit(id string, amount int) {
-	_ = sim.Send(sh.s, "shopper", sh.checkout, orders.CheckoutMsg(orders.Submit{ID: id, Amount: amount}))
+	sh.note(sim.Send(sh.s, "shopper", sh.checkout, orders.CheckoutMsg(orders.Submit{ID: id, Amount: amount})))
 }
 
 // cancel sends Cancel for an order to Orders from the shopper, directly.
 func (sh *shop) cancel(id string) {
 	sh.cancelled = append(sh.cancelled, id)
-	_ = sim.Send(sh.s, "shopper", sh.orders, orders.Msg(orders.Cancel{ID: id}))
+	sh.note(sim.Send(sh.s, "shopper", sh.orders, orders.Msg(orders.Cancel{ID: id})))
+}
+
+// note keeps err, if any, for the final check checkSetup.
+func (sh *shop) note(err error) {
+	if err != nil {
+		sh.errs = append(sh.errs, err)
+	}
 }
 
 // sortedKeys returns m's keys in order.
