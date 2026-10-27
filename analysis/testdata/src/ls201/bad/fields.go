@@ -103,3 +103,20 @@ type Embeds struct {
 //
 //lockstep:immutable
 type Handler func(int) // want `^LS201: immutable type Handler contains function type func\(int\), which is not immutable$`
+
+// scoped marks only a type declared inside a function: the marker binds there too.
+func scoped() {
+	// Local is marked in a function body.
+	//
+	//lockstep:immutable
+	type Local struct {
+		C chan int // want `^LS201: field C of immutable type Local contains channel type chan int, which is not immutable$`
+	}
+	_ = Local{}
+}
+
+// Wrapped is declared as another struct type, not as a struct literal: its underlying type is
+// walked as a whole and reported at the type spec.
+//
+//lockstep:immutable
+type Wrapped holder // want `^LS201: immutable type Wrapped contains pointer type \*time\.Location, which is not immutable$`

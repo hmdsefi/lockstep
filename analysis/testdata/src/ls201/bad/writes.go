@@ -135,3 +135,8 @@ func (f *Frozen[T]) Add(v T) {
 var literal = func(b Batch) {
 	b.Tags["y"] = 2 // want `^LS201: element assignment writes to field Tags of immutable type Batch$`
 }
+
+// shared is a package variable; the initializer below appends to its field outside any function.
+var shared Batch
+
+var appended = append(shared.Items, 1) // want `^LS201: append writes to field Items of immutable type Batch$`

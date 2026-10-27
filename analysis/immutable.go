@@ -26,10 +26,10 @@ const idImmutable = "LS201"
 
 // The operations of ANL-260 that write to a field of an immutable type, as messages name them.
 const (
-	opElemAssign = "element assignment"
-	opIncrement  = "increment"
-	opElemAddr   = "taking the address of an element"
-	opPtrAssign  = "assignment through a pointer"
+	immutableOpElemAssign = "element assignment"
+	immutableOpIncrement  = "increment"
+	immutableOpElemAddr   = "taking the address of an element"
+	immutableOpPtrAssign  = "assignment through a pointer"
 )
 
 // immutableCheck is the state of one run of Immutable.
@@ -71,23 +71,23 @@ func runImmutable(pass *analysis.Pass) (any, error) {
 		case *ast.AssignStmt:
 			if n.Tok != token.DEFINE {
 				for _, lhs := range n.Lhs {
-					c.checkAssign(lhs, opElemAssign)
+					c.checkAssign(lhs, immutableOpElemAssign)
 				}
 			}
 		case *ast.RangeStmt:
 			if n.Tok == token.ASSIGN {
 				for _, e := range []ast.Expr{n.Key, n.Value} {
 					if e != nil {
-						c.checkAssign(e, opElemAssign)
+						c.checkAssign(e, immutableOpElemAssign)
 					}
 				}
 			}
 		case *ast.IncDecStmt:
-			c.checkAssign(n.X, opIncrement)
+			c.checkAssign(n.X, immutableOpIncrement)
 		case *ast.UnaryExpr:
 			if n.Op == token.AND {
 				if t, ok := c.writeTarget(n.X); ok && t.elem {
-					c.report(n.Pos(), opElemAddr, t)
+					c.report(n.Pos(), immutableOpElemAddr, t)
 				}
 			}
 		case *ast.CallExpr:
@@ -158,6 +158,9 @@ func (w *immutableWalk) component(t, shown types.Type) string {
 	case *types.Slice:
 		return w.component(u.Elem(), u.Elem())
 	case *types.Array:
+		if u.Len() == 0 {
+			return "" // holds no values, such as the _ [0]func() that makes a struct not comparable
+		}
 		return w.component(u.Elem(), u.Elem())
 	case *types.Map:
 		if desc := w.component(u.Key(), u.Key()); desc != "" {
@@ -194,8 +197,8 @@ func (w *immutableWalk) allowed(t *types.Named) bool {
 		w.c.idx.hasMarker(obj, markImmutable)
 }
 
-// fieldWrite is a write to field field of the immutable type named.
-type fieldWrite struct {
+// immutableWrite is a write to field field of the immutable type named.
+type immutableWrite struct {
 	field *types.Var
 	named *types.Named
 	elem  bool // the write is to an element of a slice or map field, not to the field itself
@@ -206,32 +209,32 @@ type fieldWrite struct {
 // with p of type *T. Writes to a part of such a location (a field of the element, an element of an
 // array field) count as writes to it. Field writes on a value of type T change a local copy and
 // are not returned.
-func (c *immutableCheck) writeTarget(e ast.Expr) (fieldWrite, bool) {
+func (c *immutableCheck) writeTarget(e ast.Expr) (immutableWrite, bool) {
 	for {
 		switch x := ast.Unparen(e).(type) {
 		case *ast.IndexExpr:
-			if f, named, _, ok := c.immutableField(x.X); ok && isSliceOrMap(f.Type()) {
-				return fieldWrite{field: f, named: named, elem: true}, true
+			if f, named, _, ok := c.immutableField(x.X); ok && immutableSliceOrMap(f.Type()) {
+				return immutableWrite{field: f, named: named, elem: true}, true
 			}
 			t := c.pass.TypesInfo.TypeOf(x.X)
 			if t == nil {
-				return fieldWrite{}, false
+				return immutableWrite{}, false
 			}
 			if _, isArray := t.Underlying().(*types.Array); !isArray {
-				return fieldWrite{}, false
+				return immutableWrite{}, false
 			}
 			e = x.X
 		case *ast.SelectorExpr:
 			if f, named, ptr, ok := c.immutableField(x); ok && ptr {
-				return fieldWrite{field: f, named: named}, true
+				return immutableWrite{field: f, named: named}, true
 			}
 			s := c.pass.TypesInfo.Selections[x]
 			if s == nil || s.Kind() != types.FieldVal || s.Indirect() {
-				return fieldWrite{}, false
+				return immutableWrite{}, false
 			}
 			e = x.X
 		default:
-			return fieldWrite{}, false
+			return immutableWrite{}, false
 		}
 	}
 }
@@ -262,8 +265,8 @@ func (c *immutableCheck) immutableField(e ast.Expr) (field *types.Var, named *ty
 	return field, named, ptr, isVar
 }
 
-// isSliceOrMap reports whether t's underlying type is a slice or a map.
-func isSliceOrMap(t types.Type) bool {
+// immutableSliceOrMap reports whether t's underlying type is a slice or a map.
+func immutableSliceOrMap(t types.Type) bool {
 	switch t.Underlying().(type) {
 	case *types.Slice, *types.Map:
 		return true
@@ -279,13 +282,14 @@ func (c *immutableCheck) checkAssign(lhs ast.Expr, op string) {
 		return
 	}
 	if !t.elem {
-		op = opPtrAssign
+		op = immutableOpPtrAssign
 	}
 	c.report(lhs.Pos(), op, t)
 }
 
 // checkCall reports a builtin or an in-place mutator whose first argument is a slice or map field
-// of an immutable type (ANL-260). Slicing the field still writes into its memory.
+// of an immutable type (ANL-260). Slicing the field still writes into its memory, except where a
+// full slice expression makes append or slices.Insert reallocate.
 func (c *immutableCheck) checkCall(call *ast.CallExpr) {
 	if len(call.Args) == 0 {
 		return
@@ -303,15 +307,20 @@ func (c *immutableCheck) checkCall(call *ast.CallExpr) {
 		if !isSlice {
 			break
 		}
+		if s.Slice3 && (op == "append" || op == "slices.Insert") {
+			// A full slice expression caps the capacity, so the call reallocates instead of
+			// writing past the slice's length: append(x.f[:0:0], ...) copies x.f.
+			return
+		}
 		arg = ast.Unparen(s.X)
 	}
-	if f, named, _, ok := c.immutableField(arg); ok && isSliceOrMap(f.Type()) {
-		c.report(call.Pos(), op, fieldWrite{field: f, named: named, elem: true})
+	if f, named, _, ok := c.immutableField(arg); ok && immutableSliceOrMap(f.Type()) {
+		c.report(call.Pos(), op, immutableWrite{field: f, named: named, elem: true})
 	}
 }
 
 // report adds the LS201 finding of the write t at pos.
-func (c *immutableCheck) report(pos token.Pos, op string, t fieldWrite) {
+func (c *immutableCheck) report(pos token.Pos, op string, t immutableWrite) {
 	c.r.report(pos, idImmutable, op+" writes to field "+t.field.Name()+" of immutable type "+
 		types.TypeString(t.named, c.qual))
 }

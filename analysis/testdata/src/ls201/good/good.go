@@ -41,6 +41,7 @@ type Fields struct {
 	Sub    Header
 	Graph  Node
 	Box    Box[*int]
+	_      [0]func()
 }
 
 // Tree is recursive through its own marker.
@@ -101,7 +102,10 @@ func construct(xs []int, dst []int) (Batch, *Batch, int) {
 	slices.Sort(sorted)
 	copy(dst, b.Items)
 	dst = append(dst, b.Items...)
-	_ = append(slices.Clip(b.Items[:0:0]), 1)
+	n = len(b.Items)
+	_ = append(b.Items[:0:0], b.Items...)
+	_ = append(b.Items[:n:n], 1)
+	_ = slices.Insert(b.Items[:n:n], 0, 1)
 	_ = &b
 	_ = &c.N
 	return b, p, n + len(dst)
@@ -131,4 +135,10 @@ func (sorter) Sort([]int) {}
 // methods calls a method that is not a library mutator.
 func methods(b Batch) {
 	sorter{}.Sort(b.Items)
+}
+
+// unmarked declares a function-local type without a marker: its fields are not checked.
+func unmarked() {
+	type local struct{ C chan int }
+	_ = local{}
 }
