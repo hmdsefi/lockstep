@@ -4,11 +4,13 @@
 package filestore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"sort"
 
 	"github.com/hmdsefi/lockstep/persist"
 )
@@ -567,4 +569,159 @@ func (r *segReader) record(off int64) (scannedRecord, error) {
 		return scannedRecord{size: size, invalid: reasonOf(err)}, nil
 	}
 	return scannedRecord{events: events, size: size}, nil
+}
+
+// Read returns up to max committed events of id with Seq >= from, in order. It validates every
+// record it reads: damaged data, a gap between segments or bytes after the last record of a
+// segment return an error wrapping ErrCorrupt. A from below the first retained sequence number
+// returns an error wrapping persist.ErrMissingEvents, a from above the last committed one returns
+// no events, and max < 1 returns an error wrapping fs.ErrInvalid.
+func (s *Store) Read(ctx context.Context, id string, from uint64, max int) ([]persist.Event, error) {
+	st, unlock, err := s.begin(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if max < 1 {
+		return nil, fmt.Errorf("filestore: read %s: max %d is less than 1: %w", id, max, fs.ErrInvalid)
+	}
+	if err := s.loadJournal(id, st); err != nil {
+		return nil, err
+	}
+	j := st.journal
+	first := uint64(1)
+	if len(j.segs) > 0 {
+		first = j.segs[0].seq
+	}
+	if from < first {
+		return nil, fmt.Errorf("filestore: read %s: from %d is below the first retained seq %d: %w",
+			id, from, first, persist.ErrMissingEvents)
+	}
+	if from > j.lastCommitted {
+		return nil, nil
+	}
+	// The segment with the greatest name <= from exists: from >= first.
+	start := sort.Search(len(j.segs), func(i int) bool { return j.segs[i].seq > from }) - 1
+	events, err := s.readSegments(j, start, from, max)
+	if err != nil && !errors.Is(err, ErrCorrupt) {
+		err = fmt.Errorf("filestore: read %s: %w", id, err)
+	}
+	return events, err
+}
+
+// readSegments returns up to max committed events with Seq >= from, reading the segments of j
+// from index start on.
+func (s *Store) readSegments(j *journal, start int, from uint64, max int) ([]persist.Event, error) {
+	var out []persist.Event
+	next := j.segs[start].seq // the sequence number the next record must start with
+	for i := start; i < len(j.segs); i++ {
+		seg := j.segs[i]
+		if seg.seq != next {
+			return nil, corruptAt(j.segPath(seg.seq), 0, fmt.Sprintf("seq %d, expected %d", seg.seq, next))
+		}
+		var err error
+		out, next, err = s.readSegment(j, i, next, from, max, out)
+		if err != nil {
+			return nil, err
+		}
+		if len(out) == max || next > j.lastCommitted {
+			return out, nil
+		}
+	}
+	return out, nil
+}
+
+// readSegment appends to out the events of segment i that are at least from, up to max events in
+// all and up to the last committed one, and returns the sequence number after the last record it
+// read. Segment i starts at next. For a segment that is not the last it reads the records up to
+// the next segment's name and then requires the file to end; for the last it reads up to the
+// committed size. It stops early once max events are collected or the last committed event is
+// read.
+func (s *Store) readSegment(j *journal, i int, next, from uint64, max int, out []persist.Event) (_ []persist.Event, _ uint64, err error) {
+	seg := j.segs[i]
+	name := j.segPath(seg.seq)
+	f, err := s.fs.Open(name)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer closeFile(f, &err)
+	size, err := f.Size()
+	if err != nil {
+		return nil, 0, err
+	}
+	last := i == len(j.segs)-1
+	limit, stop := size, j.segs[min(i+1, len(j.segs)-1)].seq
+	if last {
+		if size < seg.committed { // the file lost committed bytes behind the Store
+			return nil, 0, corruptAt(name, size, reasonIncomplete)
+		}
+		limit = seg.committed
+	}
+	r := &segReader{f: f, size: limit}
+	off := int64(0)
+	for off < limit && (last || next < stop) {
+		rec, err := r.record(off)
+		if err != nil {
+			return nil, 0, err
+		}
+		if rec.invalid != "" {
+			return nil, 0, corruptAt(name, off, rec.invalid)
+		}
+		if got := rec.events[0].Seq; got != next {
+			return nil, 0, corruptAt(name, off, fmt.Sprintf("seq %d, expected %d", got, next))
+		}
+		for _, e := range rec.events {
+			if e.Seq >= from && len(out) < max {
+				out = append(out, persist.Event{Seq: e.Seq, Data: bytes.Clone(e.Data)})
+			}
+		}
+		next += uint64(len(rec.events))
+		off += rec.size
+		if len(out) == max || next > j.lastCommitted {
+			return out, next, nil
+		}
+	}
+	if !last && off < limit {
+		return nil, 0, corruptAt(name, off, "trailing bytes")
+	}
+	return out, next, nil
+}
+
+// DeleteEvents removes the segments of id whose events are all at most to, except the last
+// segment, which always stays. It never changes the bounds that Recover reports except First,
+// which becomes the first sequence number of the first remaining segment.
+func (s *Store) DeleteEvents(ctx context.Context, id string, to uint64) error {
+	st, unlock, err := s.begin(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.loadJournal(id, st); err != nil {
+		return err
+	}
+	j := st.journal
+	// Segment i holds only events below its successor's name, so it goes when that name is at
+	// most to+1. It stays while its successor holds no committed data: after a crash, the
+	// successor may be gone and the committed events with it.
+	removed := 0
+	var rerr error
+	for removed+1 < len(j.segs) && j.segs[removed+1].seq-1 <= to && j.segs[removed+1].committed > 0 {
+		if rerr = s.fs.Remove(j.segPath(j.segs[removed].seq)); rerr != nil {
+			break
+		}
+		removed++
+	}
+	if removed > 0 {
+		clear(j.segs[:removed])
+		j.segs = j.segs[removed:]
+		if err := s.fs.SyncDir(j.dir); err != nil {
+			// The removals are not durable yet: the next commit syncs the directory again.
+			j.entriesChanged = true
+			rerr = errors.Join(rerr, err)
+		}
+	}
+	if rerr != nil {
+		return fmt.Errorf("filestore: delete events of %s up to %d: %w", id, to, rerr)
+	}
+	return nil
 }
