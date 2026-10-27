@@ -175,3 +175,11 @@ func (s *Snapshot) UnmarshalJSON(b []byte) error {
 	s.Rows = []string{string(b)} // want `^LS201: assignment through a pointer writes to field Rows of immutable type Snapshot$`
 	return nil
 }
+
+// shallowClone copies another Snapshot into the one it allocated: the copy shares cur's map.
+func shallowClone(cur *Snapshot, k string, v int) *Snapshot {
+	next := new(Snapshot)
+	*next = *cur
+	next.Index[k] = v // want `^LS201: element assignment writes to field Index of immutable type Snapshot$`
+	return next
+}

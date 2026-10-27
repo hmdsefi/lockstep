@@ -349,7 +349,7 @@ func (f *uasFunc) tracked(s sendSite) ([]*uasTrack, []ast.Expr) {
 				tracks = append(tracks, t)
 			}
 			_, path := uasPath(info, l.expr)
-			t.shared = t.shared || l.shared && uasInStorage(info, l.expr, sliced[l.expr])
+			t.shared = t.shared || l.shared && uasInStorage(info, l.expr, sliced[l.expr], false)
 			t.paths = append(t.paths, path)
 		}
 	}
@@ -375,9 +375,11 @@ func uasSliced(exprs []ast.Expr) map[ast.Expr]bool {
 // (ANL-230): every step from the root is a field of a struct value, reached without a
 // dereference, or an element of an array value, and a sliced leaf is an array. Assigning the
 // bare root then writes the memory the receiver holds. A slice, a pointer or a map leads
-// elsewhere, so assigning the root only replaces a header or a pointer.
-func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
-	if sliced && !uasIsArray(info.TypeOf(e)) {
+// elsewhere, so assigning the root only replaces a header or a pointer. A value of type
+// parameter type is an array when every type of its type set is one, with every set, and when
+// some type may be one otherwise (see uasIsArray).
+func uasInStorage(info *types.Info, e ast.Expr, sliced, every bool) bool {
+	if sliced && !uasIsArray(info.TypeOf(e), every) {
 		return false
 	}
 	for {
@@ -393,7 +395,7 @@ func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
 			}
 			e = x.X
 		case *ast.IndexExpr:
-			if !uasIsArray(info.TypeOf(x.X)) {
+			if !uasIsArray(info.TypeOf(x.X), every) {
 				return false
 			}
 			e = x.X
@@ -404,39 +406,43 @@ func uasInStorage(info *types.Info, e ast.Expr, sliced bool) bool {
 }
 
 // uasIsArray reports whether t is an array, or a type parameter whose type set holds only
-// arrays: its values are then held in the variable's own storage.
-func uasIsArray(t types.Type) bool {
+// arrays, with every set, or may hold an array otherwise: its values are then held, always or
+// possibly, in the variable's own storage. A use that must not be missed takes the second
+// reading, an exemption the first.
+func uasIsArray(t types.Type, every bool) bool {
 	if t == nil {
 		return false
 	}
 	if tp, ok := types.Unalias(t).(*types.TypeParam); ok {
-		return uasOnlyArrays(tp.Constraint())
+		return uasArrays(tp.Constraint(), every)
 	}
 	_, ok := t.Underlying().(*types.Array)
 	return ok
 }
 
-// uasOnlyArrays reports whether every type in the type set of t is an array. The type set of an
-// interface is the intersection of those of its embedded elements, and a union's is the union of
-// its terms'; an interface without embedded elements holds every type.
-func uasOnlyArrays(t types.Type) bool {
+// uasArrays reports, with every set, whether every type in the type set of t is an array, and
+// otherwise whether some type in it may be one. The type set of an interface is the
+// intersection of those of its embedded elements, and a union's is the union of its terms'; an
+// interface without embedded elements holds every type.
+func uasArrays(t types.Type, every bool) bool {
 	if u, ok := t.(*types.Union); ok {
 		for term := range u.Terms() {
-			if !uasOnlyArrays(term.Type()) {
-				return false
+			if uasArrays(term.Type(), every) != every {
+				return !every
 			}
 		}
-		return u.Len() > 0
+		return every
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Array:
 		return true
 	case *types.Interface:
 		for e := range u.EmbeddedTypes() {
-			if uasOnlyArrays(e) {
-				return true
+			if uasArrays(e, every) == every {
+				return every
 			}
 		}
+		return !every
 	}
 	return false
 }
@@ -504,7 +510,7 @@ func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []
 			return false
 		}
 	}
-	if x := f.outer[id]; !t.shared && x != nil && uasInStorage(f.pass.TypesInfo, x, false) &&
+	if x := f.outer[id]; !t.shared && x != nil && uasInStorage(f.pass.TypesInfo, x, false, true) &&
 		(f.lengths[x] || !uasMayHoldRefs(f.pass, f.pass.TypesInfo.TypeOf(x))) {
 		return false
 	}
@@ -580,7 +586,8 @@ type uasEdge struct{ from, to *cfg.Block }
 // failureEdge returns the edge of the branch on which the error result of the lockstep.Send site
 // s is not nil, or the zero edge (ANL-220): the branch of an if statement whose condition
 // compares with nil the send call itself or a variable that the if statement's init statement,
-// or the statement just before the if statement, assigns the call. A path through that edge
+// or the statement just before the if statement when the init statement does not assign the
+// variable again, assigns the call. A path through that edge
 // reaches no use: the message was not delivered. ReplyTo.Send and Ask return no error.
 func (f *uasFunc) failureEdge(s sendSite) uasEdge {
 	if s.api != "lockstep.Send" {
@@ -596,6 +603,21 @@ func (f *uasFunc) failureEdge(s sendSite) uasEdge {
 		id, ok := x.(*ast.Ident)
 		lhs, isIdent := ast.Unparen(a.Lhs[0]).(*ast.Ident)
 		return ok && isIdent && info.ObjectOf(id) != nil && info.ObjectOf(lhs) == info.ObjectOf(id)
+	}
+	// reassigns reports whether the init statement st assigns the variable x names again, so that
+	// the condition no longer tests the send's error.
+	reassigns := func(st ast.Stmt, x ast.Expr) bool {
+		a, ok := st.(*ast.AssignStmt)
+		v, isIdent := x.(*ast.Ident)
+		if !ok || !isIdent {
+			return false
+		}
+		for _, lhs := range a.Lhs {
+			if id, ok := ast.Unparen(lhs).(*ast.Ident); ok && info.ObjectOf(id) == info.ObjectOf(v) {
+				return true
+			}
+		}
+		return false
 	}
 	prev := make(map[*ast.IfStmt]ast.Stmt) // the statement before each if statement in its list
 	var ifs *ast.IfStmt
@@ -621,7 +643,8 @@ func (f *uasFunc) failureEdge(s sendSite) uasEdge {
 				break
 			}
 			x = ast.Unparen(x)
-			if x == s.call || n.Init != nil && assigns(n.Init, x) || prev[n] != nil && assigns(prev[n], x) {
+			if x == s.call || n.Init != nil && assigns(n.Init, x) ||
+				prev[n] != nil && assigns(prev[n], x) && !reassigns(n.Init, x) {
 				ifs, neq = n, cond.Op == token.NEQ
 			}
 		}
