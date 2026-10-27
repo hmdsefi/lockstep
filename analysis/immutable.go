@@ -339,7 +339,7 @@ func immutableBase(e ast.Expr) ast.Expr {
 
 // freshLocals returns the local variables under construction (ANL-260): those that a function
 // initializes from T{...}, &T{...} or new(T), for a type T marked immutable, and assigns nothing
-// else. Each maps to its T.
+// else, either directly or through a dereference (*v = ...). Each maps to its T.
 func (c *immutableCheck) freshLocals(insp *inspector.Inspector) map[*types.Var]*types.Named {
 	info := c.pass.TypesInfo
 	built := make(map[*types.Var]*types.Named)
@@ -353,8 +353,14 @@ func (c *immutableCheck) freshLocals(insp *inspector.Inspector) map[*types.Var]*
 			built[v] = named
 		}
 	}
+	// assign records an assignment of e, or of v when e is *v: replacing the value v points at
+	// may copy in another value's references.
 	assign := func(e ast.Expr) {
-		if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+		e = ast.Unparen(e)
+		if star, ok := e.(*ast.StarExpr); ok {
+			e = ast.Unparen(star.X)
+		}
+		if id, ok := e.(*ast.Ident); ok {
 			if v, ok := info.Uses[id].(*types.Var); ok {
 				assigned[v] = true
 			}
