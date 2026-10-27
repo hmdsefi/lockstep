@@ -1,8 +1,11 @@
-// Package good holds a directive with a known ID.
+// Package good holds directives with known IDs.
 package good
 
 //lockstep:allow LS110 r
 func f() {}
+
+//lockstep:allow LS230 r
+func h() {}
 
 // g carries the directives of lockstep's own determinism checks, maporder and blocking. They are
 // not this analyzer's, so they are ignored rather than reported as unknown.

@@ -296,7 +296,10 @@ func TestEFF030RefusedWhileStopping(t *testing.T) {
 			t.Errorf("done attributes = %q", keys)
 		}
 		// The refused call took no ID: the next Do of the system gets 1.
-		other, _ := Spawn(sys, "other", actorOf[any](&effectActor{}))
+		other, err := Spawn(sys, "other", actorOf[any](&effectActor{}))
+		if err != nil {
+			t.Fatal(err)
+		}
 		eng.RunUntilIdle()
 		var next EffectID
 		inTurn(t, sys, eng, other, func(ctx *Context[any]) { next = doFetch(ctx, "X") })

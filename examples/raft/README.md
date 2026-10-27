@@ -201,8 +201,8 @@ command that replays it.
 `raft`, `kv`, and `client` import the standard library, `lockstep`, and each other, never
 `lockstep/sim` or faultline. A test in `raftsim` checks this with `go list -deps`.
 
-The module passes `lockstep-vet` with no findings, and it has no `//lockstep:allow` directive, the
-comment that suppresses a finding. `lockstep-vet` reports actor code that blocks, starts a
+The module passes `lockstep-vet` with no findings, and it suppresses none: it has no `allow`
+directive, the comment that suppresses a finding. `lockstep-vet` reports actor code that blocks, starts a
 goroutine, reads the wall clock or global randomness, or waits on a reply with `Reply.Await`. To
 run it from the repository root:
 

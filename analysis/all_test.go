@@ -9,9 +9,9 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// TestAll checks AT-ANL-25 (Phase 1): All returns Directives, Determinism and AwaitInActor in
-// check-ID order with the names and Doc strings of ANL §4.1, the set passes analysis.Validate, and
-// every call returns a new slice holding the same analyzer values (ANL-390).
+// TestAll checks AT-ANL-25: All returns the nine analyzers in check-ID order with the names and
+// Doc strings of ANL §4.1, the set passes analysis.Validate, and every call returns a new slice
+// holding the same analyzer values (ANL-390).
 func TestAll(t *testing.T) {
 	want := []struct {
 		analyzer *analysis.Analyzer
@@ -21,6 +21,12 @@ func TestAll(t *testing.T) {
 		{Directives, "directives", "report malformed and unknown //lockstep: directives (LS001, LS002)"},
 		{Determinism, "determinism", "report nondeterminism and blocking in actor code (LS100)"},
 		{AwaitInActor, "awaitinactor", "report Reply.Await in actor code (LS110)"},
+		{UseAfterSend, "useaftersend", "report use of a message's references after it is sent (LS200)"},
+		{Immutable, "immutable", "verify types marked //lockstep:immutable (LS201)"},
+		{SharedState, "sharedstate", "report state shared between actors (LS210)"},
+		{MustUse, "mustuse", "report ignored replies and errors (LS220)"},
+		{Exhaustive, "exhaustive", "report message types with no case in Receive (LS230)"},
+		{Cleanup, "cleanup", "report actor resources that are never released (LS240)"},
 	}
 
 	got := All()

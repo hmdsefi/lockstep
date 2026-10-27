@@ -111,12 +111,7 @@ func runDeterminism(pass *analysis.Pass) (any, error) {
 		return nil, nil
 	}
 	r := newReporter(pass, idx)
-	qual := func(p *types.Package) string {
-		if p == pass.Pkg {
-			return ""
-		}
-		return p.Name()
-	}
+	qual := pkgQualifier(pass)
 	for cur := range insp.Root().Preorder((*ast.FuncDecl)(nil), (*ast.FuncLit)(nil)) {
 		if f := code.funcOf(cur.Node()); f != nil {
 			checkDeterminism(pass, r, f, cur, qual)

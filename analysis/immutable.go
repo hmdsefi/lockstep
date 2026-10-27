@@ -56,12 +56,7 @@ func runImmutable(pass *analysis.Pass) (any, error) {
 		pass: pass,
 		idx:  idx,
 		r:    newReporter(pass, idx),
-		qual: func(p *types.Package) string {
-			if p == pass.Pkg {
-				return ""
-			}
-			return p.Name()
-		},
+		qual: pkgQualifier(pass),
 	}
 	c.fresh = c.freshLocals(insp)
 	nodes := []ast.Node{

@@ -6,7 +6,11 @@ package analysis
 import "golang.org/x/tools/go/analysis"
 
 // All returns the analyzers of this release in check-ID order: Directives, Determinism,
-// AwaitInActor. Each call returns a new slice holding the same analyzer values.
+// AwaitInActor, then UseAfterSend, Immutable, SharedState, MustUse, Exhaustive, Cleanup. Each call
+// returns a new slice holding the same analyzer values.
 func All() []*analysis.Analyzer {
-	return []*analysis.Analyzer{Directives, Determinism, AwaitInActor}
+	return []*analysis.Analyzer{
+		Directives, Determinism, AwaitInActor,
+		UseAfterSend, Immutable, SharedState, MustUse, Exhaustive, Cleanup,
+	}
 }

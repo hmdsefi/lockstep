@@ -186,18 +186,25 @@ func TestVetTool(t *testing.T) {
 	}
 }
 
-// TestDeterministicOutput checks AT-ANL-28: two runs of lockstep-vet -json over a copy of the
-// ls100/bad corpus package print byte-equal output and exit with the same code (ANL-120).
+// TestDeterministicOutput checks AT-ANL-28: two runs of lockstep-vet -json over a copy of every
+// bad corpus package print byte-equal output and exit with the same code (ANL-120).
 func TestDeterministicOutput(t *testing.T) {
 	tmp := t.TempDir()
 	bin := buildVetTool(t, tmp)
 	mod := vetModule(t, tmp)
-	copyGoFiles(t, filepath.Join(analysistest.TestData(), "src", "ls100", "bad"), filepath.Join(mod, "ls100bad"))
+	for _, id := range corpusIDs {
+		copyGoFiles(t, filepath.Join(analysistest.TestData(), "src", id, "bad"), filepath.Join(mod, id+"bad"))
+	}
 
 	first := run(t, mod, moduleEnv, bin, "-json", "./...")
-	if !bytes.Contains(first.stdout, []byte(wallClockLine)) {
-		t.Fatalf("lockstep-vet -json ./...: exit %d, stdout:\n%s\nstderr:\n%s\nwant a diagnostic containing %q",
-			first.code, first.stdout, first.stderr, wallClockLine)
+	for _, id := range corpusIDs {
+		if line := strings.ToUpper(id) + ": "; !bytes.Contains(first.stdout, []byte(line)) {
+			t.Errorf("lockstep-vet -json ./...: exit %d, stdout:\n%s\nstderr:\n%s\nwant a diagnostic containing %q",
+				first.code, first.stdout, first.stderr, line)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
 	}
 	second := run(t, mod, moduleEnv, bin, "-json", "./...")
 	if second.code != first.code {

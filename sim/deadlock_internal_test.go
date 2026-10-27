@@ -236,6 +236,7 @@ func (a asker) Receive(ctx *lockstep.Context[int], m int) {
 		return
 	}
 	for _, to := range []lockstep.PID[int]{*a.local, *a.remote, *a.local, *a.remote} {
+		//lockstep:allow LS220 the asks only add wait-for edges; the targets never answer
 		lockstep.Ask(ctx, to, func(lockstep.ReplyTo[int]) int { return 0 })
 	}
 	ctx.Every(100*time.Millisecond, 2)
