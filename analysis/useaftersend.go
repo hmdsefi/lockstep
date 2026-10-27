@@ -1,0 +1,757 @@
+// Copyright 2026 Hamed Yousefi
+// SPDX-License-Identifier: MPL-2.0
+
+package analysis
+
+import (
+	"fmt"
+	"go/ast"
+	"go/token"
+	"go/types"
+
+	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/analysis/passes/inspect"
+	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/cfg"
+)
+
+// UseAfterSend reports uses of a message's reference-typed parts after it is sent (LS200).
+var UseAfterSend = &analysis.Analyzer{
+	Name:     "useaftersend",
+	Doc:      "report use of a message's references after it is sent (LS200)",
+	Requires: []*analysis.Analyzer{indexAnalyzer, inspect.Analyzer},
+	Run:      runUseAfterSend,
+}
+
+// idUseAfterSend is the check ID of UseAfterSend.
+const idUseAfterSend = "LS200"
+
+// useAfterSendText is the format of an LS200 message without its ID: the variable, the API and
+// the line of the send.
+const useAfterSendText = "%s is used after it was sent with %s on line %d; " +
+	"the receiver owns it now, so copy it before sending or stop using it"
+
+func runUseAfterSend(pass *analysis.Pass) (any, error) {
+	idx, ok := indexOf(pass)
+	if !ok {
+		return nil, nil
+	}
+	ins, ok := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	if !ok {
+		return nil, nil
+	}
+	r := newReporter(pass, idx)
+	// Every function of the package, literals included, is checked on its own (ANL-200): a send
+	// in a function literal belongs to the literal.
+	ins.Preorder([]ast.Node{(*ast.FuncDecl)(nil), (*ast.FuncLit)(nil)}, func(n ast.Node) {
+		if fd, ok := n.(*ast.FuncDecl); ok && fd.Body == nil {
+			return
+		}
+		checkUseAfterSend(pass, r, n)
+	})
+	r.flush()
+	return nil, nil
+}
+
+// checkUseAfterSend reports, for each send site of fn and each variable the site tracks, the
+// first use the send reaches (ANL-220, ANL-230).
+func checkUseAfterSend(pass *analysis.Pass, r *reporter, fn ast.Node) {
+	sites := sendSites(pass, fn)
+	if len(sites) == 0 {
+		return
+	}
+	f := newUASFunc(pass, fn)
+	for _, s := range sites {
+		start, at := f.nodeOf(s.call)
+		if start == nil {
+			continue
+		}
+		// A deferred send happens when the function returns, so nothing in the function uses
+		// its message after it.
+		if d, ok := start.Nodes[at].(*ast.DeferStmt); ok && d.Call == s.call {
+			continue
+		}
+		tracks, inits := f.tracked(s)
+		failed := f.failureEdge(s)
+		for _, t := range tracks {
+			if use := f.firstUse(s.call, start, at, t, inits, failed); use != nil {
+				line := pass.Fset.Position(s.call.Pos()).Line
+				r.report(use.Pos(), idUseAfterSend, fmt.Sprintf(useAfterSendText, t.v.Name(), s.api, line))
+			}
+		}
+	}
+}
+
+// uasFunc is one function holding send sites, with its control-flow graph.
+type uasFunc struct {
+	pass   *analysis.Pass
+	fn     ast.Node
+	recv   *types.Var // the method receiver, never tracked; nil for other functions
+	placer *placer    // the placed expressions of fn's messages
+	// lhs are the bare variables on the left of an assignment (any token) or of a range clause
+	// assigning with =; notUses are the operands of == nil and != nil and the slice, array and
+	// string arguments of len and cap (ANL-220).
+	lhs, notUses map[*ast.Ident]bool
+	// paths are the access paths of the identifiers of fn that are the root of a chain of field
+	// selectors, index and slice expressions and dereferences; a bare identifier has none.
+	paths map[*ast.Ident][]uasStep
+	// outer is the outermost expression of each identifier's chain, the identifier itself when
+	// it is bare; lengths are the slice, array and string arguments of len and cap.
+	outer   map[*ast.Ident]ast.Expr
+	lengths map[ast.Expr]bool
+	graph   *cfg.CFG
+}
+
+func newUASFunc(pass *analysis.Pass, fn ast.Node) *uasFunc {
+	f := &uasFunc{pass: pass, fn: fn, placer: newPlacer(pass, fn)}
+	var body *ast.BlockStmt
+	switch fn := fn.(type) {
+	case *ast.FuncDecl:
+		body = fn.Body
+		if fn.Recv != nil {
+			for _, field := range fn.Recv.List {
+				for _, name := range field.Names {
+					f.recv, _ = pass.TypesInfo.Defs[name].(*types.Var)
+				}
+			}
+		}
+	case *ast.FuncLit:
+		body = fn.Body
+	}
+	f.scanIdents()
+	// Only a call of panic ends a path besides return; telling other calls that never return
+	// would take another analyzer.
+	f.graph = cfg.New(body, func(call *ast.CallExpr) bool { return !uasIsBuiltin(pass.TypesInfo, call, "panic") })
+	return f
+}
+
+// scanIdents fills lhs, notUses, paths, outer and lengths.
+func (f *uasFunc) scanIdents() {
+	info := f.pass.TypesInfo
+	f.lhs = make(map[*ast.Ident]bool)
+	f.notUses = make(map[*ast.Ident]bool)
+	f.paths = make(map[*ast.Ident][]uasStep)
+	f.outer = make(map[*ast.Ident]ast.Expr)
+	f.lengths = make(map[ast.Expr]bool)
+	mark := func(set map[*ast.Ident]bool, e ast.Expr) {
+		if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+			set[id] = true
+		}
+	}
+	ast.Inspect(f.fn, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range n.Lhs {
+				mark(f.lhs, lhs)
+			}
+		case *ast.RangeStmt:
+			if n.Tok == token.ASSIGN {
+				mark(f.lhs, n.Key)
+				mark(f.lhs, n.Value)
+			}
+		case *ast.BinaryExpr:
+			if n.Op != token.EQL && n.Op != token.NEQ {
+				break
+			}
+			if info.Types[n.Y].IsNil() {
+				mark(f.notUses, n.X)
+			}
+			if info.Types[n.X].IsNil() {
+				mark(f.notUses, n.Y)
+			}
+		case *ast.CallExpr:
+			if (uasIsBuiltin(info, n, "len") || uasIsBuiltin(info, n, "cap")) && uasHasLength(info.TypeOf(n.Args[0])) {
+				mark(f.notUses, n.Args[0])
+				f.lengths[ast.Unparen(n.Args[0])] = true
+			}
+		case ast.Expr:
+			// Inspect visits the outermost chain first; the identifier keeps its path.
+			if root, path := uasPath(info, n); root != nil {
+				if _, ok := f.outer[root]; !ok {
+					f.outer[root] = ast.Unparen(n)
+					if len(path) > 0 {
+						f.paths[root] = path
+					}
+				}
+			}
+		}
+		return true
+	})
+}
+
+// uasStep is one step of an access path: a field (by its origin, so that the fields of generic
+// instances compare equal) or an element. index is the constant index or key of an element, or
+// empty when it is not constant or indexes a slice expression.
+type uasStep struct {
+	field   *types.Var
+	element bool
+	index   string
+}
+
+// uasPath returns the root identifier of e's chain of field selectors (embedded fields spelled
+// out), index and slice expressions and dereferences, and the chain's steps from the root.
+// Dereferences, explicit or implicit, and slice expressions are not steps: a path names memory
+// reached from the root whatever pointers it follows, and a slice names the same elements. The
+// root is nil when the chain starts at another expression.
+func uasPath(info *types.Info, e ast.Expr) (*ast.Ident, []uasStep) {
+	var rev []uasStep // the steps from e back to the root
+	for {
+		switch x := e.(type) {
+		case *ast.Ident:
+			path := make([]uasStep, 0, len(rev))
+			for i := len(rev) - 1; i >= 0; i-- {
+				path = append(path, rev[i])
+			}
+			return x, path
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.StarExpr:
+			if info.Types[x].IsType() {
+				return nil, nil
+			}
+			e = x.X
+		case *ast.SelectorExpr:
+			sel := info.Selections[x]
+			if sel == nil || sel.Kind() != types.FieldVal {
+				return nil, nil
+			}
+			fields := uasFields(sel)
+			for i := len(fields) - 1; i >= 0; i-- {
+				rev = append(rev, uasStep{field: fields[i]})
+			}
+			e = x.X
+		case *ast.IndexExpr:
+			if !isElementIndex(info, x) {
+				return nil, nil
+			}
+			step := uasStep{element: true}
+			if tv := info.Types[x.Index]; tv.Value != nil {
+				step.index = tv.Value.ExactString()
+			}
+			rev = append(rev, step)
+			e = x.X
+		case *ast.SliceExpr:
+			// A slice denotes the same elements, shifted by its low bound: it is not a step, but
+			// the index applied to it may name any element.
+			if len(rev) > 0 && rev[len(rev)-1].element {
+				rev[len(rev)-1].index = ""
+			}
+			e = x.X
+		default:
+			return nil, nil
+		}
+	}
+}
+
+// uasFields returns the fields a field selection goes through, embedded ones included, by their
+// origin.
+func uasFields(sel *types.Selection) []*types.Var {
+	var fields []*types.Var
+	t := sel.Recv()
+	for _, i := range sel.Index() {
+		if p, ok := t.Underlying().(*types.Pointer); ok {
+			t = p.Elem()
+		}
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			break
+		}
+		fv := st.Field(i)
+		fields = append(fields, fv.Origin())
+		t = fv.Type()
+	}
+	return fields
+}
+
+// uasCompatible reports whether two access paths may reach the same memory: one is a prefix of
+// the other, step by step the same field, or two elements whose constant indices, when both
+// have one, are equal (ANL-220).
+func uasCompatible(a, b []uasStep) bool {
+	for i := range min(len(a), len(b)) {
+		x, y := a[i], b[i]
+		switch {
+		case x.element != y.element:
+			return false
+		case !x.element && x.field != y.field:
+			return false
+		case x.element && x.index != "" && y.index != "" && x.index != y.index:
+			return false
+		}
+	}
+	return true
+}
+
+// uasIsBuiltin reports whether call calls the builtin function name with one argument.
+func uasIsBuiltin(info *types.Info, call *ast.CallExpr, name string) bool {
+	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	b, ok := info.Uses[id].(*types.Builtin)
+	return ok && b.Name() == name
+}
+
+// uasHasLength reports whether t is a slice, an array or a string, whose length and capacity
+// are part of the value itself.
+func uasHasLength(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Underlying().(type) {
+	case *types.Slice, *types.Array:
+		return true
+	}
+	return isStringType(t)
+}
+
+// uasTrack is a variable a send site tracks.
+type uasTrack struct {
+	v      *types.Var
+	shared bool        // a shared leaf lies in v's own storage: assigning the bare v writes it
+	paths  [][]uasStep // the access paths of the leaves rooted at v
+}
+
+// tracked returns the variables site s tracks, in the order of their first leaf (ANL-220): the
+// roots of the placed leaves that are declared in the function (parameters and results
+// included, the receiver excluded), when the leaf's type contains references or the leaf is
+// shared. It also returns the initializers of the local variables placed expanded for s.
+func (f *uasFunc) tracked(s sendSite) ([]*uasTrack, []ast.Expr) {
+	info := f.pass.TypesInfo
+	var tracks []*uasTrack
+	var inits []ast.Expr
+	byVar := make(map[*types.Var]*uasTrack)
+	for _, msg := range s.msgs {
+		leaves := f.placer.placed(msg)
+		first := len(inits)
+		for _, l := range leaves {
+			if id, ok := l.expr.(*ast.Ident); ok {
+				if v, ok := info.Uses[id].(*types.Var); ok && f.placer.expanded[v] {
+					inits = append(inits, f.placer.inits[v])
+				}
+			}
+		}
+		sliced := uasSliced(append([]ast.Expr{msg}, inits[first:]...))
+		for _, l := range leaves {
+			if l.root == nil {
+				continue
+			}
+			v, ok := info.Uses[l.root].(*types.Var)
+			if !ok || v == f.recv || v.IsField() || !uasWithin(v.Pos(), f.fn) {
+				continue
+			}
+			if !l.shared && !containsRefs(f.pass, info.TypeOf(l.expr)) {
+				continue
+			}
+			t := byVar[v]
+			if t == nil {
+				t = &uasTrack{v: v}
+				byVar[v] = t
+				tracks = append(tracks, t)
+			}
+			_, path := uasPath(info, l.expr)
+			t.shared = t.shared || l.shared && uasInStorage(info, l.expr, sliced[l.expr], false)
+			t.paths = append(t.paths, path)
+		}
+	}
+	return tracks, inits
+}
+
+// uasSliced returns the operands of the slice expressions in exprs, without parentheses: the
+// leaves the shared mark reached through slicing rather than through &.
+func uasSliced(exprs []ast.Expr) map[ast.Expr]bool {
+	sliced := make(map[ast.Expr]bool)
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
+			if x, ok := n.(*ast.SliceExpr); ok {
+				sliced[ast.Unparen(x.X)] = true
+			}
+			return true
+		})
+	}
+	return sliced
+}
+
+// uasInStorage reports whether the shared leaf e lies in the storage of its root variable itself
+// (ANL-230): every step from the root is a field of a struct value, reached without a
+// dereference, or an element of an array value, and a sliced leaf is an array. Assigning the
+// bare root then writes the memory the receiver holds. A slice, a pointer or a map leads
+// elsewhere, so assigning the root only replaces a header or a pointer. A value of type
+// parameter type is an array when every type of its type set is one, with every set, and when
+// some type may be one otherwise (see uasIsArray).
+func uasInStorage(info *types.Info, e ast.Expr, sliced, every bool) bool {
+	if sliced && !uasIsArray(info.TypeOf(e), every) {
+		return false
+	}
+	for {
+		switch x := e.(type) {
+		case *ast.Ident:
+			return true
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.SelectorExpr:
+			sel := info.Selections[x]
+			if sel == nil || sel.Kind() != types.FieldVal || sel.Indirect() {
+				return false
+			}
+			e = x.X
+		case *ast.IndexExpr:
+			if !uasIsArray(info.TypeOf(x.X), every) {
+				return false
+			}
+			e = x.X
+		default:
+			return false
+		}
+	}
+}
+
+// uasIsArray reports whether t is an array, or a type parameter whose type set holds only
+// arrays, with every set, or may hold an array otherwise: its values are then held, always or
+// possibly, in the variable's own storage. A use that must not be missed takes the second
+// reading, an exemption the first.
+func uasIsArray(t types.Type, every bool) bool {
+	if t == nil {
+		return false
+	}
+	if tp, ok := types.Unalias(t).(*types.TypeParam); ok {
+		return uasArrays(tp.Constraint(), every)
+	}
+	_, ok := t.Underlying().(*types.Array)
+	return ok
+}
+
+// uasArrays reports, with every set, whether every type in the type set of t is an array, and
+// otherwise whether some type in it may be one. The type set of an interface is the
+// intersection of those of its embedded elements, and a union's is the union of its terms'; an
+// interface without embedded elements holds every type.
+func uasArrays(t types.Type, every bool) bool {
+	if u, ok := t.(*types.Union); ok {
+		for term := range u.Terms() {
+			if uasArrays(term.Type(), every) != every {
+				return !every
+			}
+		}
+		return every
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Array:
+		return true
+	case *types.Interface:
+		for e := range u.EmbeddedTypes() {
+			if uasArrays(e, every) == every {
+				return every
+			}
+		}
+		return !every
+	}
+	return false
+}
+
+// uasMayHoldRefs reports whether a value of type t may share memory when it is copied: it
+// contains references (ANL-210), or a part of interface or type parameter type, whose value may
+// be a pointer.
+func uasMayHoldRefs(pass *analysis.Pass, t types.Type) bool {
+	if containsRefs(pass, t) {
+		return true
+	}
+	idx, _ := indexOf(pass)
+	w := refsWalk{idx: idx, seen: make(map[*types.Named]bool)}
+	return uasHasOpaque(&w, t)
+}
+
+// uasHasOpaque reports whether t, other than a type ANL-210 names as safe, is or holds in its
+// fields and array elements an interface or a type parameter.
+func uasHasOpaque(w *refsWalk, t types.Type) bool {
+	t = types.Unalias(t)
+	if w.safe(t) {
+		return false
+	}
+	switch t := t.(type) {
+	case *types.TypeParam:
+		return true
+	case *types.Named:
+		if w.seen[t] {
+			return false
+		}
+		w.seen[t] = true
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Interface:
+		return true
+	case *types.Array:
+		return uasHasOpaque(w, u.Elem())
+	case *types.Struct:
+		for f := range u.Fields() {
+			if uasHasOpaque(w, f.Type()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isUse reports whether id is a use of t's variable for the send call (ANL-220): an identifier
+// referring to it outside the call and outside the initializers placed expanded for the send
+// (evaluating one again reads its sources, not what was sent), not exempt, and on an access
+// path compatible with a placed leaf. When a shared leaf lies in the variable's own storage, the
+// bare variable on the left of an assignment writes what was sent, so it is a use. Otherwise a
+// chain that stays in the variable's own storage and holds no references, such as job.ID or
+// len(job.Payload) after sending the struct value job, reads the sender's copy: not a use. An
+// interface or a type parameter part may hold a pointer, so it counts as holding references.
+func (f *uasFunc) isUse(id *ast.Ident, call *ast.CallExpr, t *uasTrack, inits []ast.Expr) bool {
+	if f.pass.TypesInfo.Uses[id] != t.v || uasWithin(id.Pos(), call) || f.notUses[id] {
+		return false
+	}
+	if f.lhs[id] && !t.shared {
+		return false
+	}
+	for _, init := range inits {
+		if uasWithin(id.Pos(), init) {
+			return false
+		}
+	}
+	if x := f.outer[id]; !t.shared && x != nil && uasInStorage(f.pass.TypesInfo, x, false, true) &&
+		(f.lengths[x] || !uasMayHoldRefs(f.pass, f.pass.TypesInfo.TypeOf(x))) {
+		return false
+	}
+	path := f.paths[id]
+	for _, p := range t.paths {
+		if uasCompatible(p, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstUse returns the use of t's variable that comes first in the source among those a path of
+// the function's control-flow graph leads to from the end of call, the node at of block start,
+// without passing a kill or the edge failed (ANL-220, ANL-230), or nil. A use in a function
+// literal counts where the literal is, since the literal may run later.
+func (f *uasFunc) firstUse(call *ast.CallExpr, start *cfg.Block, at int, t *uasTrack, inits []ast.Expr,
+	failed uasEdge,
+) *ast.Ident {
+	var first *ast.Ident
+	// scan records the uses in node n positioned at or after from and reports whether n kills
+	// the variable; the uses in a killing node come before the kill.
+	scan := func(n ast.Node, from token.Pos) bool {
+		ast.Inspect(n, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Pos() >= from && (first == nil || id.Pos() < first.Pos()) &&
+				f.isUse(id, call, t, inits) {
+				first = id
+			}
+			return true
+		})
+		return f.kills(n, t)
+	}
+	// walk scans the nodes of b from index i and reports whether the path goes on past b.
+	walk := func(b *cfg.Block, i int, from token.Pos) bool {
+		for ; i < len(b.Nodes); i++ {
+			if scan(b.Nodes[i], from) {
+				return false
+			}
+			from = token.NoPos
+		}
+		return true
+	}
+	visited := make(map[*cfg.Block]bool)
+	var queue []*cfg.Block
+	next := func(b *cfg.Block) {
+		for _, succ := range b.Succs {
+			if b != failed.from || succ != failed.to {
+				queue = append(queue, succ)
+			}
+		}
+	}
+	if walk(start, at, call.End()) {
+		next(start)
+	}
+	for len(queue) > 0 {
+		b := queue[0]
+		queue = queue[1:]
+		if visited[b] {
+			continue
+		}
+		visited[b] = true
+		if f.killsOnEntry(b, t) || !walk(b, 0, token.NoPos) {
+			continue
+		}
+		next(b)
+	}
+	return first
+}
+
+// uasEdge is an edge of a control-flow graph, from a block to one of its successors.
+type uasEdge struct{ from, to *cfg.Block }
+
+// failureEdge returns the edge of the branch on which the error result of the lockstep.Send site
+// s is not nil, or the zero edge (ANL-220): the branch of an if statement whose condition
+// compares with nil the send call itself or a variable that the if statement's init statement,
+// or the statement just before the if statement when the init statement does not assign the
+// variable again, assigns the call. A path through that edge
+// reaches no use: the message was not delivered. ReplyTo.Send and Ask return no error.
+func (f *uasFunc) failureEdge(s sendSite) uasEdge {
+	if s.api != "lockstep.Send" {
+		return uasEdge{}
+	}
+	info := f.pass.TypesInfo
+	// assigns reports whether st assigns the send call alone to the variable x names.
+	assigns := func(st ast.Stmt, x ast.Expr) bool {
+		a, ok := st.(*ast.AssignStmt)
+		if !ok || len(a.Lhs) != 1 || len(a.Rhs) != 1 || ast.Unparen(a.Rhs[0]) != s.call {
+			return false
+		}
+		id, ok := x.(*ast.Ident)
+		lhs, isIdent := ast.Unparen(a.Lhs[0]).(*ast.Ident)
+		return ok && isIdent && info.ObjectOf(id) != nil && info.ObjectOf(lhs) == info.ObjectOf(id)
+	}
+	// reassigns reports whether the init statement st assigns the variable x names again, so that
+	// the condition no longer tests the send's error.
+	reassigns := func(st ast.Stmt, x ast.Expr) bool {
+		a, ok := st.(*ast.AssignStmt)
+		v, isIdent := x.(*ast.Ident)
+		if !ok || !isIdent {
+			return false
+		}
+		for _, lhs := range a.Lhs {
+			if id, ok := ast.Unparen(lhs).(*ast.Ident); ok && info.ObjectOf(id) == info.ObjectOf(v) {
+				return true
+			}
+		}
+		return false
+	}
+	prev := make(map[*ast.IfStmt]ast.Stmt) // the statement before each if statement in its list
+	var ifs *ast.IfStmt
+	var neq bool
+	ast.Inspect(f.fn, func(n ast.Node) bool {
+		var list []ast.Stmt
+		switch n := n.(type) {
+		case *ast.BlockStmt:
+			list = n.List
+		case *ast.CaseClause:
+			list = n.Body
+		case *ast.CommClause:
+			list = n.Body
+		case *ast.IfStmt:
+			cond, ok := ast.Unparen(n.Cond).(*ast.BinaryExpr)
+			if !ok || cond.Op != token.EQL && cond.Op != token.NEQ {
+				break
+			}
+			x := cond.X
+			if info.Types[x].IsNil() {
+				x = cond.Y
+			} else if !info.Types[cond.Y].IsNil() {
+				break
+			}
+			x = ast.Unparen(x)
+			if x == s.call || n.Init != nil && assigns(n.Init, x) ||
+				prev[n] != nil && assigns(prev[n], x) && !reassigns(n.Init, x) {
+				ifs, neq = n, cond.Op == token.NEQ
+			}
+		}
+		for i := 1; i < len(list); i++ {
+			if n, ok := list[i].(*ast.IfStmt); ok {
+				prev[n] = list[i-1]
+			}
+		}
+		return ifs == nil
+	})
+	if ifs == nil {
+		return uasEdge{}
+	}
+	for _, b := range f.graph.Blocks {
+		if len(b.Succs) == 2 && b.Succs[0].Kind == cfg.KindIfThen && b.Succs[0].Stmt == ifs {
+			if neq {
+				return uasEdge{b, b.Succs[0]}
+			}
+			return uasEdge{b, b.Succs[1]}
+		}
+	}
+	return uasEdge{}
+}
+
+// nodeOf returns the block holding call and the index of the innermost node holding it.
+func (f *uasFunc) nodeOf(call *ast.CallExpr) (*cfg.Block, int) {
+	var block *cfg.Block
+	at := -1
+	for _, b := range f.graph.Blocks {
+		for i, n := range b.Nodes {
+			if n.Pos() > call.Pos() || call.End() > n.End() {
+				continue
+			}
+			if block == nil || n.End()-n.Pos() < block.Nodes[at].End()-block.Nodes[at].Pos() {
+				block, at = b, i
+			}
+		}
+	}
+	return block, at
+}
+
+// kills reports whether node n of the graph kills t's variable (ANL-230): a declaration of it
+// (by := or a var specification), or an assignment of the bare variable with = or := when it is
+// not shared; for a shared variable such an assignment writes what was sent and is a use.
+func (f *uasFunc) kills(n ast.Node, t *uasTrack) bool {
+	info := f.pass.TypesInfo
+	switch n := n.(type) {
+	case *ast.AssignStmt:
+		if n.Tok != token.ASSIGN && n.Tok != token.DEFINE {
+			return false
+		}
+		for _, lhs := range n.Lhs {
+			id, ok := ast.Unparen(lhs).(*ast.Ident)
+			if !ok {
+				continue
+			}
+			if info.Defs[id] == t.v || !t.shared && info.Uses[id] == t.v {
+				return true
+			}
+		}
+	case *ast.ValueSpec:
+		for _, id := range n.Names {
+			if info.Defs[id] == t.v {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// killsOnEntry reports whether entering b kills t's variable through a header (ANL-230): every
+// iteration of a range loop declares or assigns its key and value at the start of the body
+// (an assignment kills only a variable that is not shared), every iteration of a for loop has
+// its own copy of the variables its init statement declares, and every clause of a type switch
+// declares its own symbolic variable.
+func (f *uasFunc) killsOnEntry(b *cfg.Block, t *uasTrack) bool {
+	info := f.pass.TypesInfo
+	switch s := b.Stmt.(type) {
+	case *ast.RangeStmt:
+		if b.Kind != cfg.KindRangeBody || s.Tok == token.ASSIGN && t.shared {
+			return false
+		}
+		for _, x := range []ast.Expr{s.Key, s.Value} {
+			if id, ok := ast.Unparen(x).(*ast.Ident); ok && info.ObjectOf(id) == t.v {
+				return true
+			}
+		}
+	case *ast.ForStmt:
+		init, ok := s.Init.(*ast.AssignStmt)
+		if !ok || init.Tok != token.DEFINE {
+			return false
+		}
+		switch b.Kind {
+		case cfg.KindForBody, cfg.KindForLoop, cfg.KindForPost:
+			for _, lhs := range init.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok && info.Defs[id] == t.v {
+					return true
+				}
+			}
+		}
+	case *ast.CaseClause:
+		return b.Kind == cfg.KindSwitchCaseBody && info.Implicits[s] == t.v
+	}
+	return false
+}
+
+// uasWithin reports whether pos is inside n.
+func uasWithin(pos token.Pos, n ast.Node) bool {
+	return n.Pos() <= pos && pos < n.End()
+}
