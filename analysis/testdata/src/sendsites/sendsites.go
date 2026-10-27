@@ -64,7 +64,11 @@ func wrappers(sys *lockstep.System, pid lockstep.PID[Msg], ipid lockstep.PID[Int
 	_ = lockstep.Send(sys, pid, Msg{Inner: v.(*Inner)}) // want `^send lockstep\.Send$` `^leaf v root=v shared=false$`
 }
 
-func sharedLeaves(sys *lockstep.System, pid lockstep.PID[Msg], h *holder, in Inner, items []int, n int) {
+func sharedLeaves(sys *lockstep.System, pid lockstep.PID[Msg], h *holder, in Inner, items []int, n int, key string) {
+	_ = lockstep.Send(sys, pid, Msg{Any: key[:n]}) // want `^send lockstep\.Send$` `^leaf key root=key shared=false$`
+
+	_ = lockstep.Send(sys, pid, Msg{Any: &key}) // want `^send lockstep\.Send$` `^leaf key root=key shared=true$`
+
 	_ = lockstep.Send(sys, pid, Msg{Inner: &in}) // want `^send lockstep\.Send$` `^leaf in root=in shared=true$`
 
 	_ = lockstep.Send(sys, pid, Msg{Inner: &h.inner}) // want `^send lockstep\.Send$` `^leaf h\.inner root=h shared=true$`
