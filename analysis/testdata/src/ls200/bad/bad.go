@@ -510,3 +510,21 @@ func mixedElementWrite[A ~[4]int | ~[]int](sys *lockstep.System, pid lockstep.PI
 	lockstep.Send(sys, pid, m)
 	m.Items[0] = 1 // want `^LS200: m is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }
+
+// reassignedInInit assigns the error variable again in the if statement's init: the condition
+// tests the other error, so the branch may run after the send succeeded.
+func reassignedInInit(sys *lockstep.System, pid lockstep.PID[Batch], items []int, other func() error) {
+	err := lockstep.Send(sys, pid, Batch{Items: items})
+	if err = other(); err != nil {
+		items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	}
+}
+
+type Elem struct{ P *int }
+
+// maybeArrayReset sends the address of an element of a value that may be an array and assigns
+// the value: when it is an array, the assignment overwrites what the receiver points at.
+func maybeArrayReset[A ~[4]int | ~[]int](sys *lockstep.System, pid lockstep.PID[Elem], a, zero A) {
+	lockstep.Send(sys, pid, Elem{P: &a[0]})
+	a = zero // want `^LS200: a is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
