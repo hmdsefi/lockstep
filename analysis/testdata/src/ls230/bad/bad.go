@@ -192,3 +192,25 @@ func (p *Painter) Receive(ctx *lockstep.Context[Shape], msg Shape) {
 	case Circle:
 	}
 }
+
+// List is sealed. Cons embeds itself and is still a member; Lister misses it (ANL-320).
+type List interface{ list() } // want List:`^sealed\(Cons, Nil\)$`
+
+type (
+	Nil  struct{}
+	Cons struct {
+		*Cons
+		v int
+	}
+)
+
+func (Nil) list()  {}
+func (Cons) list() {}
+
+type Lister struct{}
+
+func (l *Lister) Receive(ctx *lockstep.Context[List], msg List) {
+	switch msg.(type) { // want `^LS230: \(\*Lister\)\.Receive has no case for message type Cons of List$`
+	case Nil:
+	}
+}

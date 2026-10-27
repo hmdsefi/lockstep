@@ -139,7 +139,7 @@ func exhaustiveNamed(t types.Type) *types.Named {
 // exhaustiveLocalMembers returns the members of the sealed interface named, computed from the
 // scope of its package (ANL-320): every non-interface, non-generic named type of that scope that
 // implements it, or else whose pointer does, in the order of the scope's names. Two kinds of type
-// are left out: a type embedded as a field in another member, such as a base type that only
+// are left out: a type embedded as a field in a different member, such as a base type that only
 // carries the sealing method, and, when the interface is declared outside a _test.go file, a type
 // declared in one.
 func exhaustiveLocalMembers(fset *token.FileSet, named *types.Named) []types.Type {
@@ -176,7 +176,8 @@ func exhaustiveLocalMembers(fset *token.FileSet, named *types.Named) []types.Typ
 			continue
 		}
 		for f := range st.Fields() {
-			if f.Embedded() {
+			// A type that embeds itself, through a pointer, is still a member.
+			if f.Embedded() && exhaustiveNamed(types.Unalias(f.Type())) != exhaustiveNamed(c) {
 				embedded = append(embedded, exhaustiveNamed(types.Unalias(f.Type())))
 			}
 		}
@@ -277,6 +278,9 @@ func exhaustiveCheck(pass *analysis.Pass, r *reporter, code *actorCode, decls ma
 	}
 	msg := a.Receive.Signature().Params().At(1)
 	w := &exhaustiveWalk{pass: pass, decls: decls, visited: map[*ast.FuncDecl]bool{}}
+	for _, e := range expected {
+		w.expected = append(w.expected, e.t)
+	}
 	w.visit(decl, msg)
 	if !w.inspected || w.forwarded {
 		return // messages handled uniformly
@@ -323,9 +327,10 @@ func exhaustiveRecv(fn *types.Func) string {
 
 // exhaustiveWalk collects the case set of one actor from Receive and its delegates (ANL-330).
 type exhaustiveWalk struct {
-	pass    *analysis.Pass
-	decls   map[*types.Func]*ast.FuncDecl
-	visited map[*ast.FuncDecl]bool
+	pass     *analysis.Pass
+	decls    map[*types.Func]*ast.FuncDecl
+	visited  map[*ast.FuncDecl]bool
+	expected []types.Type // the actor's expected types
 
 	cases     []types.Type
 	inspected bool // a type switch or comma-ok assertion on the message was found
@@ -351,49 +356,63 @@ func (w *exhaustiveWalk) visit(decl *ast.FuncDecl, msg *types.Var) {
 		id, ok := ast.Unparen(e).(*ast.Ident)
 		return ok && slices.Contains(roles, info.Uses[id])
 	}
-	commaOK := func(e ast.Expr) {
-		if ta, ok := ast.Unparen(e).(*ast.TypeAssertExpr); ok && ta.Type != nil && isMsg(ta.X) {
-			w.inspected = true
-			w.cases = append(w.cases, info.TypeOf(ta.Type))
-		}
-	}
 	ast.Inspect(decl.Body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.TypeSwitchStmt:
-			if !isMsg(exhaustiveSwitchSubject(n)) {
-				return true
-			}
+		cases, sw, ok := exhaustiveCases(info, n, isMsg)
+		if ok {
 			w.inspected = true
+			w.cases = append(w.cases, cases...)
+		}
+		if sw != nil {
 			if !w.switches[i].IsValid() {
-				w.switches[i] = n.Switch
+				w.switches[i] = sw.Switch
 			}
-			for _, s := range n.Body.List {
-				clause, ok := s.(*ast.CaseClause)
-				if !ok {
-					continue
-				}
-				for _, e := range clause.List {
-					if tv := info.Types[e]; tv.IsType() {
-						w.cases = append(w.cases, tv.Type)
-					}
-				}
-				if v := info.Implicits[clause]; v != nil && types.Identical(v.Type(), msg.Type()) {
+			for _, c := range sw.Body.List {
+				if v := info.Implicits[c]; v != nil && types.Identical(v.Type(), msg.Type()) {
 					roles = append(roles, v)
 				}
 			}
-		case *ast.AssignStmt:
-			if len(n.Lhs) == 2 && len(n.Rhs) == 1 {
-				commaOK(n.Rhs[0])
-			}
-		case *ast.ValueSpec:
-			if len(n.Names) == 2 && len(n.Values) == 1 {
-				commaOK(n.Values[0])
-			}
-		case *ast.CallExpr:
-			w.call(n, msg.Type(), isMsg)
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			w.call(call, msg.Type(), isMsg)
 		}
 		return true
 	})
+}
+
+// exhaustiveCases reports whether n is a type switch or a comma-ok type assertion on a value
+// isRole accepts, and returns the types it adds to the case set (ANL-330), and the switch when n
+// is one.
+func exhaustiveCases(info *types.Info, n ast.Node, isRole func(ast.Expr) bool) ([]types.Type, *ast.TypeSwitchStmt, bool) {
+	var assertion ast.Expr
+	switch n := n.(type) {
+	case *ast.TypeSwitchStmt:
+		if !isRole(exhaustiveSwitchSubject(n)) {
+			return nil, nil, false
+		}
+		var cases []types.Type
+		for _, c := range n.Body.List {
+			if clause, ok := c.(*ast.CaseClause); ok {
+				for _, e := range clause.List {
+					if tv := info.Types[e]; tv.IsType() {
+						cases = append(cases, tv.Type)
+					}
+				}
+			}
+		}
+		return cases, n, true
+	case *ast.AssignStmt:
+		if len(n.Lhs) == 2 && len(n.Rhs) == 1 {
+			assertion = n.Rhs[0]
+		}
+	case *ast.ValueSpec:
+		if len(n.Names) == 2 && len(n.Values) == 1 {
+			assertion = n.Values[0]
+		}
+	}
+	if ta, ok := ast.Unparen(assertion).(*ast.TypeAssertExpr); ok && ta.Type != nil && isRole(ta.X) {
+		return []types.Type{info.TypeOf(ta.Type)}, nil, true
+	}
+	return nil, nil, false
 }
 
 // exhaustiveSwitchSubject returns x of the type switch's x.(type), or nil.
@@ -414,8 +433,10 @@ func exhaustiveSwitchSubject(s *ast.TypeSwitchStmt) ast.Expr {
 }
 
 // call handles a call that passes the message, unchanged, as an argument (ANL-330). A
-// same-package function or method called statically, whose parameter in that position has the
-// message's type msgType, is a delegate, visited unless it was before. A call with no static
+// same-package function or method called statically is a delegate, visited unless it was before,
+// when its parameter in that position has the message's type msgType, or is an interface type
+// msgType is assignable to and the function inspects that parameter for an expected type (see
+// handles). A call with no static
 // callee, through a function value of any form, may handle any message: the actor then handles
 // messages uniformly. A call of an interface method, a builtin or a function of another package is
 // neither.
@@ -441,11 +462,43 @@ func (w *exhaustiveWalk) call(call *ast.CallExpr, msgType types.Type, isMsg func
 		if i >= sig.Params().Len() || sig.Variadic() && i >= sig.Params().Len()-1 {
 			break
 		}
-		if p := sig.Params().At(i); isMsg(arg) && types.Identical(p.Type(), msgType) {
-			w.visit(decl, p)
-			return
+		if !isMsg(arg) {
+			continue
 		}
+		if p := sig.Params().At(i); types.Identical(p.Type(), msgType) || w.handles(decl, p, msgType) {
+			w.visit(decl, p)
+		}
+		return
 	}
+}
+
+// handles reports whether decl, whose parameter p receives a message of type msgType, handles
+// messages of the actor: p has an interface type, not a type parameter, that msgType is assignable
+// to, and a type switch or comma-ok assertion on p in decl has a case type, other than p's own
+// type, that is an expected type or an interface an expected type implements. A function that
+// takes any message but inspects it for unrelated types, such as func describe(v any), is not a
+// delegate (ANL-330).
+func (w *exhaustiveWalk) handles(decl *ast.FuncDecl, p *types.Var, msgType types.Type) bool {
+	pt := p.Type()
+	if _, ok := pt.(*types.TypeParam); ok || !types.IsInterface(pt) || !types.AssignableTo(msgType, pt) {
+		return false
+	}
+	info := w.pass.TypesInfo
+	isP := func(e ast.Expr) bool {
+		id, ok := ast.Unparen(e).(*ast.Ident)
+		return ok && info.Uses[id] == p
+	}
+	found := false
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		cases, _, _ := exhaustiveCases(info, n, isP)
+		for _, c := range cases {
+			if !types.Identical(c, pt) && slices.ContainsFunc(w.expected, func(e types.Type) bool { return exhaustiveCovers(c, e) }) {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // exhaustiveArgs returns the arguments of call that match the callee's parameters: for a method
@@ -492,11 +545,15 @@ func exhaustiveFuncValue(info *types.Info, fun ast.Expr) bool {
 
 // covers reports whether the case set contains t or an interface type that t implements.
 func (w *exhaustiveWalk) covers(t types.Type) bool {
-	return slices.ContainsFunc(w.cases, func(c types.Type) bool {
-		if types.Identical(c, t) {
-			return true
-		}
-		iface, ok := c.Underlying().(*types.Interface)
-		return ok && types.Implements(t, iface)
-	})
+	return slices.ContainsFunc(w.cases, func(c types.Type) bool { return exhaustiveCovers(c, t) })
+}
+
+// exhaustiveCovers reports whether case type c covers type t: c is t, or an interface t
+// implements.
+func exhaustiveCovers(c, t types.Type) bool {
+	if types.Identical(c, t) {
+		return true
+	}
+	iface, ok := c.Underlying().(*types.Interface)
+	return ok && types.Implements(t, iface)
 }

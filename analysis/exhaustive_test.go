@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"regexp"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/analysis/analysistest"
@@ -23,28 +24,47 @@ func TestExhaustive(t *testing.T) {
 	runCorpus(t, Exhaustive, "ls230/remote", "ls230/msgs")
 }
 
-// discard is an analysistest.Testing that drops the errors of a run whose want comments
-// TestExhaustive checks already.
-type discard struct{}
+// orderTesting is the analysistest.Testing of TestExhaustiveOrder. It drops the want-comment
+// errors, which TestExhaustive checks already, and passes on the errors that mean the corpus could
+// not be loaded or analyzed.
+type orderTesting struct{ t *testing.T }
 
-func (discard) Errorf(string, ...any) {}
+func (o orderTesting) Errorf(format string, args ...any) {
+	for _, prefix := range []string{"loading", "Analyze", "error analyzing"} {
+		if strings.HasPrefix(format, prefix) {
+			o.t.Errorf(format, args...)
+		}
+	}
+}
 
 // TestExhaustiveOrder checks ANL-330's order: the findings at one position are sorted by the
 // type string of the uncovered type.
 func TestExhaustiveOrder(t *testing.T) {
 	typeOf := regexp.MustCompile(`message type (\S+?),? (of|which) `)
-	for _, res := range analysistest.Run(discard{}, analysistest.TestData(), Exhaustive, "ls230/bad", "ls230/remote") {
+	results := analysistest.Run(orderTesting{t}, analysistest.TestData(), Exhaustive, "ls230/bad", "ls230/remote")
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	shared := 0
+	for _, res := range results {
+		if res.Err != nil {
+			t.Errorf("%v", res.Err)
+		}
 		ds := res.Diagnostics
 		for i := 1; i < len(ds); i++ {
 			if ds[i].Pos != ds[i-1].Pos {
 				continue
 			}
+			shared++
 			prev := typeOf.FindStringSubmatch(ds[i-1].Message)
 			cur := typeOf.FindStringSubmatch(ds[i].Message)
 			if prev == nil || cur == nil || prev[1] >= cur[1] {
 				t.Errorf("%s: %q reported before %q", res.Pass.Fset.Position(ds[i].Pos), ds[i-1].Message, ds[i].Message)
 			}
 		}
+	}
+	if shared == 0 {
+		t.Error("no two findings share a position")
 	}
 }
 
