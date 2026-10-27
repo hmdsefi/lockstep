@@ -65,14 +65,15 @@ func (a *Ledger) handle(ctx *lockstep.Context[AccountMsg], m AccountMsg) {
 	}
 }
 
-// Teller has comma-ok assertions only: the findings are at the name of Receive.
+// Teller has type assertions only, comma-ok and single-value: the findings are at the name of
+// Receive.
 type Teller struct{}
 
-func (t *Teller) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) { // want `^LS230: \(\*Teller\)\.Receive has no case for message type \*Close of AccountMsg$` `^LS230: \(\*Teller\)\.Receive has no case for message type GetBalance of AccountMsg$` `^LS230: \(\*Teller\)\.Receive has no case for message type Withdraw of AccountMsg$`
+func (t *Teller) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) { // want `^LS230: \(\*Teller\)\.Receive has no case for message type \*Close of AccountMsg$` `^LS230: \(\*Teller\)\.Receive has no case for message type GetBalance of AccountMsg$`
 	if d, ok := msg.(Deposit); ok {
 		_ = d
 	}
-	_ = msg.(Withdraw) // not comma-ok: adds no case
+	_ = msg.(Withdraw) // panics unless msg is a Withdraw: adds a case
 }
 
 // Relay switches only in its delegates. The findings are at the first type switch in visit order:

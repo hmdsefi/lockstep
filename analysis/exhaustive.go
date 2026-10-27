@@ -333,7 +333,7 @@ type exhaustiveWalk struct {
 	expected []types.Type // the actor's expected types
 
 	cases     []types.Type
-	inspected bool // a type switch or comma-ok assertion on the message was found
+	inspected bool // a type switch or type assertion on the message was found
 	forwarded bool // the message was passed to a call with no static callee
 
 	// switches holds, per visited function in visit order, the position of the switch keyword of
@@ -379,11 +379,11 @@ func (w *exhaustiveWalk) visit(decl *ast.FuncDecl, msg *types.Var) {
 	})
 }
 
-// exhaustiveCases reports whether n is a type switch or a comma-ok type assertion on a value
-// isRole accepts, and returns the types it adds to the case set (ANL-330), and the switch when n
-// is one.
+// exhaustiveCases reports whether n is a type switch or a type assertion, comma-ok or not, on a
+// value isRole accepts, and returns the types it adds to the case set (ANL-330), and the switch
+// when n is one. A single-value assertion panics unless the value has the asserted type, so it
+// covers that type as a comma-ok one does.
 func exhaustiveCases(info *types.Info, n ast.Node, isRole func(ast.Expr) bool) ([]types.Type, *ast.TypeSwitchStmt, bool) {
-	var assertion ast.Expr
 	switch n := n.(type) {
 	case *ast.TypeSwitchStmt:
 		if !isRole(exhaustiveSwitchSubject(n)) {
@@ -400,17 +400,11 @@ func exhaustiveCases(info *types.Info, n ast.Node, isRole func(ast.Expr) bool) (
 			}
 		}
 		return cases, n, true
-	case *ast.AssignStmt:
-		if len(n.Lhs) == 2 && len(n.Rhs) == 1 {
-			assertion = n.Rhs[0]
+	case *ast.TypeAssertExpr:
+		// The x.(type) of a type switch has no type; the switch adds its cases above.
+		if n.Type != nil && isRole(n.X) {
+			return []types.Type{info.TypeOf(n.Type)}, nil, true
 		}
-	case *ast.ValueSpec:
-		if len(n.Names) == 2 && len(n.Values) == 1 {
-			assertion = n.Values[0]
-		}
-	}
-	if ta, ok := ast.Unparen(assertion).(*ast.TypeAssertExpr); ok && ta.Type != nil && isRole(ta.X) {
-		return []types.Type{info.TypeOf(ta.Type)}, nil, true
 	}
 	return nil, nil, false
 }
@@ -473,7 +467,7 @@ func (w *exhaustiveWalk) call(call *ast.CallExpr, msgType types.Type, isMsg func
 
 // handles reports whether decl, whose parameter p receives a message of type msgType, handles
 // messages of the actor: p has an interface type, not a type parameter, that msgType is assignable
-// to, and a type switch or comma-ok assertion on p in decl has a case type, other than p's own
+// to, and a type switch or type assertion on p in decl has a case type, other than p's own
 // type, that is an expected type or an interface an expected type implements. A function that
 // takes any message but inspects it for unrelated types, such as func describe(v any), is not a
 // delegate (ANL-330).

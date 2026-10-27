@@ -264,3 +264,16 @@ func pairRest(v any, m AccountMsg) {
 	case Deposit, Withdraw, GetBalance:
 	}
 }
+
+// Dispatcher special-cases GetBalance and *Close and hands every other message to Money with a
+// single-value assertion, which panics unless the message is a Money: Money covers Deposit and
+// Withdraw.
+type Dispatcher struct{ total int }
+
+func (d *Dispatcher) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	switch msg.(type) {
+	case GetBalance, *Close:
+	default:
+		d.total += msg.(Money).Amount()
+	}
+}
