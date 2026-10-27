@@ -245,3 +245,22 @@ func wideRest(m any) {
 	case Withdraw, *Close:
 	}
 }
+
+// Pair passes the message twice; the delegate inspects it through its second parameter, whose
+// type is the message's (ANL-330).
+type Pair struct{}
+
+func (p *Pair) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	switch msg.(type) {
+	case *Close:
+		return
+	}
+	pairRest(msg, msg)
+}
+
+func pairRest(v any, m AccountMsg) {
+	_ = v
+	switch m.(type) {
+	case Deposit, Withdraw, GetBalance:
+	}
+}
