@@ -58,7 +58,8 @@ lockstep includes:
   or a file still open on the simulated disk fails it with a leak failure.
 - **A static analyzer**, `lockstep-vet`, also available as a golangci-lint plugin. It reports
   `time.Now`, global randomness, goroutines, `select`, map ranges, and blocking calls in actor
-  code.
+  code, and it reports messages that share memory with their sender, actors that share state,
+  ignored replies and errors, unhandled message types, and resources an actor never releases.
 - **A Raft example** with three planted bugs that a seeded partition or crash exposes.
 
 ## Install
@@ -577,14 +578,40 @@ format, the fsync order, and how recovery tells a torn write from corruption.
 
 ## Static analysis: lockstep-vet and golangci-lint
 
-A replay is exact only if actor code takes time, randomness, and I/O from the runtime.
-`lockstep-vet` reports actor code that doesn't:
+A replay is exact only if actor code takes time, randomness, and I/O from the runtime, and actors
+share nothing but messages. `lockstep-vet` runs nine checks:
 
-- `LS100`: nondeterminism and blocking, such as `time.Now`, global `math/rand`, `crypto/rand`, a
-  `go` statement, `select`, a range over a map, environment variables, channel operations, locks,
-  and blocking network, file, database, or process calls.
-- `LS110`: `Reply.Await`, which blocks the actor; use `lockstep.Pipe` instead.
+- `LS100`: nondeterminism and blocking in actor code, such as `time.Now`, global `math/rand`,
+  `crypto/rand`, a `go` statement, `select`, a range over a map, environment variables, channel
+  operations, locks, and blocking network, file, database, or process calls.
+- `LS110`: `Reply.Await` in actor code, which blocks the actor; use `lockstep.Pipe` instead.
+- `LS200`: a variable used after it was sent. Once `lockstep.Send`, `lockstep.Ask`, or
+  `ReplyTo.Send` returns, the receiver owns the slice, map, or pointer in the message, so the
+  sender must copy it before sending or stop using it. The check follows control flow: a
+  reassignment ends the tracking, and a send followed by `return` reports nothing.
+- `LS201`: a type marked `//lockstep:immutable` that isn't. A field may not hold a pointer,
+  channel, function, or interface (`error` is fine), and no code may write into a slice or map
+  field of the type or assign through a pointer to it.
+- `LS210`: shared mutable state. Actor code that writes a package variable is reported, and so is
+  actor code that places the actor itself, a field that holds references, the address of a field,
+  or a `*lockstep.Context` in a message.
+- `LS220`: the reply of `lockstep.Ask` that is never awaited or piped, and the error of
+  `lockstep.Send` or `lockstep.Spawn` that is ignored.
+- `LS230`: a message type with no case in `Receive`. When the actor's message type is an interface
+  with an unexported method, every type of its package that implements it needs a case, and so
+  does every type the actor sends to itself through `ctx.After`, `ctx.Every`, `lockstep.Do`, or
+  `lockstep.Pipe`.
+- `LS240`: an actor field that holds a resource and is neither passed to `ctx.Own` nor released in
+  `Stopped`. A resource is a field whose type implements `io.Closer`, a `*time.Timer` or
+  `*time.Ticker`, or a type marked `//lockstep:resource`. A marked type with no `Close`, `Stop`,
+  or `Release` method is reported too.
 - `LS001` and `LS002`: malformed and unknown `//lockstep:` directives.
+
+`LS100`, `LS110`, `LS210`, `LS230`, and `LS240` look at actor code. `LS200`, `LS201`, and `LS220`
+look at every function, because a message is sent from anywhere. The markers
+`//lockstep:immutable` and `//lockstep:resource` go in the doc comment of a type declaration. They
+work across packages: a type marked in one package is immutable or a resource in every package
+that imports it.
 
 Install it and run it through `go vet`:
 
@@ -602,7 +629,9 @@ main.go:34:17: LS100: time.Now uses the wall clock; use ctx.Now, ctx.After or ct
 ```
 
 To accept one finding, add `//lockstep:allow LS100 <reason>` on the reported line, on the line
-above it, or in the doc comment of the enclosing declaration.
+above it, or in the doc comment of the enclosing declaration. The reason is required, and one
+directive can name several checks, as in `//lockstep:allow LS200,LS210 <reason>`. `LS001` and
+`LS002` can't be suppressed.
 
 The same checks run in golangci-lint as the module plugin `lockstep`. Build a custom binary with
 this `.custom-gcl.yml`:
