@@ -285,12 +285,7 @@ func exhaustiveCheck(pass *analysis.Pass, r *reporter, code *actorCode, decls ma
 	if !w.inspected || w.forwarded {
 		return // messages handled uniformly
 	}
-	qual := func(p *types.Package) string {
-		if p == pass.Pkg {
-			return ""
-		}
-		return p.Name()
-	}
+	qual := pkgQualifier(pass)
 	var uncovered []exhaustiveExpected
 	for _, e := range expected {
 		if !w.covers(e.t) {
@@ -436,10 +431,9 @@ func exhaustiveSwitchSubject(s *ast.TypeSwitchStmt) ast.Expr {
 // same-package function or method called statically is a delegate, visited unless it was before,
 // when its parameter in that position has the message's type msgType, or is an interface type
 // msgType is assignable to and the function inspects that parameter for an expected type (see
-// handles). A call with no static
-// callee, through a function value of any form, may handle any message: the actor then handles
-// messages uniformly. A call of an interface method, a builtin or a function of another package is
-// neither.
+// handles); the first such position is visited. A call with no static callee, through a function
+// value of any form, may handle any message: the actor then handles messages uniformly. A call
+// of an interface method, a builtin or a function of another package is neither.
 func (w *exhaustiveWalk) call(call *ast.CallExpr, msgType types.Type, isMsg func(ast.Expr) bool) {
 	if !slices.ContainsFunc(call.Args, isMsg) {
 		return
@@ -467,8 +461,8 @@ func (w *exhaustiveWalk) call(call *ast.CallExpr, msgType types.Type, isMsg func
 		}
 		if p := sig.Params().At(i); types.Identical(p.Type(), msgType) || w.handles(decl, p, msgType) {
 			w.visit(decl, p)
+			return
 		}
-		return
 	}
 }
 

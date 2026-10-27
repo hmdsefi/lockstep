@@ -7,10 +7,23 @@ import (
 	"cmp"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"slices"
 
 	"golang.org/x/tools/go/analysis"
 )
+
+// pkgQualifier returns the qualifier of the type names in the messages of pass's diagnostics
+// (ANL-110): a type of the analyzed package is unqualified, any other is qualified by its package
+// name.
+func pkgQualifier(pass *analysis.Pass) types.Qualifier {
+	return func(p *types.Package) string {
+		if p == pass.Pkg {
+			return ""
+		}
+		return p.Name()
+	}
+}
 
 // reporter collects the diagnostics of one analyzer run on one package and reports them in
 // position order (ANL-110, ANL-120). A diagnostic is dropped when its position is in a generated

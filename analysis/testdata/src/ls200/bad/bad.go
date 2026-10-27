@@ -393,3 +393,23 @@ func shiftedSlice(sys *lockstep.System, pid lockstep.PID[Batch], v []Batch) {
 	lockstep.Send(sys, pid, Batch{Items: v[2].Items})
 	v[1:][1].Items[0] = 1 // want `^LS200: v is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }
+
+// pointerRead sends a pointer and reads a field through it: the receiver shares the struct.
+func pointerRead(sys *lockstep.System, pid lockstep.PID[*Job], j *Job) int {
+	lockstep.Send(sys, pid, j)
+	return j.ID // want `^LS200: j is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// valueReference forwards a struct value and writes into the slice it shares with the receiver.
+func valueReference(sys *lockstep.System, pid lockstep.PID[Job], m Job) {
+	lockstep.Send(sys, pid, m)
+	m.Data[0] = 1 // want `^LS200: m is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// genericArrayReset sends a slice of an array whose type is a type parameter and assigns the
+// array: its core type is an array, so the receiver's elements change.
+func genericArrayReset[A ~[4]int](sys *lockstep.System, pid lockstep.PID[Chunk]) {
+	var a A
+	lockstep.Send(sys, pid, Chunk{S: a[:]})
+	a = A{} // want `^LS200: a is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}

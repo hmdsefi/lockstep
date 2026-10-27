@@ -72,6 +72,5 @@ func inLiteral(sys *lockstep.System, pid lockstep.PID[Msg]) func() {
 	}
 }
 
-// packageVar initializes a package variable with the call itself; the variable holds it, so it is a
-// use, and a blank package variable is not.
+// A blank package variable initialized with the call holds nothing: the reply is dropped.
 var _ = lockstep.Ask(nil, lockstep.PID[Msg]{}, build) // want `^LS220: the reply of lockstep\.Ask is never awaited or piped; call Await outside actors or lockstep\.Pipe inside them$`

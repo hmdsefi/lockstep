@@ -156,11 +156,13 @@ func TestATSIM14TracerAndCounts(t *testing.T) {
 
 		// Some more kinds: an ask, its reply and an ask timeout.
 		r := lockstep.Ask(s.System("n1"), echoPID, buildPing(7))
-		//lockstep:allow LS220 the ask times out on purpose, to record an ask timeout
-		lockstep.Ask(s.System("n1"), acct, func(lockstep.ReplyTo[int]) Deposit { return Deposit{} }, lockstep.WithTimeout(time.Millisecond))
+		slow := lockstep.Ask(s.System("n1"), acct, func(lockstep.ReplyTo[int]) Deposit { return Deposit{} }, lockstep.WithTimeout(time.Millisecond))
 		w.RunFor(10 * time.Millisecond)
 		if v, err := r.Await(context.Background()); v != 7 || err != nil {
 			tt.Errorf("ask: %d, %v; want 7, nil", v, err)
+		}
+		if _, err := slow.Await(context.Background()); !errors.Is(err, lockstep.ErrTimeout) {
+			tt.Errorf("ask to an actor that never replies: %v; want %v", err, lockstep.ErrTimeout)
 		}
 		recs = w.Sim.Records()
 		if got, want := s.Counts(), countsOf(recs); got != want {
