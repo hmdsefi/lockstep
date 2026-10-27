@@ -133,33 +133,14 @@ func sendInClosure(sys *lockstep.System, pid lockstep.PID[Batch]) func() {
 	}
 }
 
-// siblingBranch uses the slice in the else branch: it is positioned after the send, so it is a use
-// although both branches never run in one call.
-func siblingBranch(sys *lockstep.System, pid lockstep.PID[Batch], items []int, now bool) {
-	if now {
-		lockstep.Send(sys, pid, Batch{Items: items})
-	} else {
-		items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line 140; the receiver owns it now, so copy it before sending or stop using it$`
-	}
-}
-
-// returnInBranch returns after the send; the use after the if statement is still positioned
-// after the send.
-func returnInBranch(sys *lockstep.System, pid lockstep.PID[Batch], items []int, now bool) {
-	if now {
-		lockstep.Send(sys, pid, Batch{Items: items})
-		return
-	}
-	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
-}
-
-// innerBlockKill assigns the slice in a block that does not hold the send: no kill.
-func innerBlockKill(sys *lockstep.System, pid lockstep.PID[Batch], items []int, reset bool) {
+// oneBranchKill is AT-ANL-13(i): the kill is in one branch only, and the use is reached through
+// the path where c is false.
+func oneBranchKill(sys *lockstep.System, pid lockstep.PID[Batch], items []int, c bool) {
 	lockstep.Send(sys, pid, Batch{Items: items})
-	if reset {
+	if c {
 		items = nil
 	}
-	items[0] = 1 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	items[0] = 2 // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }
 
 // closureKill assigns the slice in a function literal: no kill.
@@ -222,4 +203,54 @@ func loopCarriedClosure(sys *lockstep.System, pid lockstep.PID[Batch], n int) {
 func replyMethodExpr(ctx *lockstep.Context[Query], rt lockstep.ReplyTo[[]*Row], rows []*Row) {
 	lockstep.ReplyTo[[]*Row].Send(rt, ctx, rows)
 	rows[0] = nil // want `^LS200: rows is used after it was sent with ReplyTo\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// continueSkipsKill skips the kill with continue: the next iteration's append is reached.
+func continueSkipsKill(sys *lockstep.System, pid lockstep.PID[Batch], in []int) {
+	var buf []int
+	for _, x := range in {
+		buf = append(buf, x) // want `^LS200: buf is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+		if x > 0 {
+			lockstep.Send(sys, pid, Batch{Items: buf})
+			continue
+		}
+		buf = nil
+	}
+}
+
+// labelledBreak leaves both loops after the send, past the kill in the outer loop.
+func labelledBreak(sys *lockstep.System, pid lockstep.PID[Batch], in [][]int) []int {
+	var buf []int
+outer:
+	for _, xs := range in {
+		for _, x := range xs {
+			if x < 0 {
+				lockstep.Send(sys, pid, Batch{Items: buf})
+				break outer
+			}
+			buf = append(buf, x)
+		}
+		buf = nil
+	}
+	return buf // want `^LS200: buf is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+}
+
+// gotoRetry jumps back to a use written before the send.
+func gotoRetry(sys *lockstep.System, pid lockstep.PID[Batch]) {
+	items := []int{1}
+retry:
+	items[0]++ // want `^LS200: items is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
+	if lockstep.Send(sys, pid, Batch{Items: items}) != nil {
+		goto retry
+	}
+}
+
+// rangeAssignAfterLoop assigns the slice with range =: leaving the loop does not assign it, so
+// the use after the loop sees the last slice sent.
+func rangeAssignAfterLoop(sys *lockstep.System, pid lockstep.PID[Batch], bufs [][]int) {
+	var buf []int
+	for _, buf = range bufs {
+		lockstep.Send(sys, pid, Batch{Items: buf})
+	}
+	buf[0] = 1 // want `^LS200: buf is used after it was sent with lockstep\.Send on line \d+; the receiver owns it now, so copy it before sending or stop using it$`
 }

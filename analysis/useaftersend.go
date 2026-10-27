@@ -12,6 +12,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/cfg"
 )
 
 // UseAfterSend reports uses of a message's reference-typed parts after it is sent (LS200).
@@ -52,18 +53,17 @@ func runUseAfterSend(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// checkUseAfterSend reports the first use after each send site of fn of every variable the site
-// tracks (ANL-220, ANL-230).
+// checkUseAfterSend reports, for each send site of fn and each variable the site tracks, the
+// first use the send reaches (ANL-220, ANL-230).
 func checkUseAfterSend(pass *analysis.Pass, r *reporter, fn ast.Node) {
 	sites := sendSites(pass, fn)
 	if len(sites) == 0 {
 		return
 	}
-	fu := newSendFunc(pass, fn)
+	f := newSendFunc(pass, fn)
 	for _, s := range sites {
-		path := fu.pathTo(s.call)
-		for _, v := range fu.tracked(s) {
-			if use := fu.firstUse(s.call, path, v); use != nil {
+		for _, v := range f.tracked(s) {
+			if use := f.firstUse(s.call, v); use != nil {
 				line := pass.Fset.Position(s.call.Pos()).Line
 				r.report(use.Pos(), idUseAfterSend, fmt.Sprintf(useAfterSendText, v.Name(), s.api, line))
 			}
@@ -71,43 +71,46 @@ func checkUseAfterSend(pass *analysis.Pass, r *reporter, fn ast.Node) {
 	}
 }
 
-// sendFunc is one function holding send sites, with the identifiers in it that use variables.
+// sendFunc is one function holding send sites, with its control-flow graph.
 type sendFunc struct {
 	pass   *analysis.Pass
 	fn     ast.Node
 	recv   *types.Var // the method receiver, never tracked; nil for other functions
 	placer *placer    // the placed expressions of fn's messages
-	// uses are the identifiers of fn (function literals included) that use a variable, in source
-	// order. The identifiers ANL-220 exempts are left out.
-	uses []*ast.Ident
+	exempt map[*ast.Ident]bool
+	graph  *cfg.CFG
 }
 
 func newSendFunc(pass *analysis.Pass, fn ast.Node) *sendFunc {
-	f := &sendFunc{pass: pass, fn: fn, placer: newPlacer(pass, fn)}
-	if fd, ok := fn.(*ast.FuncDecl); ok && fd.Recv != nil {
-		for _, field := range fd.Recv.List {
-			for _, name := range field.Names {
-				f.recv, _ = pass.TypesInfo.Defs[name].(*types.Var)
+	f := &sendFunc{
+		pass:   pass,
+		fn:     fn,
+		placer: newPlacer(pass, fn),
+		exempt: exemptIdents(pass.TypesInfo, fn),
+	}
+	var body *ast.BlockStmt
+	switch fn := fn.(type) {
+	case *ast.FuncDecl:
+		body = fn.Body
+		if fn.Recv != nil {
+			for _, field := range fn.Recv.List {
+				for _, name := range field.Names {
+					f.recv, _ = pass.TypesInfo.Defs[name].(*types.Var)
+				}
 			}
 		}
+	case *ast.FuncLit:
+		body = fn.Body
 	}
-	exempt := exemptIdents(pass.TypesInfo, fn)
-	ast.Inspect(fn, func(n ast.Node) bool {
-		id, ok := n.(*ast.Ident)
-		if !ok || exempt[id] {
-			return true
-		}
-		if _, ok := pass.TypesInfo.Uses[id].(*types.Var); ok {
-			f.uses = append(f.uses, id)
-		}
-		return true
-	})
+	// Only a call of panic ends a path besides return; telling other calls that never return
+	// would take another analyzer.
+	f.graph = cfg.New(body, func(call *ast.CallExpr) bool { return !isBuiltin(pass.TypesInfo, call, "panic") })
 	return f
 }
 
 // exemptIdents returns the identifiers of fn that ANL-220 says are not uses: the bare variable on
-// the left of an assignment (a range clause assigning with = included), an operand of == nil or
-// != nil, and the argument of len or cap when it is a slice, array or string.
+// the left of an assignment (op= and a range clause assigning with = included), an operand of
+// == nil or != nil, and the argument of len or cap when it is a slice, array or string.
 func exemptIdents(info *types.Info, fn ast.Node) map[*ast.Ident]bool {
 	exempt := make(map[*ast.Ident]bool)
 	bare := func(e ast.Expr) {
@@ -137,7 +140,7 @@ func exemptIdents(info *types.Info, fn ast.Node) map[*ast.Ident]bool {
 				bare(n.Y)
 			}
 		case *ast.CallExpr:
-			if isLenOrCap(info, n) && hasLength(info.TypeOf(n.Args[0])) {
+			if (isBuiltin(info, n, "len") || isBuiltin(info, n, "cap")) && hasLength(info.TypeOf(n.Args[0])) {
 				bare(n.Args[0])
 			}
 		}
@@ -146,14 +149,14 @@ func exemptIdents(info *types.Info, fn ast.Node) map[*ast.Ident]bool {
 	return exempt
 }
 
-// isLenOrCap reports whether call calls the builtin len or cap with one argument.
-func isLenOrCap(info *types.Info, call *ast.CallExpr) bool {
+// isBuiltin reports whether call calls the builtin function name with one argument.
+func isBuiltin(info *types.Info, call *ast.CallExpr, name string) bool {
 	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
 	if !ok || len(call.Args) != 1 {
 		return false
 	}
 	b, ok := info.Uses[id].(*types.Builtin)
-	return ok && (b.Name() == "len" || b.Name() == "cap")
+	return ok && b.Name() == name
 }
 
 // hasLength reports whether t is a slice, an array or a string, whose length and capacity are
@@ -171,15 +174,10 @@ func hasLength(t types.Type) bool {
 	return false
 }
 
-// declaredIn reports whether v is declared in the function: a parameter, a result or a local
-// variable, the receiver excluded.
-func (f *sendFunc) declaredIn(v *types.Var) bool {
-	return v != f.recv && !v.IsField() && within(v.Pos(), f.fn)
-}
-
 // tracked returns the variables site s tracks, in the order of their first leaf (ANL-220): the
-// roots of the placed leaves that are declared in the function, when the leaf's type contains
-// references or the leaf is shared.
+// roots of the placed leaves that are declared in the function (parameters and results
+// included, the receiver excluded), when the leaf's type contains references or the leaf is
+// shared.
 func (f *sendFunc) tracked(s sendSite) []*types.Var {
 	var vars []*types.Var
 	seen := make(map[*types.Var]bool)
@@ -189,7 +187,7 @@ func (f *sendFunc) tracked(s sendSite) []*types.Var {
 				continue
 			}
 			v, ok := f.pass.TypesInfo.Uses[l.root].(*types.Var)
-			if !ok || seen[v] || !f.declaredIn(v) {
+			if !ok || seen[v] || v == f.recv || v.IsField() || !within(v.Pos(), f.fn) {
 				continue
 			}
 			if !l.shared && !containsRefs(f.pass, f.pass.TypesInfo.TypeOf(l.expr)) {
@@ -202,125 +200,133 @@ func (f *sendFunc) tracked(s sendSite) []*types.Var {
 	return vars
 }
 
-// sendPath is where a send call sits in its function.
-type sendPath struct {
-	// blocks are the statement lists holding the call, innermost last: the block holding the
-	// send and the blocks enclosing it.
-	blocks [][]ast.Stmt
-	// loop is the innermost for or range statement enclosing the call, or nil.
-	loop ast.Stmt
-}
-
-// pathTo returns the blocks and the innermost loop enclosing call in the function, without
-// entering function literals other than the function itself.
-func (f *sendFunc) pathTo(call *ast.CallExpr) sendPath {
-	var p sendPath
-	var stack []ast.Node
-	found := false
-	ast.Inspect(f.fn, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		if n == nil {
-			stack = stack[:len(stack)-1]
-			return false
-		}
-		if _, ok := n.(*ast.FuncLit); ok && n != f.fn {
-			return false
-		}
-		if n == call {
-			found = true
-			for _, a := range stack {
-				switch a := a.(type) {
-				case *ast.BlockStmt:
-					p.blocks = append(p.blocks, a.List)
-				case *ast.CaseClause:
-					p.blocks = append(p.blocks, a.Body)
-				case *ast.CommClause:
-					p.blocks = append(p.blocks, a.Body)
-				case *ast.ForStmt:
-					p.loop = a
-				case *ast.RangeStmt:
-					p.loop = a
-				}
-			}
-			return false
-		}
-		if !within(call.Pos(), n) {
-			return false
-		}
-		stack = append(stack, n)
-		return true
-	})
-	return p
-}
-
-// firstUse returns the first use of v that the send call gives (ANL-220), with the kills of
-// ANL-230 applied, or nil.
-func (f *sendFunc) firstUse(call *ast.CallExpr, p sendPath, v *types.Var) *ast.Ident {
-	// The kills: assignments of the bare v that are direct statements of the block holding the
-	// send or of an enclosing block. The first one after the call ends tracking for the uses
-	// after it; any one inside the innermost loop ends the loop-carried uses but those of its own
-	// right-hand side.
-	var after *ast.AssignStmt
-	var inLoop []*ast.AssignStmt
-	for _, list := range p.blocks {
-		for _, stmt := range list {
-			as, ok := stmt.(*ast.AssignStmt)
-			if !ok || !f.assigns(as, v) {
-				continue
-			}
-			if as.Pos() >= call.End() && (after == nil || as.Pos() < after.Pos()) {
-				after = as
-			}
-			if p.loop != nil && within(as.Pos(), p.loop) {
-				inLoop = append(inLoop, as)
-			}
-		}
+// firstUse returns the use of v that comes first in the source among those a path of the
+// function's control-flow graph leads to from the end of call without passing a kill of v
+// (ANL-220, ANL-230), or nil. Identifiers inside call are not uses. A use in a function literal
+// counts where the literal is, since the literal may run later. A deferred send happens when
+// the function returns, so nothing in the function uses its message after it.
+func (f *sendFunc) firstUse(call *ast.CallExpr, v *types.Var) *ast.Ident {
+	start, at := f.nodeOf(call)
+	if start == nil {
+		return nil
 	}
-	carried := p.loop != nil && !within(v.Pos(), p.loop)
-	for _, id := range f.uses {
-		if f.pass.TypesInfo.Uses[id] != v {
+	if d, ok := start.Nodes[at].(*ast.DeferStmt); ok && d.Call == call {
+		return nil
+	}
+	var first *ast.Ident
+	// scan records the uses of v in node n positioned at or after from and reports whether n
+	// kills v; the uses in a killing node come before the kill.
+	scan := func(n ast.Node, from token.Pos) bool {
+		ast.Inspect(n, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if !ok || id.Pos() < from || within(id.Pos(), call) || f.exempt[id] {
+				return true
+			}
+			if f.pass.TypesInfo.Uses[id] == v && (first == nil || id.Pos() < first.Pos()) {
+				first = id
+			}
+			return true
+		})
+		return f.kills(n, v)
+	}
+	// walk scans the nodes of b from index i and reports whether the path goes on past b.
+	walk := func(b *cfg.Block, i int, from token.Pos) bool {
+		for ; i < len(b.Nodes); i++ {
+			if scan(b.Nodes[i], from) {
+				return false
+			}
+			from = token.NoPos
+		}
+		return true
+	}
+	visited := make(map[*cfg.Block]bool)
+	var queue []*cfg.Block
+	if walk(start, at, call.End()) {
+		queue = append(queue, start.Succs...)
+	}
+	for len(queue) > 0 {
+		b := queue[0]
+		queue = queue[1:]
+		if visited[b] {
 			continue
 		}
-		switch pos := id.Pos(); {
-		case pos >= call.End():
-			if after == nil || pos < after.End() {
-				return id
+		visited[b] = true
+		if f.killsOnEntry(b, v) || !walk(b, 0, token.NoPos) {
+			continue
+		}
+		queue = append(queue, b.Succs...)
+	}
+	return first
+}
+
+// nodeOf returns the block holding call and the index of the innermost node holding it.
+func (f *sendFunc) nodeOf(call *ast.CallExpr) (*cfg.Block, int) {
+	var block *cfg.Block
+	at := -1
+	for _, b := range f.graph.Blocks {
+		for i, n := range b.Nodes {
+			if n.Pos() > call.Pos() || call.End() > n.End() {
+				continue
 			}
-		case pos < call.Pos() && carried && within(pos, p.loop):
-			if loopCarriedLive(pos, inLoop) {
-				return id
+			if block == nil || n.End()-n.Pos() < block.Nodes[at].End()-block.Nodes[at].Pos() {
+				block, at = b, i
 			}
 		}
 	}
-	return nil
+	return block, at
 }
 
-// loopCarriedLive reports whether a loop-carried use at pos survives the kills inside the loop:
-// there is none, or the only one is the assignment whose right-hand side holds the use.
-func loopCarriedLive(pos token.Pos, kills []*ast.AssignStmt) bool {
-	for _, k := range kills {
-		if !inRHS(pos, k) {
+// kills reports whether node n of the graph assigns the bare v (ANL-230): an assignment with =
+// or := (declaring or redeclaring v) or a var specification declaring v.
+func (f *sendFunc) kills(n ast.Node, v *types.Var) bool {
+	info := f.pass.TypesInfo
+	switch n := n.(type) {
+	case *ast.AssignStmt:
+		if n.Tok != token.ASSIGN && n.Tok != token.DEFINE {
 			return false
 		}
+		for _, lhs := range n.Lhs {
+			if id, ok := ast.Unparen(lhs).(*ast.Ident); ok && info.ObjectOf(id) == v {
+				return true
+			}
+		}
+	case *ast.ValueSpec:
+		for _, id := range n.Names {
+			if info.Defs[id] == v {
+				return true
+			}
+		}
 	}
-	return true
+	return false
 }
 
-// inRHS reports whether pos is in the right-hand side of as.
-func inRHS(pos token.Pos, as *ast.AssignStmt) bool {
-	return len(as.Rhs) > 0 && as.Rhs[0].Pos() <= pos && pos < as.Rhs[len(as.Rhs)-1].End()
-}
-
-// assigns reports whether as assigns the bare v with = or with := redeclaring it.
-func (f *sendFunc) assigns(as *ast.AssignStmt, v *types.Var) bool {
-	if as.Tok != token.ASSIGN && as.Tok != token.DEFINE {
-		return false
-	}
-	for _, lhs := range as.Lhs {
-		if id, ok := ast.Unparen(lhs).(*ast.Ident); ok && f.pass.TypesInfo.Uses[id] == v {
-			return true
+// killsOnEntry reports whether entering b kills v through a loop header (ANL-230): every
+// iteration of a range loop assigns its key and value at the start of the body, and every
+// iteration of a for loop has its own copy of the variables its init statement declares.
+func (f *sendFunc) killsOnEntry(b *cfg.Block, v *types.Var) bool {
+	info := f.pass.TypesInfo
+	switch s := b.Stmt.(type) {
+	case *ast.RangeStmt:
+		if b.Kind != cfg.KindRangeBody {
+			return false
+		}
+		for _, x := range []ast.Expr{s.Key, s.Value} {
+			if id, ok := ast.Unparen(x).(*ast.Ident); ok && info.ObjectOf(id) == v {
+				return true
+			}
+		}
+	case *ast.ForStmt:
+		init, ok := s.Init.(*ast.AssignStmt)
+		if !ok || init.Tok != token.DEFINE {
+			return false
+		}
+		switch b.Kind {
+		case cfg.KindForBody, cfg.KindForLoop, cfg.KindForPost:
+			for _, lhs := range init.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok && info.Defs[id] == v {
+					return true
+				}
+			}
 		}
 	}
 	return false

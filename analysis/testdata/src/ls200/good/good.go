@@ -1,6 +1,6 @@
 // Package good holds code LS200 accepts (ANL-210 to ANL-230, AT-ANL-14): values without
-// references, copies, kills, uses that do not read the sent memory, and what the check does not
-// track.
+// references, copies, kills, uses the send cannot reach, uses that do not read the sent memory,
+// and what the check does not track.
 package good
 
 import (
@@ -30,6 +30,10 @@ type Hello struct {
 }
 
 type Note struct{ Text string }
+
+type Count struct{ N *int }
+
+type Move struct{ X *int }
 
 // noReferences sends an int and changes it.
 func noReferences(sys *lockstep.System, pid lockstep.PID[Deposit], n int) {
@@ -175,4 +179,77 @@ func capturedVariable(sys *lockstep.System, pid lockstep.PID[Batch]) {
 func stringNote(sys *lockstep.System, pid lockstep.PID[Note], text string) string {
 	lockstep.Send(sys, pid, Note{Text: text})
 	return text + "!"
+}
+
+// otherBranch uses the slice in the else branch, which the send cannot reach (AT-ANL-14).
+func otherBranch(sys *lockstep.System, pid lockstep.PID[Batch], items []int, c bool) {
+	if c {
+		lockstep.Send(sys, pid, Batch{Items: items})
+	} else {
+		items[0] = 2
+	}
+}
+
+// earlyReturn returns after the send, so the use after the if statement is not reached
+// (AT-ANL-14).
+func earlyReturn(sys *lockstep.System, pid lockstep.PID[Batch], items []int, c bool) {
+	if c {
+		lockstep.Send(sys, pid, Batch{Items: items})
+		return
+	}
+	items[0] = 2
+}
+
+// stringPrefix sends a slice of a string: strings are immutable, so the slice shares nothing.
+func stringPrefix(sys *lockstep.System, pid lockstep.PID[Note], key string) string {
+	lockstep.Send(sys, pid, Note{Text: key[:3]})
+	return key
+}
+
+// forHeader sends the address of the loop variable: every iteration has its own.
+func forHeader(sys *lockstep.System, pid lockstep.PID[Count], n int) {
+	for i := 0; i < n; i++ {
+		lockstep.Send(sys, pid, Count{N: &i})
+	}
+}
+
+// rangeHeader sends the address of the range value: every iteration has its own.
+func rangeHeader(sys *lockstep.System, pid lockstep.PID[Move], in []int) {
+	for _, x := range in {
+		lockstep.Send(sys, pid, Move{X: &x})
+	}
+}
+
+// rangeAssign assigns the slice with range = before every iteration's send.
+func rangeAssign(sys *lockstep.System, pid lockstep.PID[Batch], bufs [][]int) {
+	var buf []int
+	for _, buf = range bufs {
+		lockstep.Send(sys, pid, Batch{Items: buf})
+	}
+}
+
+// panicAfterSend ends the path with panic.
+func panicAfterSend(sys *lockstep.System, pid lockstep.PID[Batch], items []int, bad bool) {
+	if bad {
+		lockstep.Send(sys, pid, Batch{Items: items})
+		panic("bad batch")
+	}
+	items[0] = 1
+}
+
+// switchCases sends in one case and uses the slice in another.
+func switchCases(sys *lockstep.System, pid lockstep.PID[Batch], items []int, k int) {
+	switch k {
+	case 0:
+		lockstep.Send(sys, pid, Batch{Items: items})
+	case 1:
+		items[0] = 1
+	}
+}
+
+// deferredSend sends when the function returns: the writes before that are the sender's own.
+func deferredSend(sys *lockstep.System, pid lockstep.PID[Batch]) {
+	items := []int{1}
+	defer lockstep.Send(sys, pid, Batch{Items: items})
+	items[0] = 2
 }
