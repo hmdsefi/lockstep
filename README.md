@@ -591,13 +591,17 @@ share nothing but messages. `lockstep-vet` runs nine analyzers, which report ten
   function's control flow can reach after the send, and only a use of the part that was sent:
   sending `s.items` and then reading `s.count` is fine. Assigning the variable again ends the
   tracking, unless the message holds the variable's own storage, such as its address or a slice of
-  an array variable, where the assignment overwrites what was sent and is reported. A message
-  type marked `//lockstep:immutable` is safe to send and keep.
+  an array variable, where the assignment overwrites what was sent and is reported. On the branch
+  where `lockstep.Send` returned an error, nothing was delivered, so the sender may keep using
+  the message, for example to retry. A message type marked `//lockstep:immutable` is safe to send
+  and keep.
 - `LS201`: a type marked `//lockstep:immutable` that isn't. A field may hold basic values,
   `error`, `time.Time`, `lockstep.PID`, `lockstep.Address`, `lockstep.ReplyTo`, other immutable
   types and pointers to them, and arrays, slices, maps, and structs of those. Any other pointer,
   a channel, a function, an interface, a type parameter, and `unsafe.Pointer` are reported. No
-  code may write into a slice or map field of the type or assign through a pointer to it.
+  code may write into a slice or map field of the type or assign through a pointer to it, except
+  to build a new value: writes to a local variable that the function initializes from `T{...}`,
+  `&T{...}`, or `new(T)` and assigns nothing else are construction.
 - `LS210`: shared mutable state. Actor code that writes a package variable is reported, and so is
   actor code that places the actor itself, a field that holds references, the address of a field,
   or a `*lockstep.Context` in a message. A field whose type is marked `//lockstep:immutable` may
@@ -607,7 +611,7 @@ share nothing but messages. `lockstep-vet` runs nine analyzers, which report ten
 - `LS230`: a message type with no case in `Receive`. When the actor's message type is an interface
   with an unexported method, every type of its package that implements it needs a case. So does
   every type the actor sends to itself through `ctx.After`, `ctx.Every`, `lockstep.Do`, or
-  `lockstep.Pipe`.
+  `lockstep.Pipe`. A case is a type in a type switch or a type assertion on the message.
 - `LS240`: an actor field that holds a resource and is neither passed to `ctx.Own` nor released in
   `Stopped`. A resource is a field whose type implements `io.Closer`, a `*time.Timer` or
   `*time.Ticker`, or a type marked `//lockstep:resource`. A marked type with no `Close`, `Stop`,

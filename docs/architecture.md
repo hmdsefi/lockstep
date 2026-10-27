@@ -487,17 +487,21 @@ they make inside the same package. Its checks are:
   part of the variable that was sent: sending `s.items` leaves `s.count` free. Assigning the
   variable ends the tracking, except when the message holds the variable's own storage, its
   address or a slice of an array variable, because the assignment then overwrites what was sent.
+  A path through the branch on which the send's error is not nil reaches no use: a failed
+  `lockstep.Send` delivered nothing.
 - `LS201`: the contents of types marked `//lockstep:immutable`. It checks the type of every field
   (pointers to unmarked types, channels, functions, interfaces other than `error`, type parameters
   and `unsafe.Pointer` are not allowed) and then every write in the package to a slice or map
-  field of such a type, or through a pointer to one.
+  field of such a type, or through a pointer to one. Writes to a local variable that the function
+  initializes from `T{...}`, `&T{...}` or `new(T)` and assigns nothing else are construction and
+  are not reported.
 - `LS210`: actor code that writes a package variable, and actor code that places the actor, a
   reference-holding field of the actor, the address of a field or a `*lockstep.Context` in a
   message.
 - `LS220`: a `lockstep.Ask` reply that nothing awaits or pipes, and a discarded error from
   `lockstep.Send` or `lockstep.Spawn`.
 - `LS230`: message types that `Receive` has no case for. It collects the cases of every type switch
-  and comma-ok type assertion on the message in `Receive` and in the same-package functions that
+  and type assertion on the message in `Receive` and in the same-package functions that
   `Receive` passes the message to, and compares them with the members of a sealed message
   interface and with the types the actor sends to itself.
 - `LS240`: actor fields that hold a resource and are neither owned with `ctx.Own` nor released in
