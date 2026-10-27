@@ -134,10 +134,10 @@ func (w *watchedSet) seq(a Address) (uint64, bool) {
 // skips reports whether m is a Terminated that a delivery against the watched set w would skip:
 // its Addr is not in w, or is there under another Watch call's sequence number (ACT-630). Such a
 // signal answers no watch of the incarnation, so the not-running paths discard it without a
-// record, as a delivery would.
+// record, as a delivery would. A signal of hooks.Signal answers no watch and is never skipped.
 func (w *watchedSet) skips(m signalMsg) bool {
 	t, ok := m.sig.(Terminated)
-	if !ok {
+	if !ok || m.direct {
 		return false
 	}
 	seq, in := w.seq(t.Addr)
