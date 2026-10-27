@@ -158,3 +158,37 @@ func (v Viewer) arm(ctx *lockstep.Context[any]) {
 		return piped{n}
 	})
 }
+
+// Vault is generic; its delegate covers GetBalance only.
+type Vault[T any] struct{ v T }
+
+func (v *Vault[T]) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	v.handle(msg)
+}
+
+func (v *Vault[T]) handle(m AccountMsg) {
+	switch m.(type) { // want `^LS230: \(\*Vault\)\.Receive has no case for message type \*Close of AccountMsg$` `^LS230: \(\*Vault\)\.Receive has no case for message type Deposit of AccountMsg$` `^LS230: \(\*Vault\)\.Receive has no case for message type Withdraw of AccountMsg$`
+	case GetBalance:
+	}
+}
+
+// Shape is sealed through the embedded base shapeBase, which is not a member (ANL-320). Painter
+// misses Square only.
+type Shape interface{ shape() } // want Shape:`^sealed\(Circle, Square\)$`
+
+type shapeBase struct{}
+
+func (shapeBase) shape() {}
+
+type (
+	Circle struct{ shapeBase }
+	Square struct{ shapeBase }
+)
+
+type Painter struct{}
+
+func (p *Painter) Receive(ctx *lockstep.Context[Shape], msg Shape) {
+	switch msg.(type) { // want `^LS230: \(\*Painter\)\.Receive has no case for message type Square of Shape$`
+	case Circle:
+	}
+}

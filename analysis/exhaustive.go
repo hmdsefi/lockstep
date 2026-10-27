@@ -100,7 +100,7 @@ func exhaustiveExportFacts(pass *analysis.Pass) {
 			continue
 		}
 		fact := &sealedFact{}
-		for _, m := range exhaustiveLocalMembers(named) {
+		for _, m := range exhaustiveLocalMembers(pass.Fset, named) {
 			_, ptr := m.(*types.Pointer)
 			obj := exhaustiveNamed(m).Obj()
 			if obj.Exported() {
@@ -138,17 +138,24 @@ func exhaustiveNamed(t types.Type) *types.Named {
 
 // exhaustiveLocalMembers returns the members of the sealed interface named, computed from the
 // scope of its package (ANL-320): every non-interface, non-generic named type of that scope that
-// implements it, or else whose pointer does, in the order of the scope's names.
-func exhaustiveLocalMembers(named *types.Named) []types.Type {
+// implements it, or else whose pointer does, in the order of the scope's names. Two kinds of type
+// are left out: a type embedded as a field in another member, such as a base type that only
+// carries the sealing method, and, when the interface is declared outside a _test.go file, a type
+// declared in one.
+func exhaustiveLocalMembers(fset *token.FileSet, named *types.Named) []types.Type {
 	iface, ok := named.Underlying().(*types.Interface)
 	if !ok {
 		return nil
 	}
+	isTest := func(obj types.Object) bool {
+		return strings.HasSuffix(fset.PositionFor(obj.Pos(), false).Filename, "_test.go")
+	}
+	ifaceInTest := isTest(named.Obj())
 	scope := named.Obj().Pkg().Scope()
-	var members []types.Type
+	var candidates []types.Type
 	for _, name := range scope.Names() {
 		tn, ok := scope.Lookup(name).(*types.TypeName)
-		if !ok || tn.IsAlias() {
+		if !ok || tn.IsAlias() || !ifaceInTest && isTest(tn) {
 			continue
 		}
 		t, ok := tn.Type().(*types.Named)
@@ -157,12 +164,26 @@ func exhaustiveLocalMembers(named *types.Named) []types.Type {
 		}
 		switch {
 		case types.Implements(t, iface):
-			members = append(members, t)
+			candidates = append(candidates, t)
 		case types.Implements(types.NewPointer(t), iface):
-			members = append(members, types.NewPointer(t))
+			candidates = append(candidates, types.NewPointer(t))
 		}
 	}
-	return members
+	var embedded []*types.Named
+	for _, c := range candidates {
+		st, ok := exhaustiveNamed(c).Underlying().(*types.Struct)
+		if !ok {
+			continue
+		}
+		for f := range st.Fields() {
+			if f.Embedded() {
+				embedded = append(embedded, exhaustiveNamed(types.Unalias(f.Type())))
+			}
+		}
+	}
+	return slices.DeleteFunc(candidates, func(c types.Type) bool {
+		return slices.Contains(embedded, exhaustiveNamed(c))
+	})
 }
 
 // exhaustiveMembers returns the members of message type m when it is a sealed interface
@@ -174,7 +195,7 @@ func exhaustiveMembers(pass *analysis.Pass, m types.Type) []types.Type {
 		return nil
 	}
 	if named.Obj().Pkg() == pass.Pkg {
-		return exhaustiveLocalMembers(named)
+		return exhaustiveLocalMembers(pass.Fset, named)
 	}
 	var fact sealedFact
 	if named.TypeArgs().Len() != 0 || !pass.ImportObjectFact(named.Obj(), &fact) {
@@ -220,14 +241,7 @@ func exhaustiveSelfTypes(pass *analysis.Pass, fns []*actorFunc) []types.Type {
 				return true
 			}
 			callee := typeutil.Callee(info, call)
-			args := call.Args
-			// A method expression, (*lockstep.Context[M]).After(ctx, d, msg), takes the receiver
-			// first.
-			if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && len(args) > 0 {
-				if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodExpr {
-					args = args[1:]
-				}
-			}
+			args := exhaustiveArgs(info, call)
 			switch {
 			case (isAPI(callee, "Context.After") || isAPI(callee, "Context.Every")) && len(args) == 2:
 				add(args[1])
@@ -315,7 +329,7 @@ type exhaustiveWalk struct {
 
 	cases     []types.Type
 	inspected bool // a type switch or comma-ok assertion on the message was found
-	forwarded bool // the message was passed to a call through a function value
+	forwarded bool // the message was passed to a call with no static callee
 
 	// switches holds, per visited function in visit order, the position of the switch keyword of
 	// its first type switch on the message, or token.NoPos.
@@ -323,15 +337,19 @@ type exhaustiveWalk struct {
 }
 
 // visit walks decl, in which the parameter msg plays the role of Receive's message parameter, and
-// the delegates it calls with msg, each when the call is reached in source order.
+// the delegates it calls with msg, each when the call is reached in source order. In a type switch
+// on msg that binds a variable, the variable holds msg unchanged in the clauses where its type is
+// msg's type (default and clauses listing several types), so it plays msg's role there too
+// (ANL-330).
 func (w *exhaustiveWalk) visit(decl *ast.FuncDecl, msg *types.Var) {
 	w.visited[decl] = true
 	i := len(w.switches)
 	w.switches = append(w.switches, token.NoPos)
 	info := w.pass.TypesInfo
+	roles := []types.Object{msg}
 	isMsg := func(e ast.Expr) bool {
 		id, ok := ast.Unparen(e).(*ast.Ident)
-		return ok && msg != nil && info.Uses[id] == msg
+		return ok && slices.Contains(roles, info.Uses[id])
 	}
 	commaOK := func(e ast.Expr) {
 		if ta, ok := ast.Unparen(e).(*ast.TypeAssertExpr); ok && ta.Type != nil && isMsg(ta.X) {
@@ -359,6 +377,9 @@ func (w *exhaustiveWalk) visit(decl *ast.FuncDecl, msg *types.Var) {
 						w.cases = append(w.cases, tv.Type)
 					}
 				}
+				if v := info.Implicits[clause]; v != nil && types.Identical(v.Type(), msg.Type()) {
+					roles = append(roles, v)
+				}
 			}
 		case *ast.AssignStmt:
 			if len(n.Lhs) == 2 && len(n.Rhs) == 1 {
@@ -369,7 +390,7 @@ func (w *exhaustiveWalk) visit(decl *ast.FuncDecl, msg *types.Var) {
 				commaOK(n.Values[0])
 			}
 		case *ast.CallExpr:
-			w.call(n, isMsg)
+			w.call(n, msg.Type(), isMsg)
 		}
 		return true
 	})
@@ -392,10 +413,13 @@ func exhaustiveSwitchSubject(s *ast.TypeSwitchStmt) ast.Expr {
 	return nil
 }
 
-// call handles a call that passes the message, unchanged, as an argument: a same-package function
-// or method called statically is a delegate, visited unless it was before; a call through a
-// function-typed variable, field or parameter means the message may be handled uniformly.
-func (w *exhaustiveWalk) call(call *ast.CallExpr, isMsg func(ast.Expr) bool) {
+// call handles a call that passes the message, unchanged, as an argument (ANL-330). A
+// same-package function or method called statically, whose parameter in that position has the
+// message's type msgType, is a delegate, visited unless it was before. A call with no static
+// callee, through a function value of any form, may handle any message: the actor then handles
+// messages uniformly. A call of an interface method, a builtin or a function of another package is
+// neither.
+func (w *exhaustiveWalk) call(call *ast.CallExpr, msgType types.Type, isMsg func(ast.Expr) bool) {
 	if !slices.ContainsFunc(call.Args, isMsg) {
 		return
 	}
@@ -412,45 +436,57 @@ func (w *exhaustiveWalk) call(call *ast.CallExpr, isMsg func(ast.Expr) bool) {
 	if decl == nil || w.visited[decl] {
 		return
 	}
+	sig := callee.Signature()
+	for i, arg := range exhaustiveArgs(info, call) {
+		if i >= sig.Params().Len() || sig.Variadic() && i >= sig.Params().Len()-1 {
+			break
+		}
+		if p := sig.Params().At(i); isMsg(arg) && types.Identical(p.Type(), msgType) {
+			w.visit(decl, p)
+			return
+		}
+	}
+}
+
+// exhaustiveArgs returns the arguments of call that match the callee's parameters: for a method
+// expression, (*lockstep.Context[M]).After(ctx, d, msg), the receiver argument is left out.
+func exhaustiveArgs(info *types.Info, call *ast.CallExpr) []ast.Expr {
 	args := call.Args
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && len(args) > 0 {
 		if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodExpr {
 			args = args[1:]
 		}
 	}
-	sig := callee.Signature()
-	for i, arg := range args {
-		if i >= sig.Params().Len() || sig.Variadic() && i >= sig.Params().Len()-1 {
-			break
-		}
-		if isMsg(arg) {
-			w.visit(decl, sig.Params().At(i))
-			return
-		}
-	}
+	return args
 }
 
-// exhaustiveFuncValue reports whether fun is a function-typed variable, field or parameter.
+// exhaustiveFuncValue reports whether fun, the operand of a call with no static callee, is a
+// function value: not a type (a conversion), a builtin or an interface method.
 func exhaustiveFuncValue(info *types.Info, fun ast.Expr) bool {
-	var obj types.Object
-	switch f := ast.Unparen(fun).(type) {
-	case *ast.Ident:
-		obj = info.Uses[f]
-	case *ast.SelectorExpr:
-		if s := info.Selections[f]; s != nil {
-			if s.Kind() != types.FieldVal {
-				return false
-			}
-			obj = s.Obj()
-		} else {
-			obj = info.Uses[f.Sel]
-		}
-	}
-	v, ok := obj.(*types.Var)
-	if !ok {
+	fun = ast.Unparen(fun)
+	if info.Types[fun].IsType() {
 		return false
 	}
-	_, ok = v.Type().Underlying().(*types.Signature)
+	switch f := fun.(type) {
+	case *ast.Ident:
+		if _, ok := info.Uses[f].(*types.Builtin); ok {
+			return false
+		}
+	case *ast.SelectorExpr:
+		if _, ok := info.Uses[f.Sel].(*types.Builtin); ok {
+			return false
+		}
+		if s := info.Selections[f]; s != nil && s.Kind() != types.FieldVal {
+			if m, ok := s.Obj().(*types.Func); ok && types.IsInterface(m.Signature().Recv().Type()) {
+				return false
+			}
+		}
+	}
+	t := info.TypeOf(fun)
+	if t == nil {
+		return false
+	}
+	_, ok := t.Underlying().(*types.Signature)
 	return ok
 }
 

@@ -57,3 +57,20 @@ type Money interface{ Amount() int }
 
 func (d Deposit) Amount() int  { return d.N }
 func (w Withdraw) Amount() int { return -w.N }
+
+// Note is sealed through the embedded base Base, which carries the sealing method. Base is not a
+// member, because Memo and Ping embed it.
+type Note interface{ note() } // want Note:`^sealed\(Memo, \*Ping\)$`
+
+type Base struct{}
+
+func (Base) note() {}
+
+type Memo struct {
+	Base
+	Text string
+}
+
+type Ping struct{ *Base }
+
+func (*Ping) note() {}

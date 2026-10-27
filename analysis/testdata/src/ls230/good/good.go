@@ -6,6 +6,7 @@ package good
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/hmdsefi/lockstep"
@@ -131,3 +132,98 @@ func (p *Poller) Receive(ctx *lockstep.Context[any], msg any) {
 }
 
 func done(v int, err error) any { return later{} }
+
+// Switcher passes the variable its type switch binds, which holds msg unchanged in the default
+// clause, to a delegate that covers the rest (ANL-330).
+type Switcher struct{}
+
+func (s *Switcher) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	switch m := msg.(type) {
+	case Deposit:
+		_ = m.N
+	default:
+		s.rest(m)
+	}
+}
+
+func (s *Switcher) rest(m AccountMsg) {
+	switch m.(type) {
+	case Withdraw, GetBalance, *Close:
+	}
+}
+
+// Splitter forwards the variable its type switch binds in a clause that lists several types,
+// where it holds msg unchanged, to a function field: nothing is reported (ANL-330).
+type Splitter struct {
+	other func(AccountMsg)
+}
+
+func (s *Splitter) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	switch m := msg.(type) {
+	case Deposit, Withdraw:
+		s.other(m)
+	}
+}
+
+// Passer forwards the bound variable of its default clause to a function field.
+type Passer struct {
+	other func(AccountMsg)
+}
+
+func (p *Passer) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	switch msg := msg.(type) {
+	case Deposit:
+	default:
+		p.other(msg)
+	}
+}
+
+// Table forwards msg through an element of a slice of functions, a call with no static callee.
+type Table struct {
+	h []func(*lockstep.Context[AccountMsg], AccountMsg)
+}
+
+func (t *Table) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	if _, ok := msg.(Deposit); ok {
+		return
+	}
+	t.h[0](ctx, msg)
+}
+
+// Printer handles messages uniformly. describe takes any, not AccountMsg, so it is not a delegate
+// and its type switch is not on the message (ANL-330).
+type Printer struct{}
+
+func (p *Printer) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	_ = describe(msg)
+}
+
+func describe(v any) string {
+	switch v := v.(type) {
+	case fmt.Stringer:
+		return v.String()
+	}
+	return ""
+}
+
+// Noter covers Note's members; the embedded base is not one (ANL-320).
+type Noter struct{}
+
+func (n *Noter) Receive(ctx *lockstep.Context[Note], msg Note) {
+	switch msg.(type) {
+	case Memo, *Ping:
+	}
+}
+
+// Box is generic and covers every member in a delegate.
+type Box[T any] struct{ v T }
+
+func (b *Box[T]) Receive(ctx *lockstep.Context[AccountMsg], msg AccountMsg) {
+	b.handle(msg)
+}
+
+func (b *Box[T]) handle(m AccountMsg) {
+	switch m.(type) {
+	case Deposit, Withdraw, GetBalance, *Close:
+	}
+}
