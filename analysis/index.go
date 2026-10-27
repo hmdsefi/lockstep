@@ -178,6 +178,7 @@ func runIndex(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
 		idx.addFile(pass, file)
 	}
+	// Export in the order the types were first marked, never in map order (ANL-120).
 	for _, tn := range idx.marked {
 		m := idx.markers[tn]
 		pass.ExportObjectFact(tn, &markerFact{Immutable: m&markImmutable != 0, Resource: m&markResource != 0})

@@ -220,3 +220,41 @@ func checkFuncs(t *testing.T, path string, code *actorCode) {
 		t.Errorf("%s: funcOf(unknown body) = %v, want nil", path, got)
 	}
 }
+
+// reachProbe reports "reach <root>: <functions>" at every root, the result of reach from that
+// root, and "actor code: <functions>" at every actor type, the result of reach from all its roots.
+var reachProbe = &analysis.Analyzer{
+	Name:     "reachprobe",
+	Doc:      "report the functions reachable from each root and each actor type",
+	Requires: []*analysis.Analyzer{actorsAnalyzer},
+	Run: func(pass *analysis.Pass) (any, error) {
+		code, ok := pass.ResultOf[actorsAnalyzer].(*actorCode)
+		if !ok {
+			return nil, nil
+		}
+		names := func(fs []*actorFunc) string {
+			var out []string
+			for _, f := range fs {
+				out = append(out, f.Fn.RelString(pass.Pkg))
+			}
+			return strings.Join(out, ", ")
+		}
+		for _, a := range code.Actors {
+			// The roots in reverse order: reach sorts them.
+			roots := slices.Clone(a.Roots)
+			slices.Reverse(roots)
+			pass.Reportf(a.Type.Obj().Pos(), "actor code: %s", names(code.reach(roots...)))
+			for _, r := range a.Roots {
+				pass.Reportf(r.Fn.Pos(), "reach %s: %s", r.Fn.RelString(pass.Pkg), names(code.reach(r, r)))
+			}
+		}
+		return nil, nil
+	},
+}
+
+// TestActorCodeReach checks reach: per actor and per root, each function once, in breadth-first
+// order from the roots in source order, with a helper that two actors share in the actor code of
+// both, though its chain goes through only one of them.
+func TestActorCodeReach(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), reachProbe, "reach")
+}
