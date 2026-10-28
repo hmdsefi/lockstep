@@ -221,6 +221,11 @@ func register[M any](sys *System, c *cell[M], parent Address, stopping, reserve 
 		return nameTaken() // a concurrent Spawn took the name after Taken
 	}
 	c.addr = Address{node: sys.node, path: path, uid: uid}
+	if sys.live != nil {
+		// Listed while c.mu is held, so no stop of c can finish before the list has the cell: every
+		// request to c takes c.mu first, and the final stop removes the entry.
+		sys.live.add(c.user, &c.live)
+	}
 	return nil
 }
 

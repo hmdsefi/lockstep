@@ -41,6 +41,12 @@ type System struct {
 	// system has metrics off and for one built on a given bundle, which never counts (OBS-110,
 	// OBS-155). Set before New returns and never changed.
 	obs *obsCounters
+	// gauges is what the gauge functions of OBS-130 read the system through, and live lists the
+	// mailboxes of the live actors for the depth gauges (obs.go); both nil when obs is. New sets
+	// them before it returns and arms the gauges last; completeShutdown clears the gauges' pointer
+	// to the system.
+	gauges *gaugeState
+	live   *liveIndex
 
 	reg          *registry.Registry
 	user, system Address // the guardians; neither is registered (ACT-030)
@@ -160,6 +166,7 @@ func New(opts ...Option) *System {
 		registered = true
 	}
 	sys.startOverload(pe, gate, cfg)
+	sys.armGauges()
 	return sys
 }
 
@@ -289,6 +296,11 @@ func (s *System) completeShutdown() {
 		s.logShutdownFinished(s.eng.Clock.Now().Sub(s.shut.began))
 	}
 	s.recordShutdown("done")
+	if s.gauges != nil {
+		// Before over and done: a Shutdown that returns has seen the gauges at 0 (OBS-100), and the
+		// functions the backend keeps no longer refer to the system.
+		s.gauges.sys.Store(nil)
+	}
 	s.shut.over.Store(true)
 	close(s.shut.done)
 

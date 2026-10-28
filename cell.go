@@ -79,9 +79,10 @@ type actorCell interface {
 // the fields under "guarded by mu"; the Slot keeps turns from overlapping. The fields under
 // "turn-owned" are read and written only by RunTurn. No code that holds mu takes the ask table's
 // lock, resolves an ask or calls the engine; only Spawn holds a new cell's mu across
-// Registry.Add (lock order mu, then the registry's, then a queue's). addr is written once, by
-// Spawn while it holds mu and before the cell's first Ready; code that reaches the cell through
-// the registry reads it only after taking mu (as every enqueue does), and turns read it freely.
+// Registry.Add and the live index's add (lock order mu, then the registry's, then the live
+// index's, then a queue's). addr is written once, by Spawn while it holds mu and before the
+// cell's first Ready; code that reaches the cell through the registry reads it only after taking
+// mu (as every enqueue does), and turns read it freely.
 type cell[M any] struct {
 	sys     *System
 	addr    Address
@@ -112,6 +113,10 @@ type cell[M any] struct {
 	// log is the actor logger, nil until the first Context.Logger or Logf call of any incarnation
 	// builds it (OBS-030, context_log.go). It lives in the cell, so every incarnation shares it.
 	log atomic.Pointer[slog.Logger]
+
+	// live is the cell's place in the system's live index, which the depth gauges iterate (obs.go);
+	// the index's lock guards it. It is unused when the system has metrics off.
+	live liveSlot
 
 	// guarded by mu
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)

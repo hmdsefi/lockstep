@@ -4,6 +4,7 @@
 package mailbox
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -393,6 +395,9 @@ func TestQueueMatchesModel(t *testing.T) {
 						t.Fatalf("step %d Len, SentLen = %d, %d, want %d, %d",
 							i, q.Len(), q.SentLen(), len(m.entries), m.sentLen())
 					}
+					if got := q.SentLenAtomic(); got != m.sentLen() {
+						t.Fatalf("step %d SentLenAtomic = %d, want %d", i, got, m.sentLen())
+					}
 				}
 				got := q.Close()
 				if len(got) != len(m.entries) {
@@ -405,6 +410,100 @@ func TestQueueMatchesModel(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSentLenAtomic checks that the lock-free count of Sent entries follows SentLen through every
+// operation that changes it: offers, drops, pops, hand-offs to waiting senders, and Close.
+func TestSentLenAtomic(t *testing.T) {
+	check := func(step string, q *Queue[int], want int) {
+		t.Helper()
+		if got, sent := q.SentLenAtomic(), q.SentLen(); got != want || sent != want {
+			t.Fatalf("after %s: SentLenAtomic, SentLen = %d, %d, want %d", step, got, sent, want)
+		}
+	}
+
+	q := New[int](2, DropOldest)
+	check("New", q, 0)
+	q.Offer(1, Sent, false)
+	q.Offer(2, Self, false)
+	check("a Sent and a Self offer", q, 1)
+	q.Offer(3, Sent, false)
+	check("a second Sent offer", q, 2)
+	q.Offer(4, Sent, false) // full: drops the oldest Sent entry and enqueues this one
+	check("a DropOldest offer", q, 2)
+	q.Offer(5, Sent, true) // forced full, same
+	check("a forced DropOldest offer", q, 2)
+	q.Pop() // the Self entry was queued before 3, so the head is 2
+	check("a Pop of a Self entry", q, 2)
+	q.Pop()
+	check("a Pop of a Sent entry", q, 1)
+	if got := q.Close(); len(got) != 1 {
+		t.Fatalf("Close returned %d entries, want 1", len(got))
+	}
+	check("Close", q, 0)
+
+	// A DropNewest and a FailSend queue refuse without changing the count.
+	for _, p := range []Policy{DropNewest, FailSend} {
+		q := New[int](1, p)
+		q.Offer(1, Sent, false)
+		q.Offer(2, Sent, false)
+		check(fmt.Sprintf("a refused offer to a %v queue", p), q, 1)
+	}
+
+	// A BlockSender queue: the fast path of OfferWait, a hand-off by Pop, and a hand-off by Recheck.
+	ctx := context.Background()
+	w := New[int](1, BlockSender)
+	if out, _, err := w.OfferWait(ctx, 1, nil); out != Enqueued || err != nil {
+		t.Fatalf("OfferWait with room = %v, %v, want enqueued", out, err)
+	}
+	check("an OfferWait with room", w, 1)
+	var admit atomic.Bool
+	first := offerWait(w, ctx, 2, admit.Load)
+	waiting(t, w, 1)
+	check("a waiting sender", w, 1)
+	w.Pop() // frees the slot, but the waiter is not admitted
+	check("a Pop that hands nothing off", w, 0)
+	admit.Store(true)
+	w.Recheck()
+	wantResult(t, "the waiter", result(t, first), Enqueued, nil)
+	check("a Recheck that hands a slot off", w, 1)
+	second := offerWait(w, ctx, 3, nil)
+	waiting(t, w, 1)
+	w.Pop()
+	wantResult(t, "the second waiter", result(t, second), Enqueued, nil)
+	check("a Pop that hands a slot off", w, 1)
+}
+
+// TestSentLenAtomicNeverShowsAReplacedEntryGone checks that a reader of the lock-free count never
+// sees a full DropOldest queue with one entry fewer: the entry it drops and the one that replaces
+// it change the count together.
+func TestSentLenAtomicNeverShowsAReplacedEntryGone(t *testing.T) {
+	const capacity = 4
+	q := New[int](capacity, DropOldest)
+	for i := range capacity {
+		q.Offer(i, Sent, false)
+	}
+	stop := make(chan struct{})
+	lowest := make(chan int, 1)
+	go func() {
+		low := capacity
+		for {
+			select {
+			case <-stop:
+				lowest <- low
+				return
+			default:
+				low = min(low, q.SentLenAtomic())
+			}
+		}
+	}()
+	for i := capacity; i < 200_000; i++ {
+		q.Offer(i, Sent, false)
+	}
+	close(stop)
+	if low := <-lowest; low != capacity {
+		t.Errorf("SentLenAtomic of a full DropOldest queue was %d at some moment, want %d always", low, capacity)
 	}
 }
 

@@ -50,7 +50,7 @@ func (q *Queue[T]) OfferWaitNotify(ctx context.Context, v T, admit func() bool, 
 	}
 	if len(q.waiters) == 0 && q.sent < q.capacity && (admit == nil || admit()) {
 		q.push(v, Sent)
-		q.sent++
+		q.addSent(1)
 		return Enqueued, zero, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -133,7 +133,7 @@ func (q *Queue[T]) handOff() {
 		q.waiters[0] = nil
 		q.waiters = q.waiters[1:]
 		q.push(w.v, Sent)
-		q.sent++
+		q.addSent(1)
 		var zero T
 		w.v, w.state = zero, waitHanded
 		woke = true
