@@ -23,7 +23,7 @@ func TestATENG10HookUnset(t *testing.T) {
 }
 
 // AT-SIM-32 (the unset half), ENG-210: nothing in this binary initializes package lockstep, so
-// none of SIM's hooks is set.
+// none of the hooks it sets is set: SIM's, SFT's, PER's and OBS's.
 func TestHooksUnset(t *testing.T) {
 	if hooks.Discard != nil {
 		t.Error("hooks.Discard != nil without package lockstep")
@@ -42,6 +42,15 @@ func TestHooksUnset(t *testing.T) {
 	}
 	if hooks.Signal != nil {
 		t.Error("hooks.Signal != nil without package lockstep")
+	}
+	if hooks.InjectFail != nil {
+		t.Error("hooks.InjectFail != nil without package lockstep")
+	}
+	if hooks.MetricCounter != nil {
+		t.Error("hooks.MetricCounter != nil without package lockstep")
+	}
+	if hooks.MetricGauge != nil {
+		t.Error("hooks.MetricGauge != nil without package lockstep")
 	}
 	if got := (hooks.PendingAsk{}); got.ByActor || got.Ask != (engine.Address{}) {
 		t.Errorf("zero PendingAsk = %+v", got)

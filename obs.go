@@ -4,8 +4,11 @@
 package lockstep
 
 import (
+	"fmt"
 	"log/slog"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -142,7 +145,7 @@ func (t transition) String() string { return transitionNames[t] }
 // label first (OBS-080), and keeps the counters in s.obs. New calls it once, after newSystem and
 // before startOverload: the sampler's first sample, taken in New, can already change admission, and
 // the change must be counted. The gauge functions return 0 until New has armed them (armGauges). A
-// panic in m propagates, and s.obs, s.live and s.gauges stay nil.
+// panic in m propagates, and s.obs, s.live, s.gauges and s.metrics stay nil.
 func (s *System) registerMetrics(m Metrics) {
 	node := MetricLabel{Name: "node", Value: s.node}
 	o := new(obsCounters)
@@ -169,7 +172,7 @@ func (s *System) registerMetrics(m Metrics) {
 	m.GaugeFunc("lockstep_admission_enabled", "1 if memory admission control is on.", g.admissionEnabled, node)
 	m.GaugeFunc("lockstep_admission_refusing", "1 while admission control refuses work.", g.admissionRefusing, node)
 	m.GaugeFunc("lockstep_goroutines", "Goroutines in the process.", goroutines, node)
-	s.obs, s.gauges, s.live = o, g, new(liveIndex)
+	s.obs, s.gauges, s.live, s.metrics = o, g, new(liveIndex), m
 }
 
 // armGauges lets the gauge functions read s. New calls it once, after startOverload, which sets the
@@ -294,6 +297,175 @@ func (x *liveIndex) depth() (total, fullest int64) {
 		fullest = max(fullest, n)
 	}
 	return total, fullest
+}
+
+// seriesKind is the kind of a late series: a counter or a gauge.
+type seriesKind uint8
+
+const (
+	kindCounter seriesKind = iota
+	kindGauge
+)
+
+// String returns the kind's name.
+func (k seriesKind) String() string {
+	if k == kindGauge {
+		return "gauge"
+	}
+	return "counter"
+}
+
+// lateSeries is the table of OBS-150: every series a package enabled on a system after New may
+// register, with its kind. Late registration panics for any other name; a new late series is added
+// to the table first (OBS owns the names), then here.
+var lateSeries = map[string]seriesKind{
+	"lockstep_remote_frames_sent_total":     kindCounter,
+	"lockstep_remote_frames_received_total": kindCounter,
+	"lockstep_remote_bytes_sent_total":      kindCounter,
+	"lockstep_remote_bytes_received_total":  kindCounter,
+	"lockstep_remote_reconnects_total":      kindCounter,
+	"lockstep_remote_gaps_total":            kindCounter,
+	"lockstep_remote_sessions":              kindGauge,
+}
+
+// lateRegistry holds the series registered on a system after New (OBS-150). It is a field of the
+// System, so it lives exactly as long as the system, and the late gauge functions a backend keeps
+// do not refer to it.
+type lateRegistry struct {
+	// mu makes a registration atomic with the check for an earlier one of the same series and with
+	// the check that Shutdown has not started, and orders both with dropGauges. It is held while the
+	// backend registers the series; no event path takes it.
+	mu sync.Mutex
+	// series holds, by seriesKey, the Add function of each late counter and nil for each late gauge.
+	series map[string]func(n uint64)
+	// gauges are the late gauges, whose functions dropGauges drops.
+	gauges []*lateGauge
+}
+
+// lateGauge is a late gauge (OBS-150). Its read method is the function lockstep registers: it reads
+// through the gauge state of the system's other gauges and calls fn, the function its caller
+// passed. dropGauges clears fn at Shutdown, so a backend that keeps read keeps neither the system
+// nor fn.
+type lateGauge struct {
+	state *gaugeState
+	fn    atomic.Pointer[func() int64]
+}
+
+// read returns fn's value, or 0 once the system has shut down.
+func (g *lateGauge) read() int64 {
+	if g.state.sys.Load() == nil {
+		return 0
+	}
+	if fn := g.fn.Load(); fn != nil {
+		return (*fn)()
+	}
+	return 0
+}
+
+// dropGauges makes every late gauge return 0 and drop its function. completeShutdown calls it.
+func (l *lateRegistry) dropGauges() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, g := range l.gauges {
+		g.fn.Store(nil)
+	}
+	l.gauges = nil
+}
+
+// add records the late series key as registered, with the Add function of a counter or nil for a
+// gauge. The caller holds l.mu.
+func (l *lateRegistry) add(key string, add func(n uint64)) {
+	if l.series == nil {
+		l.series = make(map[string]func(n uint64))
+	}
+	l.series[key] = add
+}
+
+// metricCounterHook is hooks.MetricCounter (OBS-150): it registers the counter series name with
+// labels on the backend of sys, once, and returns its Add function; it returns nil with metrics
+// off or once Shutdown has started.
+func metricCounterHook(sys any, name, help string, labels ...string) func(n uint64) {
+	s := hookSystem("MetricCounter", sys)
+	checkLate(name, kindCounter, labels)
+	if s.metrics == nil {
+		return nil
+	}
+	key := seriesKey(name, labels)
+	l := &s.late
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s.closing.Load() {
+		return nil
+	}
+	if add, ok := l.series[key]; ok {
+		return add
+	}
+	add := s.metrics.Counter(name, help, s.lateLabels(labels)...).Add
+	l.add(key, add)
+	return add
+}
+
+// metricGaugeHook is hooks.MetricGauge (OBS-150): it registers fn as the gauge series name with
+// labels on the backend of sys, once, through a lateGauge; it does nothing with metrics off or once
+// Shutdown has started.
+func metricGaugeHook(sys any, name, help string, fn func() int64, labels ...string) {
+	s := hookSystem("MetricGauge", sys)
+	checkLate(name, kindGauge, labels)
+	if s.metrics == nil {
+		return
+	}
+	key := seriesKey(name, labels)
+	l := &s.late
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s.closing.Load() {
+		return
+	}
+	if _, ok := l.series[key]; ok {
+		return
+	}
+	g := &lateGauge{state: s.gauges}
+	g.fn.Store(&fn)
+	s.metrics.GaugeFunc(name, help, g.read, s.lateLabels(labels)...)
+	l.add(key, nil)
+	l.gauges = append(l.gauges, g)
+}
+
+// checkLate panics unless name is a series of OBS-150's table of kind kind and labels is a list of
+// name, value pairs (OBS §7).
+func checkLate(name string, kind seriesKind, labels []string) {
+	got, ok := lateSeries[name]
+	switch {
+	case !ok:
+		panic("lockstep: metrics: " + name + " is not a late series")
+	case got != kind:
+		panic(fmt.Sprintf("lockstep: metrics: %s is a late %s, not a %s", name, got, kind))
+	case len(labels)%2 != 0:
+		panic("lockstep: metrics: " + name + ": odd label list")
+	}
+}
+
+// seriesKey returns the key of the late series name with labels: each string prefixed with its
+// length, so two different lists never share a key.
+func seriesKey(name string, labels []string) string {
+	var b strings.Builder
+	for _, p := range append([]string{name}, labels...) {
+		b.WriteString(strconv.Itoa(len(p)))
+		b.WriteByte(':')
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+// lateLabels returns the labels of a late series of s: node, then the name, value pairs of labels
+// in order (OBS-150).
+func (s *System) lateLabels(labels []string) []MetricLabel {
+	out := make([]MetricLabel, 0, 1+len(labels)/2)
+	out = append(out, MetricLabel{Name: "node", Value: s.node})
+	for i := 0; i < len(labels); i += 2 {
+		out = append(out, MetricLabel{Name: labels[i], Value: labels[i+1]})
+	}
+	return out
 }
 
 // registerLabeled registers one counter series of name for each element of dst, in order: element i
