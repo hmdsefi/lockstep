@@ -191,6 +191,20 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/dedup, func NewWindow[K comparable](Config) *Window[K]
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Add(time.Time, K) bool
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Config() Config
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Contains(time.Time, K) bool
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Forget(K)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Len(time.Time) int
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) MarshalJSON() ([]byte, error)
+pkg github.com/hmdsefi/lockstep/dedup, method (Config) Validate() error
+pkg github.com/hmdsefi/lockstep/dedup, type Config struct
+pkg github.com/hmdsefi/lockstep/dedup, type Config struct, Capacity int
+pkg github.com/hmdsefi/lockstep/dedup, type Config struct, TTL time.Duration
+pkg github.com/hmdsefi/lockstep/dedup, type Window[K comparable] struct
+pkg github.com/hmdsefi/lockstep/dedup, var ErrInvalidConfig error
+pkg github.com/hmdsefi/lockstep/dedup, var ErrInvalidEncoding error
 pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch = 256
 pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch ideal-int
 pkg github.com/hmdsefi/lockstep/persist, const MaxIDLen = 80
