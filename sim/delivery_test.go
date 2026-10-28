@@ -22,8 +22,8 @@ import (
 // LOCKSTEP_CHECK_DETERMINISM, starts fresh; a test that counts across seeds adds the counts of
 // each run after it ends.
 
-// dlvOptions returns the options of DLV §10.2: seeds seeds of 2 s each. A failing variant passes
-// 0 and names its one seed to sim.SimulateSeeds.
+// dlvOptions returns the options of DLV §10.2: the given number of seeds, 2 s each. A failing
+// variant passes 0 and names its one seed to sim.SimulateSeeds.
 func dlvOptions(seeds int) sim.Options {
 	return sim.Options{Options: faultline.Options{Seeds: seeds, Duration: 2 * time.Second}}
 }
@@ -38,8 +38,8 @@ func dlvForward[M any](to lockstep.PID[M], errs *[]error) *actor[M] {
 	}}
 }
 
-// checkForwarded fails the seed if a forwarding actor of the run could not send.
-func checkForwarded(s *sim.Sim, errs []error) {
+// dlvCheckForwarded fails the seed if a forwarding actor of the run could not send.
+func dlvCheckForwarded(s *sim.Sim, errs []error) {
 	if len(errs) != 0 {
 		s.World().T().Errorf("forwarding failed: %v", errs)
 	}
@@ -240,7 +240,7 @@ func (r *dlvOrdersRun) cancel(id string) {
 // end runs to the end of the run and checks that the router forwarded every message.
 func (r *dlvOrdersRun) end() {
 	runToEnd(r.s)
-	checkForwarded(r.s, r.errs)
+	dlvCheckForwarded(r.s, r.errs)
 }
 
 // DlvUpdate sets Entity's value to Value as of Version. The sender numbers each entity's updates
@@ -350,7 +350,7 @@ func (r *dlvUpdatesRun) record(e string, v uint64) {
 // end runs to the end of the run and checks that the relays forwarded every update.
 func (r *dlvUpdatesRun) end() {
 	runToEnd(r.s)
-	checkForwarded(r.s, r.errs)
+	dlvCheckForwarded(r.s, r.errs)
 }
 
 // The failing variants of AT-DLV-22, 24, 25 and 27: each runs one seed and fails it.
@@ -453,8 +453,8 @@ func TestATDLV26Tombstones(t *testing.T) {
 		tombstoned += r.state.tombstoned
 		removed += r.state.removed
 	})
-	if seeds != 20 {
-		t.Logf("skipped the cross-seed checks, which need 20 seeds: this run had %d", seeds)
+	if seeds != 20 || t.Failed() {
+		t.Logf("skipped the cross-seed checks, which need 20 seeds and no failed seed: this run had %d seeds", seeds)
 		return
 	}
 	t.Logf("across the runs, %d cancels added a tombstone and %d removed a live order", tombstoned, removed)
@@ -491,8 +491,8 @@ func TestATDLV28VersionGate(t *testing.T) {
 		r.end()
 		rejected += r.state.rejected
 	})
-	if seeds != 20 {
-		t.Logf("skipped the cross-seed checks, which need 20 seeds: this run had %d", seeds)
+	if seeds != 20 || t.Failed() {
+		t.Logf("skipped the cross-seed checks, which need 20 seeds and no failed seed: this run had %d seeds", seeds)
 		return
 	}
 	t.Logf("across the runs, the gate rejected %d updates", rejected)
