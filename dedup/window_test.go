@@ -61,6 +61,14 @@ func check(t *testing.T, call string, got, want bool) {
 	}
 }
 
+// checkGet reports a Get whose result differs from want.
+func checkGet[V comparable](t *testing.T, call string, got V, ok bool, want V, wantOK bool) {
+	t.Helper()
+	if got != want || ok != wantOK {
+		t.Errorf("%s = %v, %t; want %v, %t", call, got, ok, want, wantOK)
+	}
+}
+
 // ent is a Window[string] entry in an expected encoding.
 type ent struct {
 	k  string
@@ -175,7 +183,7 @@ func TestATDLV03TimeRange(t *testing.T) {
 	}
 }
 
-// A zeroCall is a method call on a zero value and the text it is checked under.
+// A zeroCall is a method call on a zero value.
 type zeroCall struct {
 	call string
 	f    func()
