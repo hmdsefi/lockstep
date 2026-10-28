@@ -29,11 +29,15 @@ const (
 )
 
 // checkSeries fails the test unless, of the series called name that rec registered, the one whose
-// label has the value v reads want[v], and every other one reads 0. It fails the test too if want
-// names a value the series have no such label for.
+// label has the value v reads want[v], and every other one reads 0. It fails the test too if rec
+// registered no series called name with that label, or if want names a value the series have no
+// such label for.
 func checkSeries(t *testing.T, rec *recMetrics, name, label string, want map[string]uint64) {
 	t.Helper()
 	values := labelValues(rec, name, label)
+	if len(values) == 0 {
+		t.Fatalf("no series %s with label %s", name, label)
+	}
 	for v := range want {
 		if !slices.Contains(values, v) {
 			t.Fatalf("%s has no series with %s=%q, only %q", name, label, v, values)
