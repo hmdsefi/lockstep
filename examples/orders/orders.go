@@ -57,9 +57,11 @@ type Result struct {
 // Msg is the message type of Orders.
 type Msg interface{ isOrdersMsg() }
 
-// Create creates order ID and charges Amount for it. ID is the idempotency key: a Create for an
-// ID that Orders is charging, or that it settled recently (see New), charges nothing and answers
-// with the order's status.
+// Create creates order ID and charges Amount for it. ID is the idempotency key: Orders answers a
+// Create without charging if it holds the first Result for ID (and answers with it), if it holds
+// the order's record (and answers with the order's status, once its charge ends if the order is
+// still pending), or if it holds a tombstone for ID (and answers Cancelled). New says how long it
+// holds each.
 type Create struct {
 	ID     string
 	Amount int
@@ -176,9 +178,10 @@ type Orders struct {
 // of a request can still arrive. Checkout, as the tests configure it, makes three attempts with
 // a timeout of 100 ms and no wait between them, so its last Create is sent 2 x 100 ms after the
 // first and takes about 5 ms to arrive: a retry arrives within about 205 ms of the first Create.
-// A Cancel can reach Orders before the first Create is even sent, by at most the fraud check
-// (50 ms), so a tombstone must last about 260 ms. A TTL of one second covers both. Capacity must
-// hold every ID written within one TTL: here, 1024 orders per second.
+// A Cancel can reach Orders before Checkout has sent the first Create: the submit takes up to
+// 5 ms to reach Checkout and the fraud check up to 50 ms, so a tombstone must last about
+// 5 + 50 + 205 = 260 ms. A TTL of one second covers both. Capacity must hold every distinct ID
+// written within one TTL; 1024 is room for 1024 orders.
 func New(api Payments, bugs Bugs) func() lockstep.Actor[Msg] {
 	cfg := dedup.Config{Capacity: 1024, TTL: time.Second}
 	return func() lockstep.Actor[Msg] {
@@ -209,18 +212,20 @@ func (s *Orders) Receive(ctx *lockstep.Context[Msg], msg Msg) {
 // create charges a new order. It answers a retry, and a Create that follows its Cancel, without
 // charging.
 func (s *Orders) create(ctx *lockstep.Context[Msg], m Create) {
-	if r, ok := s.settled.Get(ctx.Now(), m.ID); ok && s.bugs&BugNoDedup == 0 {
-		m.Reply.Send(ctx, r) // a retry of an order that has ended: the first Result
-		return
-	}
-	if o, ok := s.orders[m.ID]; ok && s.bugs&BugNoDedup == 0 {
-		// A retry of a live order: wait for its charge, or answer Created.
-		if o.status == Pending {
-			o.waiters = append(o.waiters, m.Reply)
+	if s.bugs&BugNoDedup == 0 {
+		if r, ok := s.settled.Get(ctx.Now(), m.ID); ok {
+			m.Reply.Send(ctx, r) // a retry of an order that has ended: the first Result
 			return
 		}
-		m.Reply.Send(ctx, Result{ID: m.ID, Status: o.status})
-		return
+		if o, ok := s.orders[m.ID]; ok {
+			// A retry of a live order: wait for its charge, or answer Created.
+			if o.status == Pending {
+				o.waiters = append(o.waiters, m.Reply)
+				return
+			}
+			m.Reply.Send(ctx, Result{ID: m.ID, Status: o.status})
+			return
+		}
 	}
 	if s.tombs.Contains(ctx.Now(), m.ID) {
 		// The Cancel came first: refuse the Create and charge nothing.

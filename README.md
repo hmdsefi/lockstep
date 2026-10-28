@@ -50,6 +50,10 @@ lockstep includes:
   the reference journal and snapshot store. The same actor code runs on the operating system's files
   in production and on a simulated disk in tests, where crashes, torn writes, and failed syncs
   exercise the real recovery code.
+- **Delivery helpers.** `lockstep/dedup` holds the state that handling duplicate and stale messages
+  needs: a `Window` of idempotency keys and tombstones, a `Replies` cache of first replies, and a
+  `Versions` gate per entity. Each value is bounded by age and count, and a persistent actor keeps
+  it in its snapshots.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
@@ -731,11 +735,12 @@ github.com/hmdsefi/lockstep          actor runtime
 ├── lockstep.New()                   production engine for your program
 ├── lockstep/persist                 event-sourced actors
 │   └── persist/filestore            their journal and snapshot store, in files
+├── lockstep/dedup                   state for duplicate and stale messages
 └── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
 ```
 
-`persist` and `persist/filestore` do not import faultline either. `sim` gives them a simulated disk
-through `(*Sim).Volume`.
+`persist`, `persist/filestore` and `dedup` do not import faultline either. `sim` gives the first two
+a simulated disk through `(*Sim).Volume`.
 
 ## Limitations
 

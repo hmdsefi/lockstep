@@ -34,7 +34,7 @@ go test ./...
 ```
 
 ```text
-ok  	github.com/hmdsefi/lockstep/examples/orders	0.994s
+ok  	github.com/hmdsefi/lockstep/examples/orders	1.072s
 ```
 
 ## Plant a bug

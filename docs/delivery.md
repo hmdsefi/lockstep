@@ -198,9 +198,9 @@ A tombstone needs longer. A Cancel can reach Orders before Checkout has sent the
 because the submit takes up to 5 ms to reach Checkout and its fraud check up to 50 ms. A
 tombstone must last 5 + 50 + 205 = 260 ms. One second covers both.
 
-`Capacity` must hold every key written within one `TTL`. Orders sets 1024, which is room for 1024
-orders per second. A full value removes its oldest entry to make room for a new one, so that key
-stops being visible before its `TTL` ends.
+`Capacity` must hold every key written within one `TTL`. Orders sets 1024, so it holds up to 1024
+distinct orders within one `TTL`. A full value removes its oldest entry to make room for a new
+one, so that key stops being visible before its `TTL` ends.
 
 A key that leaves early, by age or by capacity, lets a late copy through as a new request. If
 `settled` has forgotten an order that ended Failed or Cancelled, a late retry is charged again,
@@ -248,7 +248,7 @@ case Update:
 
 `Versions` forgets an entity as a `Window` forgets a key, and an order it has forgotten accepts
 any version. Set `TTL` longer than the time an update can take to arrive, retries included, and
-`Capacity` to the number of orders updated within one `TTL`. If the actor keeps a record per
+`Capacity` to at least the number of orders updated within one `TTL`. If the actor keeps a record per
 order anyway, store the version in the record and compare it there.
 
 ## Find both bugs with a seed
