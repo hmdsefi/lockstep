@@ -171,7 +171,8 @@ func checkDlvAsk(tt testing.TB, what string, v int64, err error, want int64) {
 // AT-DLV-29, DLV-230, DLV-430: a ledger that writes its reply cache only in Apply, with the time
 // carried by the event, rebuilds the cache after a crash, from its events alone or from a
 // snapshot, to the bytes it had before. The retry of a deposit after the restart then gets the
-// first reply, 10. Without a cache, the retry is applied again and gets 20.
+// first reply, 10. Without a cache, the second boot recovers the sum 10 and the retry is applied
+// again and gets 20.
 func TestATDLV29CachedReplySurvivesCrash(t *testing.T) {
 	cache := dedup.Config{Capacity: 1024, TTL: time.Hour}
 	empty, err := dedup.NewReplies[string, int64](cache).MarshalJSON()
@@ -216,6 +217,10 @@ func TestATDLV29CachedReplySurvivesCrash(t *testing.T) {
 			r := runDlvLedger(s, nil, false)
 			checkDlvAsk(tt, "first ask", r.v1, r.err1, 10)
 			checkDlvAsk(tt, "retry after the restart", r.v2, r.err2, 20)
+			// 20 is the recovered 10 plus the retry applied again, not a run without a crash.
+			if len(r.boots) != 2 || r.boots[1].sum != 10 {
+				tt.Errorf("Recovered calls by boot: %+v; want 2, the second with sum 10", r.boots)
+			}
 		}, 1)
 	})
 }
