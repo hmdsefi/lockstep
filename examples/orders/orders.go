@@ -57,11 +57,15 @@ type Result struct {
 // Msg is the message type of Orders.
 type Msg interface{ isOrdersMsg() }
 
-// Create creates order ID and charges Amount for it. ID is the idempotency key: Orders answers a
-// Create without charging if it holds the first Result for ID (and answers with it), if it holds
-// the order's record (and answers with the order's status, once its charge ends if the order is
-// still pending), or if it holds a tombstone for ID (and answers Cancelled). New says how long it
-// holds each.
+// Create creates order ID and charges Amount for it. ID is the idempotency key. Orders answers a
+// Create without charging in three cases:
+//
+//   - It holds the first Result for ID: it answers with that Result.
+//   - It holds the order's record: it answers with the order's status, after the charge ends if the
+//     order is still pending.
+//   - It holds a tombstone for ID: it answers Cancelled.
+//
+// Orders says how long it keeps a record, and New how long it keeps a Result or a tombstone.
 type Create struct {
 	ID     string
 	Amount int
@@ -96,7 +100,8 @@ func (refunded) isOrdersMsg() {}
 type Bugs uint8
 
 const (
-	// BugNoDedup charges every Create, even a retry of an order that Orders has seen.
+	// BugNoDedup skips the idempotency checks, so a retry of an order that Orders has seen is
+	// charged again.
 	BugNoDedup Bugs = 1 << iota
 	// BugDropEarlyCancel ignores a Cancel for an order that Orders has not seen.
 	BugDropEarlyCancel
@@ -180,8 +185,9 @@ type Orders struct {
 // first and takes about 5 ms to arrive: a retry arrives within about 205 ms of the first Create.
 // A Cancel can reach Orders before Checkout has sent the first Create: the submit takes up to
 // 5 ms to reach Checkout and the fraud check up to 50 ms, so a tombstone must last about
-// 5 + 50 + 205 = 260 ms. A TTL of one second covers both. Capacity must hold every distinct ID
-// written within one TTL; 1024 is room for 1024 orders.
+// 5 + 50 + 205 = 260 ms. A TTL of one second covers both. Capacity must cover every distinct order
+// written within one TTL: past that, the oldest entry goes early, and a copy of its request is no
+// longer caught.
 func New(api Payments, bugs Bugs) func() lockstep.Actor[Msg] {
 	cfg := dedup.Config{Capacity: 1024, TTL: time.Second}
 	return func() lockstep.Actor[Msg] {

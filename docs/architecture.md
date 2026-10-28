@@ -34,7 +34,7 @@ operating system's files in production and faultline's simulated disk in tests.
 Package `lockstep/dedup` stands beside them. It holds the state that handling duplicate and stale
 messages needs, as plain actor state: a window of keys, a cache of first replies, and a version
 gate. It uses only the standard library, and no runtime package imports it.
-[Messages and mailboxes](#messages-and-mailboxes) says where those messages come from.
+[Message delivery](delivery.md) says where those messages come from and how `dedup` handles them.
 
 ## Nondeterminism goes through the runtime
 
@@ -543,13 +543,15 @@ The same analyzers run in golangci-lint as a module plugin.
 
 ## Modules and the production boundary
 
-The repository holds three Go modules:
+The repository holds four Go modules:
 
 - `github.com/hmdsefi/lockstep`, the root module: the runtime, `sim`, `persist`,
   `persist/filestore`, `dedup`, and internal packages for the engine seam, the production engine,
   mailboxes, supervision, the registry and overload state.
 - `github.com/hmdsefi/lockstep/analysis`: `lockstep-vet` and the golangci-lint plugin.
 - `github.com/hmdsefi/lockstep/examples/raft`: the Raft example.
+- `github.com/hmdsefi/lockstep/examples/orders`: the order service example of
+  [Message delivery](delivery.md).
 
 Only `sim` imports faultline. A program that imports `lockstep`, `persist`, `persist/filestore`
 and `dedup` and not `sim` never links faultline or gograph; CI checks this with `go list -deps`
