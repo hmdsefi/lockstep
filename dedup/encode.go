@@ -6,8 +6,10 @@ package dedup
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -141,7 +143,11 @@ func (s *store[K, V]) unmarshal(k kind, data []byte, value entryValue[V]) error 
 		if e.At > env.Last {
 			return invalidf("entry %d: at %d after last %d", i, e.At, env.Last)
 		}
-		if prev, dup := fresh.index[key]; dup {
+		prev, dup, err := lookup(fresh.index, key)
+		if err != nil {
+			return invalidf("entry %d: key: %v", i, err)
+		}
+		if dup {
 			j := slices.Index(nodes, prev)
 			return invalidf("entry %d: key equals entry %d's", i, j)
 		}
@@ -152,4 +158,21 @@ func (s *store[K, V]) unmarshal(k kind, data []byte, value entryValue[V]) error 
 	}
 	*s = fresh
 	return nil
+}
+
+// lookup returns index[key]. A key whose dynamic type cannot be hashed, such as a map decoded into
+// an interface K, makes the map panic; lookup recovers that runtime error, and no other panic, and
+// returns it, so such a key fails the decode instead of crashing it.
+func lookup[K comparable, V any](index map[K]*node[K, V], key K) (n *node[K, V], ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			re, isRuntime := r.(runtime.Error)
+			if !isRuntime || !strings.Contains(re.Error(), "hash of unhashable type") {
+				panic(r)
+			}
+			err = re
+		}
+	}()
+	n, ok = index[key]
+	return n, ok, nil
 }

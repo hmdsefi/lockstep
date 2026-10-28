@@ -6,6 +6,7 @@ package dedup
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -40,6 +41,13 @@ func versionsReceiver() receiver {
 	return v
 }
 
+// anyWindowReceiver returns a Window[any] {2, 0} holding "a" at t0.
+func anyWindowReceiver() receiver {
+	w := NewWindow[any](Config{2, 0})
+	w.Add(t0, "a")
+	return w
+}
+
 // A decodeCase is an input of AT-DLV-18 for a receiver. want is the error text after invalidPrefix.
 // Where the tail is an encoding/json error it is built by jsonErr from the same bytes, so the test
 // does not depend on the wording of one Go release.
@@ -58,6 +66,12 @@ func jsonErr[T any](data string) string {
 		panic("jsonErr: " + data + " decodes")
 	}
 	return err.Error()
+}
+
+// unhashable returns the text of the runtime error a map with interface keys panics with when it
+// is looked up with k, whose dynamic type cannot be hashed.
+func unhashable(k any) string {
+	return fmt.Sprint(panicOf(func() { _ = map[any]bool{}[k] }))
 }
 
 // decodeCases are the invalid encodings of AT-DLV-18 and the order of DLV-210's checks. Each
@@ -120,6 +134,24 @@ var decodeCases = []decodeCase{
 	{name: "Window first failing entry wins", receiver: windowReceiver,
 		input: `{"dedup":1,"type":"window","capacity":4,"ttl":0,"last":5,"entries":[{"k":"a","at":1},{"k":"b","at":2},{"k":"b","at":3},{"k":"c","at":9}]}`,
 		want:  "entry 2: key equals entry 1's"},
+	{name: "Window type before bounds", receiver: windowReceiver,
+		input: `{"dedup":1,"type":"replies","capacity":0,"ttl":0,"last":0,"entries":[]}`,
+		want:  `type "replies", want "window"`},
+	{name: "Window entry count before entries", receiver: windowReceiver,
+		input: `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":3,"entries":[{"k":5,"at":1},{"k":"b","at":2},{"k":"c","at":3}]}`,
+		want:  "3 entries, more than capacity 2"},
+	{name: "Window duplicate names the earlier equal entry", receiver: windowReceiver,
+		input: `{"dedup":1,"type":"window","capacity":3,"ttl":0,"last":1,"entries":[{"k":"a","at":1},{"k":"b","at":1},{"k":"a","at":1}]}`,
+		want:  "entry 2: key equals entry 0's"},
+	{name: "Window at order before duplicate", receiver: windowReceiver,
+		input: `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":2,"entries":[{"k":"a","at":2},{"k":"a","at":1}]}`,
+		want:  "entry 1: at 1 before entry 0's 2"},
+	{name: "Window null entry", receiver: windowReceiver,
+		input: `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":1,"entries":[null]}`,
+		want:  "entry 0: key: " + jsonErr[string]("")},
+	{name: "Window[any] key that cannot be hashed", receiver: anyWindowReceiver,
+		input: `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":1,"entries":[{"k":{"a":1},"at":1}]}`,
+		want:  "entry 0: key: " + unhashable(map[string]any{})},
 
 	// Replies.
 	{name: "Replies truncated JSON", receiver: repliesReceiver, input: `{`,
@@ -280,6 +312,34 @@ var replaceCases = []replaceCase{
 		receiver:   windowReceiver,
 		input:      `{"extra":[1,2],"dedup":1,"type":"window","capacity":2,"ttl":0,"last":7,"entries":[{"k":"z","at":7,"more":null}]}`,
 		want:       windowJSON(2, 0, 7, ent{"z", 7}),
+		wantConfig: Config{2, 0},
+	},
+	{
+		name:       "Window missing last decodes as 0",
+		receiver:   windowReceiver,
+		input:      `{"dedup":1,"type":"window","capacity":2,"ttl":0,"entries":[{"k":"z","at":0}]}`,
+		want:       windowJSON(2, 0, 0, ent{"z", 0}),
+		wantConfig: Config{2, 0},
+	},
+	{
+		name:       "Window missing entries decodes as none",
+		receiver:   windowReceiver,
+		input:      `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":7}`,
+		want:       windowJSON(2, 0, 7),
+		wantConfig: Config{2, 0},
+	},
+	{
+		name:       "Window null entries decodes as none",
+		receiver:   windowReceiver,
+		input:      `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":7,"entries":null}`,
+		want:       windowJSON(2, 0, 7),
+		wantConfig: Config{2, 0},
+	},
+	{
+		name:       "Window null key decodes as the zero key",
+		receiver:   windowReceiver,
+		input:      `{"dedup":1,"type":"window","capacity":2,"ttl":0,"last":1,"entries":[{"k":null,"at":1}]}`,
+		want:       windowJSON(2, 0, 1, ent{"", 1}),
 		wantConfig: Config{2, 0},
 	},
 	{
