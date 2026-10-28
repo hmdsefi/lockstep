@@ -32,39 +32,31 @@ func repliesJSON(capacity int, ttl time.Duration, last int64, entries ...repEnt)
 	return b.String()
 }
 
-// checkReply reports a Get whose result differs from want.
-func checkReply[R comparable](t *testing.T, call string, got R, ok bool, want R, wantOK bool) {
-	t.Helper()
-	if got != want || ok != wantOK {
-		t.Errorf("%s = %v, %t; want %v, %t", call, got, ok, want, wantOK)
-	}
-}
-
 // AT-DLV-13, DLV-130: Put keeps the first reply and its age; Get reads without removing; the
 // capacity removes the oldest reply.
 func TestATDLV13Replies(t *testing.T) {
 	c := NewReplies[string, int](Config{2, 10 * sec})
 	r, ok := c.Get(t0, "k")
-	checkReply(t, `Get(t0, "k")`, r, ok, 0, false)
+	checkGet(t, `Get(t0, "k")`, r, ok, 0, false)
 	check(t, `Put(t0, "k", 1)`, c.Put(t0, "k", 1), true)
 	check(t, `Put(t0+1s, "k", 2)`, c.Put(at(sec), "k", 2), false)
 	r, ok = c.Get(at(9*sec), "k")
-	checkReply(t, `Get(t0+9s, "k")`, r, ok, 1, true)
+	checkGet(t, `Get(t0+9s, "k")`, r, ok, 1, true)
 	r, ok = c.Get(at(9*sec), "k") // Get does not remove
-	checkReply(t, `Get(t0+9s, "k") again`, r, ok, 1, true)
+	checkGet(t, `Get(t0+9s, "k") again`, r, ok, 1, true)
 	r, ok = c.Get(at(10*sec), "k") // the second Put did not refresh the age
-	checkReply(t, `Get(t0+10s, "k")`, r, ok, 0, false)
+	checkGet(t, `Get(t0+10s, "k")`, r, ok, 0, false)
 
 	c = NewReplies[string, int](Config{2, 10 * sec})
 	check(t, `Put(t0, "x", 1)`, c.Put(t0, "x", 1), true)
 	check(t, `Put(t0, "y", 2)`, c.Put(t0, "y", 2), true)
 	check(t, `Put(t0, "z", 3)`, c.Put(t0, "z", 3), true)
 	r, ok = c.Get(t0, "x")
-	checkReply(t, `Get(t0, "x")`, r, ok, 0, false)
+	checkGet(t, `Get(t0, "x")`, r, ok, 0, false)
 	r, ok = c.Get(t0, "y")
-	checkReply(t, `Get(t0, "y")`, r, ok, 2, true)
+	checkGet(t, `Get(t0, "y")`, r, ok, 2, true)
 	r, ok = c.Get(t0, "z")
-	checkReply(t, `Get(t0, "z")`, r, ok, 3, true)
+	checkGet(t, `Get(t0, "z")`, r, ok, 3, true)
 	if n := c.Len(t0); n != 2 {
 		t.Errorf("Len(t0) = %d, want 2", n)
 	}
@@ -78,9 +70,9 @@ func TestRepliesPutKeepsFirstAndOrder(t *testing.T) {
 	check(t, `Put(t0, "a", "second")`, c.Put(at(sec), "a", "second"), false)
 	c.Put(at(sec), "c", "c1") // removes the oldest, which is still a
 	r, ok := c.Get(at(sec), "a")
-	checkReply(t, `Get("a")`, r, ok, "", false)
+	checkGet(t, `Get("a")`, r, ok, "", false)
 	r, ok = c.Get(at(sec), "b")
-	checkReply(t, `Get("b")`, r, ok, "b1", true)
+	checkGet(t, `Get("b")`, r, ok, "b1", true)
 }
 
 // DLV-130: an expired reply is replaced by Put, and Forget lets the next Put store a new one.
@@ -89,10 +81,10 @@ func TestRepliesExpiredAndForget(t *testing.T) {
 	c.Put(t0, "k", 1)
 	check(t, `Put(t0+10s, "k", 2)`, c.Put(at(10*sec), "k", 2), true)
 	r, ok := c.Get(at(10*sec), "k")
-	checkReply(t, `Get(t0+10s, "k")`, r, ok, 2, true)
+	checkGet(t, `Get(t0+10s, "k")`, r, ok, 2, true)
 	c.Forget("k")
 	r, ok = c.Get(at(10*sec), "k")
-	checkReply(t, `Get after Forget`, r, ok, 0, false)
+	checkGet(t, `Get after Forget`, r, ok, 0, false)
 	check(t, `Put after Forget`, c.Put(at(10*sec), "k", 3), true)
 	c.Forget("absent") // does nothing
 	if n := c.Len(at(10 * sec)); n != 1 {
@@ -127,3 +119,38 @@ type replyFail struct{}
 var errReplyFail = errors.New("reply does not encode")
 
 func (replyFail) MarshalJSON() ([]byte, error) { return nil, errReplyFail }
+
+// DLV-130, DLV-070: Put of a live key that is not the oldest, in a full cache, returns false and
+// removes nothing: capacity applies only to a key that has no entry.
+func TestRepliesPutLiveKeyAtCapacity(t *testing.T) {
+	c := NewReplies[string, int](Config{3, 0})
+	c.Put(t0, "a", 1)
+	c.Put(at(sec), "b", 2)
+	c.Put(at(2*sec), "c", 3)
+	for _, k := range []string{"b", "c", "a"} { // a middle, the newest and the oldest key
+		check(t, `Put(t0+3s, "`+k+`")`, c.Put(at(3*sec), k, 9), false)
+	}
+	want := repliesJSON(3, 0, 4e9, repEnt{"a", 1e9, 1}, repEnt{"b", 2e9, 2}, repEnt{"c", 3e9, 3})
+	if got := encode(t, c); got != want {
+		t.Errorf("encoding is\n%s\nwant\n%s", got, want)
+	}
+	check(t, `Put(t0+4s, "d")`, c.Put(at(4*sec), "d", 4), true) // a key without an entry evicts the oldest
+	r, ok := c.Get(at(4*sec), "a")
+	checkGet(t, `Get("a")`, r, ok, 0, false)
+	r, ok = c.Get(at(4*sec), "b")
+	checkGet(t, `Get("b")`, r, ok, 2, true)
+}
+
+// DLV-040, DLV-060, DLV-130: Put of a live key is a write call, so it sets last and removes the
+// entries that have expired, though it changes nothing for the key.
+func TestRepliesPutLiveKeyIsAWrite(t *testing.T) {
+	c := NewReplies[string, int](Config{4, 10 * sec})
+	c.Put(t0, "old", 1)
+	c.Put(at(5*sec), "mid", 2)
+	check(t, `Put(t0+12s, "mid", 3)`, c.Put(at(12*sec), "mid", 3), false)
+	// old is 11s old and removed; mid keeps its reply, time and place; last is t0+12s.
+	want := repliesJSON(4, 10*sec, 13e9, repEnt{"mid", 6e9, 2})
+	if got := encode(t, c); got != want {
+		t.Errorf("encoding is\n%s\nwant\n%s", got, want)
+	}
+}
