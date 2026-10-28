@@ -276,9 +276,10 @@ dependency to your module.
 when `New` runs, so a later `slog.SetDefault` does not change a running system. To discard the
 logs, pass `slog.New(slog.DiscardHandler)`.
 
-Inside an actor, `ctx.Logger()` returns the system logger with the actor's `node`, `path`, and
-`uid` attributes. `ctx.Logf` logs a formatted line at Info through it, and the record's source is
-the line that called `Logf`. The quick start's counter can log each addition:
+Inside an actor, `ctx.Logger()` returns the system logger with the actor's `node`, `path`, and `uid`
+attributes. `ctx.Logf` logs a formatted line at Info through it, and the record's source is the line
+that called `Logf`. The quick start's counter can log each addition, with `log/slog` and `os` added
+to its imports:
 
 ```go
 // In main:
@@ -295,26 +296,19 @@ The runtime logs its own events through the same logger: failures and restarts, 
 overload events above. The Debug events are a full mailbox, a shed message, a dropped message, and a
 dead letter.
 
-`WithMetrics` takes a value that implements `Metrics`. lockstep ships no adapter. You write one
-for the backend you use, such as Prometheus, OpenTelemetry, or expvar:
-
-```go
-type Metrics interface {
-	Counter(name, help string, labels ...MetricLabel) Counter
-	GaugeFunc(name, help string, fn func() int64, labels ...MetricLabel)
-}
-
-type Counter interface{ Add(n uint64) }
-
-type MetricLabel struct{ Name, Value string }
-```
+`WithMetrics` takes a value that implements `lockstep.Metrics`. lockstep ships no adapter, so you
+write one for the backend you use, such as Prometheus, OpenTelemetry, or expvar. Its `Counter`
+method registers a counter series and returns a `lockstep.Counter`, and its `GaugeFunc` method
+registers a gauge function. Both take the series' labels as `lockstep.MetricLabel` values.
+[Metrics](docs/architecture.md#metrics) in the architecture page shows the whole interface.
 
 `New` registers every series with the backend before it returns, and each series carries a `node`
 label first. lockstep adds to the counters as events happen, and the backend calls the gauge
 functions when it collects. Without `WithMetrics`, nothing is registered or counted.
 
-In simulation, `ctx.Logger()` and `ctx.Logf` write to the node's kernel log, a record in the trace,
-so the same seed gives the same lines. Metrics are off there, and `WithLogger` and `WithMetrics` in
+In simulation, `ctx.Logger()` and `ctx.Logf` write to the node's kernel log. faultline gives each
+simulated node a kernel log, and its records go into `trace.jsonl` and the trace hash. The same seed
+therefore gives the same lines. Metrics are off there, and `WithLogger` and `WithMetrics` in
 `sim.Options.System` have no effect.
 
 [Architecture](docs/architecture.md#logs-and-metrics) lists every event with its level and
@@ -795,14 +789,14 @@ through `(*Sim).Volume`.
 
 ## Limitations
 
-lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`.
-It cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not
-free the worker. There is no remoting, clustering, or OpenTelemetry support, so actors
-on different nodes talk only in simulation. The reference store in `persist/filestore` keeps files
-on a local disk; a journal or snapshot store of another kind implements `persist.Journal` and
-`persist.SnapshotStore`. Use one `filestore.Store` per directory: two Stores on the same
-directory, in one process or in two, are not detected and can overwrite each other's committed
-events.
+lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`. It
+cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not free
+the worker. There is no remoting or clustering, so actors on different nodes talk only in
+simulation, and lockstep ships no tracing or metrics adapter. The reference store in
+`persist/filestore` keeps files on a local disk; a journal or snapshot store of another kind
+implements `persist.Journal` and `persist.SnapshotStore`. Use one `filestore.Store` per directory:
+two Stores on the same directory, in one process or in two, are not detected and can overwrite each
+other's committed events.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
