@@ -343,8 +343,17 @@ func spawnIdleTree(tb testing.TB, sys *lockstep.System, parents, children int) {
 
 // AT-OBS-10: OBS-100.
 func TestATOBS10GaugeDoesNotBlockSend(t *testing.T) {
+	// Every message is a Send, and under the race detector, which CI runs with coverage counters
+	// on a shared machine, each costs several times what it does otherwise. The run is lighter
+	// there so that the bound of 10 s holds on a slow machine too: the poller still overlaps with
+	// thousands of Sends, which is what the detector needs to see a race.
+	messages := 100_000
+	if lockstep.RaceEnabled {
+		messages = 20_000
+	}
 	rec := &recMetrics{}
-	sys := newProdSystem(t, lockstep.WithNodeName("n1"), lockstep.WithMetrics(rec))
+	sys := lockstep.New(lockstep.WithNodeName("n1"), lockstep.WithMetrics(rec))
+	t.Cleanup(func() { shutdownNow(t, sys) })
 	spawnIdleTree(t, sys, 100, 100) // 10,000 idle actors
 	pp := newPingPong(t, sys)
 	depth := rec.find(t, "lockstep_mailbox_depth_total").fn
@@ -353,28 +362,35 @@ func TestATOBS10GaugeDoesNotBlockSend(t *testing.T) {
 	// single message in flight. A call reads each mailbox once, at its own moment, so a token that
 	// moves from one actor to the other during a call can be counted at both: the depth is 0, 1 or
 	// 2, never more.
-	stop := make(chan struct{})
-	type polled struct {
+	var p struct {
 		calls int
 		peak  int64
 	}
-	result := make(chan polled, 1)
+	stop, finished := make(chan struct{}), make(chan struct{})
 	go func() {
-		var p polled
+		defer close(finished)
 		for {
 			select {
 			case <-stop:
-				result <- p
 				return
 			default:
 			}
 			p.peak = max(p.peak, depth())
 			p.calls++
+			runtime.Gosched()
 		}
 	}()
-	pp.run(t, 100_000)
-	close(stop)
-	p := <-result
+	var stopOnce sync.Once
+	stopPoller := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-finished
+	}
+	// Registered after the system's shutdown, so it runs before it: a poller that outlived a failed
+	// run would make every final stop of the 10,000 actors wait for one of its calls.
+	t.Cleanup(stopPoller)
+
+	pp.run(t, messages)
+	stopPoller()
 	if p.calls == 0 {
 		t.Error("the poller never called the gauge")
 	}
