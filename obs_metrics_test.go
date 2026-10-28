@@ -16,6 +16,7 @@ import (
 
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/overload"
+	"go.uber.org/goleak"
 )
 
 // counterRow is one row of the counter table: a name, its help, and the label after node with its
@@ -356,6 +357,47 @@ func TestNewPropagatesBackendPanic(t *testing.T) {
 	}()
 	lockstep.New(lockstep.WithMetrics(panicMetrics{}), lockstep.WithWorkers(4))
 	t.Error("New returned")
+}
+
+// panicTransitions is a backend whose admission transitions counter panics when it is added to.
+type panicTransitions struct{ noopMetrics }
+
+type panicCounter struct{}
+
+func (panicCounter) Add(uint64) { panic("backend add") }
+
+func (panicTransitions) Counter(name, _ string, _ ...lockstep.MetricLabel) lockstep.Counter {
+	if name == "lockstep_admission_transitions_total" {
+		return panicCounter{}
+	}
+	return noopCounter{}
+}
+
+// OBS §7: a panic in Counter.Add during New's first heap sample, which counts the change of
+// admission that sample makes, propagates out of New too. The engine New started and its overload
+// machinery are stopped first: no goroutine of theirs is left.
+func TestNewPropagatesBackendPanicInFirstSample(t *testing.T) {
+	// A live heap of 2100 over the high mark of 2000 makes New's first sample turn admission off.
+	t.Cleanup(overload.SetReadMetrics(func(samples []metrics.Sample) {
+		for i := range samples {
+			switch samples[i].Name {
+			case "/gc/heap/live:bytes":
+				samples[i].Value = overload.Uint64Value(2100)
+			case "/gc/gomemlimit:bytes":
+				samples[i].Value = overload.Uint64Value(math.MaxInt64)
+			}
+		}
+	}))
+	func() {
+		defer func() {
+			if r := recover(); r != "backend add" {
+				t.Errorf("New panicked with %v, want the backend's panic", r)
+			}
+		}()
+		lockstep.New(lockstep.WithMetrics(panicTransitions{}), lockstep.WithAdmission(2000, 1000), lockstep.WithWorkers(4))
+		t.Error("New returned")
+	}()
+	goleak.VerifyNone(t)
 }
 
 // The admission and watchdog counters have no event in AT-OBS-08's scenario. This test checks that

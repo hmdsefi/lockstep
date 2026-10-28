@@ -146,20 +146,21 @@ func New(opts ...Option) *System {
 		panic(err) // unreachable: the options passed newConfig above
 	}
 	sys.events = sys.log
+	// A panic in the backend, while it registers or in the Counter.Add of the first heap sample,
+	// leaves the engine's workers and the overload machinery behind unless New stops them.
+	started := false
+	defer func() {
+		if !started {
+			sys.stopEngine()
+		}
+	}()
 	if cfg.metrics != nil {
 		// Counters register before the overload machinery starts, which can change admission and
-		// count that change (OBS-080). A panic in the backend leaves the engine's workers behind
-		// unless it stops them.
-		registered := false
-		defer func() {
-			if !registered {
-				pe.Stop()
-			}
-		}()
+		// count that change (OBS-080).
 		sys.registerMetrics(cfg.metrics)
-		registered = true
 	}
 	sys.startOverload(pe, gate, cfg)
+	started = true
 	return sys
 }
 
