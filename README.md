@@ -44,6 +44,9 @@ lockstep includes:
 - **Overload protection** in the production engine: new actors and user messages are refused while
   the live heap is near its memory limit, a turn that runs too long is reported and its actor
   isolated, and a growing goroutine count is logged.
+- **Logs and metrics.** The runtime logs failures, restarts, shutdown, and overload events to a
+  `log/slog` logger, and every actor has a logger of its own. Counters and gauges go to a backend
+  that you implement, for example for Prometheus, OpenTelemetry, or expvar.
 - **Event-sourced persistent actors.** `persist.Spawn` starts an actor whose state is rebuilt from a
   journal of events. A reply sent from a `Then` callback goes out only after its events are fsynced,
   and a restart recovers from the newest snapshot and the events after it. `persist/filestore` is
@@ -252,15 +255,70 @@ warning, the next one waits until the count falls below 80% of the bound and rea
 
 ### Logs and invalid values
 
-These events go to the logger that `slog.Default()` returned when `New` ran, each with a `node`
-attribute, so set the default logger before you call `New`. A negative watchdog timeout or goroutine
-bound, or a non-zero `WithAdmission` pair other than `0 < low < high`, makes `New` panic with an
-error that wraps `ErrInvalidOption`.
+These events go to the system logger, each with a `node` attribute. Without `WithLogger`, the
+system logger is the one `slog.Default()` returned when `New` ran, so set the default logger before
+you call `New`. [Logs and metrics](#logs-and-metrics) describes `WithLogger`. A negative watchdog
+timeout or goroutine bound, or a non-zero `WithAdmission` pair other than `0 < low < high`, makes
+`New` panic with an error that wraps `ErrInvalidOption`.
 
 Simulation checks these values and then ignores them. It stays deterministic, and overload there
 comes from `sim.Options.Budget` and `s.Pressure`, described in
 [Architecture](docs/architecture.md#overload). The actor cap, `WithMaxActors`, applies in both
 engines.
+
+## Logs and metrics
+
+`lockstep.New()` writes the runtime's events to a `log/slog` logger, gives every actor a logger of
+its own, and reports counters and gauges to a metrics backend that you provide. Neither adds a
+dependency to your module.
+
+`WithLogger` sets the system logger. Without it, the system logger is `slog.Default()` as it is
+when `New` runs, so a later `slog.SetDefault` does not change a running system. To discard the
+logs, pass `slog.New(slog.DiscardHandler)`.
+
+Inside an actor, `ctx.Logger()` returns the system logger with the actor's `node`, `path`, and
+`uid` attributes. `ctx.Logf` logs a formatted line at Info through it, and the record's source is
+the line that called `Logf`. The quick start's counter can log each addition:
+
+```go
+// In main:
+logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+sys := lockstep.New(lockstep.WithNodeName("counter-1"), lockstep.WithLogger(logger))
+
+// In Counter.Receive, after c.total += m.N:
+ctx.Logger().Info("added", "n", m.N, "total", c.total)
+```
+
+Each record carries `node`, `path`, and `uid` before `n` and `total`.
+
+The runtime logs its own events through the same logger: failures and restarts, shutdown, and the
+overload events above. The Debug events are a full mailbox, a shed message, a dropped message, and a
+dead letter.
+
+`WithMetrics` takes a value that implements `Metrics`. lockstep ships no adapter. You write one
+for the backend you use, such as Prometheus, OpenTelemetry, or expvar:
+
+```go
+type Metrics interface {
+	Counter(name, help string, labels ...MetricLabel) Counter
+	GaugeFunc(name, help string, fn func() int64, labels ...MetricLabel)
+}
+
+type Counter interface{ Add(n uint64) }
+
+type MetricLabel struct{ Name, Value string }
+```
+
+`New` registers every series with the backend before it returns, and each series carries a `node`
+label first. lockstep adds to the counters as events happen, and the backend calls the gauge
+functions when it collects. Without `WithMetrics`, nothing is registered or counted.
+
+In simulation, `ctx.Logger()` and `ctx.Logf` write to the node's kernel log, a record in the trace,
+so the same seed gives the same lines. Metrics are off there, and `WithLogger` and `WithMetrics` in
+`sim.Options.System` have no effect.
+
+[Architecture](docs/architecture.md#logs-and-metrics) lists every event with its level and
+attributes, every counter and gauge, and an example adapter.
 
 ## Deterministic simulation testing: the same actor under faults
 

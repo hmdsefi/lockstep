@@ -313,10 +313,294 @@ error.
 The sampler tick also counts the process's goroutines once a second. When the count reaches
 `WithGoroutineWarning`'s bound (10,000 by default), the system logs one Warn with the count and the
 ten functions that hold the most goroutines, and it warns again only after the count falls below
-80% of the bound. All of these events go to the logger `slog.Default()` returned when `New` ran,
-with the `node` attribute. [Protect the production engine from
+80% of the bound. All of these events go to the system logger with the `node` attribute, as
+[Logs and metrics](#logs-and-metrics) describes. [Protect the production engine from
 overload](../README.md#protect-the-production-engine-from-overload) lists the options and their
 defaults.
+
+## Logs and metrics
+
+A system reports what it does in two ways: log records on a `log/slog` logger, and counters and
+gauges on a metrics backend. Logging works without configuration, and metrics are off until you
+provide a backend. Neither adds a dependency to your module. Logging uses the standard library,
+and lockstep ships no metrics adapter, so you connect the `Metrics` interface to your backend
+yourself.
+
+### The system logger
+
+`WithLogger(l)` sets the system logger. It receives every runtime event, and every actor logger
+builds on it. Without `WithLogger`, and for `WithLogger(nil)`, the system logger is `slog.Default()`
+as it is when `New` runs. A later `slog.SetDefault` does not change a running system, so set the
+default logger before you call `New`, or pass the logger you want. To discard the logs, pass
+`slog.New(slog.DiscardHandler)`. lockstep calls your handler with `context.Background()`.
+
+### Actor loggers
+
+`ctx.Logger()` returns the system logger with three attributes added, in this order: `node`, the
+node name; `path`, such as `/user/orders/o-17`; and `uid`, the actor's unique `uint64`. lockstep
+builds the logger on the first call and returns the same `*slog.Logger` for the rest of the actor's
+life, so a restart keeps it. `Spawn` does not build one, so an actor that never logs allocates none.
+
+`ctx.Logf(format, args...)` logs the formatted text at Info through that logger. The record's
+source is the caller of `Logf`, so `slog.HandlerOptions{AddSource: true}` reports the file and line
+of your code. When the logger is not enabled for Info, `Logf` formats nothing.
+
+### Runtime events
+
+The runtime logs only the events in the following table, through the system logger. An event about
+one actor carries that actor's `node`, `path`, and `uid` first, then the attributes in the table. An
+event about the system carries `node` first.
+
+| Message | Level | About | Attributes |
+|---|---|---|---|
+| `actor failed` | Error | the failed actor | `err`, `directive`, `panic` |
+| `restart intensity exceeded` | Error | the failing actor | `max_restarts`, `window` |
+| `actor restarted` | Info | the restarted actor | `err` |
+| `stopped hook panicked` | Error | the actor | `panic`, `stack` |
+| `resource close failed` | Warn | the actor | `err`, `index` |
+| `effect panicked` | Error | the actor that started the effect | `effect`, `panic`, `stack` |
+| `turn exceeds watchdog timeout` | Error | the stuck actor | `elapsed`, `timeout`, `stack` |
+| `admission refusing` | Warn | the system | `heap_live_bytes`, `high_mark_bytes` |
+| `admission resumed` | Info | the system | `heap_live_bytes`, `low_mark_bytes` |
+| `goroutine count above bound` | Warn | the system | `goroutines`, `bound`, `summary` |
+| `shutdown started` | Info | the system | `actors` |
+| `shutdown finished` | Info | the system | `elapsed` |
+| `shutdown incomplete` | Error | the system | `err` |
+| `mailbox full` | Debug | the receiving actor | `policy` |
+| `message shed` | Debug | the receiving actor | `policy`, `reason` |
+| `message dropped` | Debug | the receiving actor | `reason` |
+| `dead letter` | Debug | the system | `to`, `reason`, `type` |
+
+A `Receive` that panics with `boom` under the default strategy logs the first two records of the
+following output, from a system with `slog.NewTextHandler` as its logger and the node name
+`orders-1`. The last two records come from `Shutdown`, and the output leaves out the `time`
+attribute:
+
+```text
+level=ERROR msg="actor failed" node=orders-1 path=/user/orders uid=11270643472090005507 err="lockstep: panic: boom" directive=restart panic=true
+level=INFO msg="actor restarted" node=orders-1 path=/user/orders uid=11270643472090005507 err="lockstep: panic: boom"
+level=INFO msg="shutdown started" node=orders-1 actors=1
+level=INFO msg="shutdown finished" node=orders-1 elapsed=93µs
+```
+
+The attributes have these values:
+
+- `err` is the error as it is. A panic arrives as a `*PanicError` whose text is
+  `lockstep: panic: <value>`. `actor restarted` logs the failure that ended the incarnation, and
+  `shutdown incomplete` logs the context's error when the context given to `Shutdown` ends before
+  the system has stopped.
+- `directive` is the directive that the supervisor applied: `restart`, `stop`, `escalate`, or
+  `resume`. When a restart would exceed the restart limit, lockstep logs `restart intensity exceeded`
+  first, and `actor failed` then shows the directive that replaced the restart. `max_restarts` and
+  `window` are the limit.
+- `panic` in `actor failed` is `true` for a panic in the actor's own code. A `ctx.Fail` call and a
+  failure that a child escalated log `false`.
+- `stack` is a goroutine stack as a string. For a stuck turn, it is the stack of the worker
+  goroutine that runs the turn.
+- `index` is the position of the resource in the order of `ctx.Own` calls, counted from 0.
+- `policy` is the mailbox policy: `fail-send`, `drop-newest`, `drop-oldest`, or `block-sender`.
+- `reason` in `message shed` is `memory` while admission control refuses work, or `stuck` for a
+  message to a stuck actor.
+- `reason` in `message dropped` is `drop-newest`, `drop-oldest`, `late-reply`, or
+  `cancelled-effect`. A late reply is one that arrives after its ask resolved, and the record is
+  about the ask's address, `/temp/<n>`. A cancelled effect is one that a stop or restart cancelled,
+  and the record is about the actor that started it.
+- `reason` in `dead letter` is `stopped` when the address names an actor that has stopped,
+  `not-found` when a path address matches no actor that accepts the message's type, or `unreachable`
+  when the address names another node. `to` is the address string and `type` is the message's Go
+  type.
+
+The Debug events can be frequent while a system is overloaded. lockstep asks the logger whether
+Debug is enabled before it builds the record, so a logger at Info or above causes no allocation for
+them.
+
+### Metrics
+
+`WithMetrics(m)` gives the system a metrics backend. `Metrics` has two methods, and a counter has
+one:
+
+```go
+type Metrics interface {
+	Counter(name, help string, labels ...MetricLabel) Counter
+	GaugeFunc(name, help string, fn func() int64, labels ...MetricLabel)
+}
+
+type Counter interface{ Add(n uint64) }
+
+type MetricLabel struct{ Name, Value string }
+```
+
+`Counter` registers one counter series and returns it. lockstep keeps the result and calls its
+`Add` method when the event happens, from any goroutine, including inside actor turns. `GaugeFunc`
+registers a function that returns the series' current value, and the backend calls it whenever it
+collects. Implementations must be safe for concurrent use, and lockstep does not recover a panic
+from the backend. The doc comment of `Metrics` states the full contract.
+
+`New` registers every series in the next two sections once, before it returns. Each series carries
+the label `node` first, set to the system's node name, then its own labels. If two systems with the
+same node name share one backend, they register the same series, and your implementation decides
+what that means. Every label value comes from a small fixed set, so the number of series is fixed.
+lockstep labels nothing by actor path, message type, or error text, and it has no histograms.
+Without `WithMetrics`, nothing is registered and the runtime skips counting.
+
+The following adapter keeps each counter and each gauge function in a map, and the program reads
+two series after it spawns an actor. An adapter for a real backend hands each series to that
+backend's library instead:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/hmdsefi/lockstep"
+)
+
+// mapMetrics keeps each series in a map, keyed as name{label="value",...}.
+type mapMetrics struct {
+	mu       sync.Mutex
+	counters map[string]*atomic.Uint64
+	gauges   map[string]func() int64
+}
+
+func (m *mapMetrics) Counter(name, help string, labels ...lockstep.MetricLabel) lockstep.Counter {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := new(atomic.Uint64)
+	m.counters[key(name, labels)] = n
+	return counter{n}
+}
+
+func (m *mapMetrics) GaugeFunc(name, help string, fn func() int64, labels ...lockstep.MetricLabel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gauges[key(name, labels)] = fn
+}
+
+// counter adds to one entry of the map.
+type counter struct{ n *atomic.Uint64 }
+
+func (c counter) Add(n uint64) { c.n.Add(n) }
+
+// key returns the series' name and labels in the form name{label="value",...}.
+func key(name string, labels []lockstep.MetricLabel) string {
+	pairs := make([]string, len(labels))
+	for i, l := range labels {
+		pairs[i] = fmt.Sprintf("%s=%q", l.Name, l.Value)
+	}
+	return name + "{" + strings.Join(pairs, ",") + "}"
+}
+
+type Order struct{}
+
+type orders struct{}
+
+func (orders) Receive(*lockstep.Context[Order], Order) {}
+
+func main() {
+	m := &mapMetrics{counters: map[string]*atomic.Uint64{}, gauges: map[string]func() int64{}}
+	sys := lockstep.New(
+		lockstep.WithNodeName("orders-1"),
+		lockstep.WithMetrics(m),
+		lockstep.WithLogger(slog.New(slog.DiscardHandler)), // keep the output to the series
+	)
+	defer func() { _ = sys.Shutdown(context.Background()) }()
+
+	if _, err := lockstep.Spawn(sys, "orders", func() lockstep.Actor[Order] { return orders{} }); err != nil {
+		log.Fatal(err)
+	}
+
+	const spawned = `lockstep_actors_spawned_total{node="orders-1"}`
+	const live = `lockstep_actors{node="orders-1"}`
+	fmt.Println(spawned, m.counters[spawned].Load())
+	fmt.Println(live, m.gauges[live]())
+}
+```
+
+The program prints:
+
+```text
+lockstep_actors_spawned_total{node="orders-1"} 1
+lockstep_actors{node="orders-1"} 1
+```
+
+### Counters
+
+lockstep adds 1 to a counter each time its event happens. A counter with a label has one series for
+each value of the label.
+
+| Name | Labels after `node` | Help |
+|---|---|---|
+| `lockstep_actors_spawned_total` | none | `Actors spawned.` |
+| `lockstep_actors_stopped_total` | `reason`: `normal`, `failed`, `parent-stopping`, `shutdown` | `Actors stopped for good.` |
+| `lockstep_restarts_total` | none | `Actor restarts.` |
+| `lockstep_mailbox_full_total` | `policy`: `fail-send`, `drop-newest`, `drop-oldest`, `block-sender` | `Sends that found the target mailbox full.` |
+| `lockstep_shed_total` | `policy`: as for `lockstep_mailbox_full_total` | `User messages shed by admission control.` |
+| `lockstep_drops_total` | `reason`: `drop-newest`, `drop-oldest`, `late-reply`, `cancelled-effect` | `Messages and results discarded.` |
+| `lockstep_deadletters_total` | `reason`: `stopped`, `not-found`, `unreachable` | `Messages sent to dead letters.` |
+| `lockstep_admission_transitions_total` | `to`: `refusing`, `admitting` | `Admission control state changes.` |
+| `lockstep_stuck_turns_total` | none | `Turns reported by the watchdog.` |
+
+A counter counts whether or not its log event is enabled: a logger at Info does not stop
+`lockstep_mailbox_full_total` from counting. These rules say which counter an event adds to:
+
+- An actor that stops for good adds to `lockstep_actors_stopped_total`, labeled with its stop
+  reason. A restart ends an incarnation and not the actor, so it adds to `lockstep_restarts_total`
+  instead.
+- A send that finds a full mailbox adds to `lockstep_mailbox_full_total` once. A `BlockSender` send
+  counts once, when it first has to wait. Under `DropNewest` or `DropOldest`, the discarded message
+  also adds to `lockstep_drops_total`.
+- A user message that admission control refuses, or that goes to a stuck actor, adds to
+  `lockstep_shed_total` and to no other counter, whatever the actor's mailbox holds.
+- `lockstep_admission_transitions_total` counts each change of state under the label `to`:
+  `refusing` when admission control starts to refuse work, and `admitting` when it resumes.
+
+### Gauges
+
+A gauge function returns the current value of its series when the backend calls it.
+
+| Name | Help | Value |
+|---|---|---|
+| `lockstep_actors` | `Live actors.` | live actors, as the actor cap counts them, without the guardians |
+| `lockstep_mailbox_depth_total` | `User messages queued in all mailboxes.` | the sum over live actors |
+| `lockstep_mailbox_depth_max` | `User messages queued in the fullest mailbox.` | the largest queue, or 0 with no actors |
+| `lockstep_admission_enabled` | `1 if memory admission control is on.` | 1 or 0 |
+| `lockstep_admission_refusing` | `1 while admission control refuses work.` | 1 or 0 |
+| `lockstep_goroutines` | `Goroutines in the process.` | `runtime.NumGoroutine()` |
+
+The depth gauges read the length of each live actor's mailbox when the backend collects, so they
+visit every live actor each time. They count user messages and not the system queue. They hold a
+lock that `Spawn` and an actor's final stop also take, so a collection can delay those, but never a
+`Send` or a turn.
+
+After `Shutdown` returns, every gauge function returns 0 and no longer refers to the system. The
+exception is `lockstep_goroutines`, which keeps returning the process's goroutine count.
+
+### Logs and metrics in simulation
+
+In simulation, the actor logger writes to the node's kernel log instead of the system logger. Each
+record at Info or above becomes a `kernel.log` record of the node, and records below Info are
+dropped. The record's text is the level and the message, then one `key=value` pair for each
+attribute, separated by spaces: `node`, `path`, and `uid` first, then the record's attributes in
+call order, with groups flattened as `group.key`. `ctx.Logf` produces the same text. For example, the actor `/user/orders`
+on node `n1` that calls `ctx.Logger().Info("order accepted", "id", "o-17")` writes this text:
+
+```text
+INFO order accepted node=n1 path=/user/orders uid=4294967299 id=o-17
+```
+
+The record has no time, so its text depends only on the call. Like the `lockstep.<event>` records,
+it goes into `trace.jsonl` and the trace hash, so a replay of a seed writes the same lines.
+
+A system built for simulation logs none of the events in the runtime events table: the
+`lockstep.<event>` records carry the same information. Metrics are off, so nothing registers a
+series. `WithLogger` and `WithMetrics` in `sim.Options.System` have no effect.
 
 ## Persistence
 
