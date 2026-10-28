@@ -115,9 +115,10 @@ func (r *runningTurns) markStuck(t overload.Turn) {
 // onStuck reports a turn of t.Actor that has run for elapsed, at least the watchdog timeout, on the
 // watchdog's goroutine (OVL-510), before the adapter marks the actor (OVL-520): it counts the turn
 // (OBS-120) and logs OBS-060's "Stuck turn" event through the system's logger with the actor's
-// attributes in OBS-020's order and the stack of the turn's worker. A turn of the guardians, which are not a cell, carries the user
-// guardian's address. The address is safe to read here: it is written before the actor's first
-// turn, and the engine publishes the turn under a lock that RunningTurns takes.
+// attributes in OBS-020's order and the stack of the turn's worker. A turn of the guardians, which
+// are not a cell, carries the user guardian's address. The address is safe to read here: it is
+// written before the actor's first turn, and the engine publishes the turn under a lock that
+// RunningTurns takes.
 func (s *System) onStuck(t overload.Turn, elapsed, timeout time.Duration, stack string) {
 	s.countStuck() // counted whether or not the log is enabled
 	a := t.Actor.Address()

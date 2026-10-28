@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -685,6 +686,53 @@ func TestATOBS14RemainingEvents(t *testing.T) {
 			t.Errorf("err = %v, want context.Canceled", e)
 		}
 	})
+}
+
+// startedHook is a slog handler that calls hook when it handles the "shutdown started" record and
+// drops every record.
+type startedHook struct{ hook func() }
+
+func (h startedHook) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h startedHook) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == "shutdown started" {
+		h.hook()
+	}
+	return nil
+}
+
+func (h startedHook) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h startedHook) WithGroup(string) slog.Handler      { return h }
+
+// A handler that panics or calls runtime.Goexit while it handles "shutdown started" does not keep
+// the shutdown from completing (OBS-060, ACT-060): the first Shutdown still schedules the sweep,
+// so a later Shutdown waits for the actors to stop and returns nil.
+func TestShutdownCompletesAfterStartedHandlerExits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit func()
+	}{
+		{"panic", func() { panic("handler boom") }},
+		{"goexit", runtime.Goexit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys := newProdSystem(t, lockstep.WithLogger(slog.New(startedHook{hook: tc.exit})))
+			spawnObs(t, sys, "a", obsOf(&obsActor{}))
+			exited := make(chan struct{})
+			go func() {
+				defer close(exited)
+				defer func() { _ = recover() }()
+				_ = sys.Shutdown(context.Background())
+				t.Error("Shutdown returned, want the handler to end the call")
+			}()
+			recv(t, exited)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := sys.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown after the handler ended the first call = %v, want nil", err)
+			}
+		})
+	}
 }
 
 // OBS-155: a system built on a given bundle, as simulation builds its node systems, emits no
