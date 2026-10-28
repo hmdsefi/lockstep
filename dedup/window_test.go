@@ -208,7 +208,7 @@ func TestATDLV08CapacityEviction(t *testing.T) {
 }
 
 // AT-DLV-09, DLV-060, DLV-070, DLV-160: a write removes expired entries before capacity applies;
-// Len counts without removing.
+// Len counts without removing; a write removes every expired entry, not only the oldest.
 func TestATDLV09ExpiredBeforeCapacity(t *testing.T) {
 	w := NewWindow[string](Config{2, 10 * sec})
 	check(t, `Add(t0, "a")`, w.Add(t0, "a"), true)
@@ -228,6 +228,16 @@ func TestATDLV09ExpiredBeforeCapacity(t *testing.T) {
 	}
 	if got := encode(t, w); got != want {
 		t.Errorf("after Len the encoding is\n%s\nwant\n%s", got, want)
+	}
+
+	// Two expired entries: the write removes both, so the expired "b" is added again.
+	w = NewWindow[string](Config{3, 10 * sec})
+	check(t, `Add(t0, "a")`, w.Add(t0, "a"), true)
+	check(t, `Add(t0+1s, "b")`, w.Add(at(sec), "b"), true)
+	check(t, `Add(t0+12s, "b")`, w.Add(at(12*sec), "b"), true)
+	want = `{"dedup":1,"type":"window","capacity":3,"ttl":10000000000,"last":13000000000,"entries":[{"k":"b","at":13000000000}]}`
+	if got := encode(t, w); got != want {
+		t.Errorf("after two expired entries the encoding is\n%s\nwant\n%s", got, want)
 	}
 }
 

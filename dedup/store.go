@@ -88,7 +88,7 @@ func (s *store[K, V]) begin(k kind, now time.Time) int64 {
 // live reports whether an entry written at at is live at effective now e (DLV-050). Since
 // at <= e, the uint64 difference is the true age, which an int64 difference could overflow.
 func (s *store[K, V]) live(e, at int64) bool {
-	return s.cfg.TTL == 0 || uint64(e)-uint64(at) < uint64(s.cfg.TTL) //nolint:gosec // G115: two's-complement wrap is the point (DLV-050)
+	return s.cfg.TTL == 0 || uint64(e)-uint64(at) < uint64(s.cfg.TTL) //nolint:gosec // G115: at <= e, so the uint64 difference is the true age (DLV-050)
 }
 
 // get returns k's entry if it is live at e.
