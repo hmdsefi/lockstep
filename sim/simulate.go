@@ -20,7 +20,8 @@ type Options struct {
 
 	// System holds options applied, in order, to the System of every lockstep node at every
 	// boot. lockstep.WithNodeName has no effect: a node system's name is its kernel node's name.
-	// lockstep.WithLogger has no effect either: a node system logs to its kernel node's log.
+	// lockstep.WithLogger and lockstep.WithMetrics have no effect either: a node system logs to
+	// its kernel node's log and has metrics off.
 	System []lockstep.Option
 
 	// Budget sets count-based admission budgets for every lockstep node. The zero value sets
