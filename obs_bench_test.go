@@ -101,7 +101,7 @@ func BenchmarkLogf(b *testing.B) {
 }
 
 // BenchmarkGaugeDepth measures a call of the lockstep_mailbox_depth_total function on a system
-// with 100,000 idle actors under 1,000 parents, and 1,000 parents.
+// with 100,000 idle actors spread under 1,000 parents (101,000 actors in all).
 func BenchmarkGaugeDepth(b *testing.B) {
 	b.ReportAllocs()
 	rec := &recMetrics{}

@@ -338,12 +338,13 @@ func (s *System) offerWaiting(c actorCell, owner Address, r routeRequest, e entr
 	return out, err
 }
 
-// resolve returns the cell the local address to names and the cell's full address, or nil and
-// the dead-letter reason (which means nothing when the cell is not nil). A full address needs an actor registered with exactly that path and uid
-// (reason stopped). A path address (uid 0) names whichever actor is registered at its path,
-// provided it was spawned with message type typ (reason not-found; ACT-440). The address comes
-// from the registry, not from the cell: Spawn writes the cell's addr only after it registers the
-// cell, so reading it here without the cell's lock would race.
+// resolve returns the cell the local address to names and the cell's full address, or nil and the
+// dead-letter reason (which means nothing when the cell is not nil). A full address needs an actor
+// registered with exactly that path and uid (reason stopped). A path address (uid 0) names
+// whichever actor is registered at its path, provided it was spawned with message type typ (reason
+// not-found; ACT-440). The address comes from the registry, not from the cell: Spawn writes the
+// cell's addr only after it registers the cell, so reading it here without the cell's lock would
+// race.
 func (s *System) resolve(to Address, typ reflect.Type) (actorCell, Address, deadReason) {
 	uid, a, ok := s.reg.Lookup(to.path)
 	c, _ := a.(actorCell)

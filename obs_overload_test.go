@@ -29,11 +29,15 @@ const (
 )
 
 // checkSeries fails the test unless, of the series called name that rec registered, the one whose
-// label has the value v reads want[v], and every other one reads 0. It fails the test too if want
-// names a value the series have no such label for.
+// label has the value v reads want[v], and every other one reads 0. It fails the test too if rec
+// registered no series called name with that label, or if want names a value the series have no
+// such label for.
 func checkSeries(t *testing.T, rec *recMetrics, name, label string, want map[string]uint64) {
 	t.Helper()
 	values := labelValues(rec, name, label)
+	if len(values) == 0 {
+		t.Fatalf("no series %s with label %s", name, label)
+	}
 	for v := range want {
 		if !slices.Contains(values, v) {
 			t.Fatalf("%s has no series with %s=%q, only %q", name, label, v, values)
@@ -249,7 +253,6 @@ func TestATOBS14OverloadEvents(t *testing.T) {
 		pid := spawnObs(t, sys, "a", obsOf(&obsActor{receive: func(*lockstep.Context[ping], ping) {
 			// The turn spins 200 ms. It goes on, up to 10 s, until the watchdog has counted it, so a
 			// machine that is too busy to poll within 200 ms does not end the turn unseen.
-			//lockstep:allow LS100 the test spins a turn on purpose, to outlast the watchdog
 			start := time.Now()
 			for time.Since(start) < 200*time.Millisecond || (stuckTurns.n.Load() == 0 && time.Since(start) < 10*time.Second) {
 				runtime.Gosched()
@@ -348,7 +351,7 @@ func TestShedToStuckActor(t *testing.T) {
 			close(entered)
 			<-release
 		}
-	}}), lockstep.WithMailbox(8, lockstep.FailSend))
+	}}), lockstep.WithMailbox(1024, lockstep.FailSend)) // room for the sends until the mark
 	if err := lockstep.Send(sys, pid, ping{}); err != nil {
 		t.Fatal(err)
 	}

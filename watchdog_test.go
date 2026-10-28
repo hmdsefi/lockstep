@@ -73,12 +73,11 @@ func watchdogRunning() bool {
 	return false
 }
 
-// AT-OVL-37: OVL-500, OVL-510. With WithWatchdog(100ms), a turn blocked for 300 ms is logged
-// once through the system's logger at Error, with the actor's node, path and uid, its running
-// time rounded down to milliseconds, the timeout, and the stack of the worker running it, and
-// adds one to lockstep_stuck_turns_total (OBS-120). That
-// internal/prodengine does not import internal/overload (R38) is TestImportBoundaries' DET-080
-// row for internal/prodengine.
+// AT-OVL-37: OVL-500, OVL-510. With WithWatchdog(100ms), a turn blocked for 300 ms is logged once
+// through the system's logger at Error, with the actor's node, path and uid, its running time
+// rounded down to milliseconds, the timeout, and the stack of the worker running it, and adds one
+// to lockstep_stuck_turns_total (OBS-120). That internal/prodengine does not import
+// internal/overload (R38) is TestImportBoundaries' DET-080 row for internal/prodengine.
 func TestATOVL37StuckTurnReported(t *testing.T) {
 	verifyNoneAtEnd(t)
 	records := captureDefaultLogger(t)
