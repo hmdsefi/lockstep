@@ -5,10 +5,12 @@ package lockstep_test
 
 import (
 	"context"
+	"errors"
 	"math"
 	"runtime"
 	"runtime/metrics"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -399,24 +401,56 @@ func TestATOBS10GaugeDoesNotBlockSend(t *testing.T) {
 	}
 }
 
+// lockLiveIndex write-locks the list of live mailboxes of sys, as a gauge call holds it for reading
+// while it iterates, until the test ends or the returned function is called, which unlocks it at
+// most once.
+func lockLiveIndex(t *testing.T, sys *lockstep.System) (unlock func()) {
+	t.Helper()
+	locked := lockstep.LockLiveIndex(sys)
+	var once sync.Once
+	unlock = func() { once.Do(locked) }
+	t.Cleanup(unlock) // registered after the system's cleanup, so it runs before its shutdown
+	return unlock
+}
+
+// waitBlockedIn waits until some goroutine is blocked on a read-write lock inside the function
+// whose name in a stack trace contains fn, and fails the test if none is within 10 s. It lets a
+// test know that a call has reached a lock that the test holds.
+func waitBlockedIn(t *testing.T, fn string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		for n == len(buf) { // the trace did not fit
+			buf = make([]byte, 2*len(buf))
+			n = runtime.Stack(buf, true)
+		}
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, fn) && strings.Contains(g, "RWMutex") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no goroutine blocked on a lock in %s within 10 s", fn)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // OBS-100: a Send and a turn take no lock that a gauge function takes. The list of live mailboxes
-// the depth gauges iterate is write-locked as a Spawn or a final stop locks it: the gauge waits,
-// and the actors go on passing messages.
+// the depth gauges iterate is write-locked as a Spawn or a final stop locks it, so a gauge call
+// waits, and the actors go on passing messages.
 func TestGaugeLockIsNotTakenBySendOrTurn(t *testing.T) {
 	rec := &recMetrics{}
 	sys := newProdSystem(t, lockstep.WithNodeName("n1"), lockstep.WithMetrics(rec))
 	pp := newPingPong(t, sys)
 	depth := rec.find(t, "lockstep_mailbox_depth_total").fn
 
-	unlock := lockstep.LockLiveIndex(sys)
-	var unlocked atomic.Bool
-	t.Cleanup(func() {
-		if unlocked.CompareAndSwap(false, true) {
-			unlock()
-		}
-	})
+	unlock := lockLiveIndex(t, sys)
 	returned := make(chan int64, 1)
 	go func() { returned <- depth() }()
+	waitBlockedIn(t, "(*liveIndex).depth") // the gauge call waits for the lock the test holds
 
 	pp.run(t, 1000) // Send and turns finish while the gauge waits
 	select {
@@ -425,12 +459,66 @@ func TestGaugeLockIsNotTakenBySendOrTurn(t *testing.T) {
 	default:
 	}
 
-	unlocked.Store(true)
 	unlock()
 	select {
 	case <-returned:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the gauge did not return after the list was unlocked")
+	}
+}
+
+// OBS-100: a Send never waits for a gauge call, including a Send to the path address of an actor
+// that is being spawned. The spawn waits for the list of live mailboxes, which a gauge call holds
+// while it iterates (here the test holds it), and until it has registered the actor no Send finds
+// it, so none waits for the spawn's hold on the actor's mutex.
+func TestSendToActorBeingSpawnedDoesNotWaitForGauge(t *testing.T) {
+	rec := &recMetrics{}
+	sys := newProdSystem(t, lockstep.WithNodeName("n1"), lockstep.WithMetrics(rec))
+	unlock := lockLiveIndex(t, sys)
+
+	spawned := make(chan error, 1)
+	go func() {
+		_, err := lockstep.Spawn(sys, "x", obsOf(&obsActor{}))
+		spawned <- err
+	}()
+	waitBlockedIn(t, "(*liveIndex).add") // the spawn waits for the lock the test holds
+
+	sent := make(chan error, 1)
+	go func() {
+		to := lockstep.PIDAt[ping](sys.Node(), "/user/x")
+		for range 100 {
+			if err := lockstep.Send(sys, to, ping{}); err != nil {
+				sent <- err
+				return
+			}
+		}
+		sent <- nil
+	}()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("Send to /user/x: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a Send to the path of an actor being spawned waited while a gauge held the list")
+	}
+	select {
+	case err := <-spawned:
+		t.Fatalf("Spawn returned (%v) while the list was locked", err)
+	default:
+	}
+
+	unlock()
+	select {
+	case err := <-spawned:
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Spawn did not return after the list was unlocked")
+	}
+	if got, want := lockstep.LiveIndexLen(sys), 1; got != want {
+		t.Errorf("%d mailboxes listed after the spawn, want %d", got, want)
 	}
 }
 
@@ -539,6 +627,42 @@ func TestLiveIndexFollowsLiveActors(t *testing.T) {
 
 		shutdownNow(t, sys)
 		waitLive(t, sys, 0)
+	})
+
+	// A Spawn that loses a name to a concurrent Spawn is listed before it is registered, and must
+	// leave the list again.
+	t.Run("name lost to a concurrent spawn", func(t *testing.T) {
+		rec := &recMetrics{}
+		sys := newProdSystem(t, lockstep.WithMetrics(rec))
+		idle := obsOf(&obsActor{})
+		const rounds, racers = 300, 8
+		for round := range rounds {
+			name := "r" + strconv.Itoa(round)
+			var wins atomic.Int64
+			var ready, wg sync.WaitGroup
+			ready.Add(racers)
+			start := make(chan struct{})
+			for range racers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					ready.Done()
+					<-start
+					if _, err := lockstep.Spawn(sys, name, idle); err == nil {
+						wins.Add(1)
+					} else if !errors.Is(err, lockstep.ErrNameTaken) {
+						t.Error(err)
+					}
+				}()
+			}
+			ready.Wait()
+			close(start)
+			wg.Wait()
+			if n := wins.Load(); n != 1 {
+				t.Fatalf("round %d: %d spawns of %s succeeded, want 1", round, n, name)
+			}
+		}
+		waitLive(t, sys, rounds)
 	})
 
 	t.Run("stop right after spawn", func(t *testing.T) {

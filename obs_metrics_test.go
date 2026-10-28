@@ -16,6 +16,7 @@ import (
 
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/overload"
+	"go.uber.org/goleak"
 )
 
 // counterRow is one row of the counter table: a name, its help, and the label after node with its
@@ -258,6 +259,47 @@ func TestATOBS11MetricsOff(t *testing.T) {
 			t.Errorf("allocations of an actor-to-actor Send: %v with no metrics, %v with a no-op Metrics; want equal", off, noop)
 		}
 	})
+
+	// The paths that count: a Send that finds a full FailSend mailbox, a DropNewest drop and a dead
+	// letter allocate the same with a no-op backend as with metrics off (OBS-090).
+	t.Run("counting path allocations", func(t *testing.T) {
+		if lockstep.RaceEnabled {
+			t.Skip("allocation counts are not stable under the race detector")
+		}
+		off := countingAllocs(t)
+		noop := countingAllocs(t, lockstep.WithMetrics(noopMetrics{}))
+		if off != noop {
+			t.Errorf("allocations of a Send to a full mailbox, a drop and a dead letter: %v with no metrics, %v with a no-op Metrics; want equal", off, noop)
+		}
+	})
+}
+
+// countingAllocs returns testing.AllocsPerRun of one Send from outside to a full FailSend mailbox,
+// to a full DropNewest mailbox and to a stopped actor, in that order, on a New system built with
+// opts whose logger discards every record.
+func countingAllocs(t *testing.T, opts ...lockstep.Option) [3]float64 {
+	t.Helper()
+	const runs = 500
+	sys := newProdSystem(t, append(opts, lockstep.WithLogger(slog.New(slog.DiscardHandler)))...)
+	fs := spawnObs(t, sys, "fs", obsOf(&obsActor{}), lockstep.WithMailbox(1, lockstep.FailSend))
+	dn := spawnObs(t, sys, "dn", obsOf(&obsActor{}), lockstep.WithMailbox(1, lockstep.DropNewest))
+	t.Cleanup(lockstep.Hold(sys, fs.Address()))
+	t.Cleanup(lockstep.Hold(sys, dn.Address()))
+	for _, pid := range []lockstep.PID[ping]{fs, dn} { // fill both mailboxes
+		if err := lockstep.Send(sys, pid, ping{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone := spawnObs(t, sys, "gone", obsOf(&obsActor{}))
+	if err := lockstep.Stop(sys, gone.Address()); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, sys, gone)
+	var out [3]float64
+	for i, pid := range []lockstep.PID[ping]{fs, dn, gone} {
+		out[i] = testing.AllocsPerRun(runs, func() { _ = lockstep.Send(sys, pid, ping{}) })
+	}
+	return out
 }
 
 // sendAllocs returns testing.AllocsPerRun of one Send from an actor, inside its turn, to a held
@@ -356,6 +398,47 @@ func TestNewPropagatesBackendPanic(t *testing.T) {
 	}()
 	lockstep.New(lockstep.WithMetrics(panicMetrics{}), lockstep.WithWorkers(4))
 	t.Error("New returned")
+}
+
+// panicTransitions is a backend whose admission transitions counter panics when it is added to.
+type panicTransitions struct{ noopMetrics }
+
+type panicCounter struct{}
+
+func (panicCounter) Add(uint64) { panic("backend add") }
+
+func (panicTransitions) Counter(name, _ string, _ ...lockstep.MetricLabel) lockstep.Counter {
+	if name == "lockstep_admission_transitions_total" {
+		return panicCounter{}
+	}
+	return noopCounter{}
+}
+
+// OBS §7: a panic in Counter.Add during New's first heap sample, which counts the change of
+// admission that sample makes, propagates out of New too. The engine New started and its overload
+// machinery are stopped first: no goroutine of theirs is left.
+func TestNewPropagatesBackendPanicInFirstSample(t *testing.T) {
+	// A live heap of 2100 over the high mark of 2000 makes New's first sample turn admission off.
+	t.Cleanup(overload.SetReadMetrics(func(samples []metrics.Sample) {
+		for i := range samples {
+			switch samples[i].Name {
+			case "/gc/heap/live:bytes":
+				samples[i].Value = overload.Uint64Value(2100)
+			case "/gc/gomemlimit:bytes":
+				samples[i].Value = overload.Uint64Value(math.MaxInt64)
+			}
+		}
+	}))
+	func() {
+		defer func() {
+			if r := recover(); r != "backend add" {
+				t.Errorf("New panicked with %v, want the backend's panic", r)
+			}
+		}()
+		lockstep.New(lockstep.WithMetrics(panicTransitions{}), lockstep.WithAdmission(2000, 1000), lockstep.WithWorkers(4))
+		t.Error("New returned")
+	}()
+	goleak.VerifyNone(t)
 }
 
 // The admission and watchdog counters have no event in AT-OBS-08's scenario. This test checks that

@@ -152,20 +152,21 @@ func New(opts ...Option) *System {
 		panic(err) // unreachable: the options passed newConfig above
 	}
 	sys.events = sys.log
+	// A panic in the backend, while it registers or in the Counter.Add of the first heap sample,
+	// leaves the engine's workers and the overload machinery behind unless New stops them.
+	started := false
+	defer func() {
+		if !started {
+			sys.stopEngine()
+		}
+	}()
 	if cfg.metrics != nil {
 		// Counters register before the overload machinery starts, which can change admission and
-		// count that change (OBS-080). A panic in the backend leaves the engine's workers behind
-		// unless it stops them.
-		registered := false
-		defer func() {
-			if !registered {
-				pe.Stop()
-			}
-		}()
+		// count that change (OBS-080).
 		sys.registerMetrics(cfg.metrics)
-		registered = true
 	}
 	sys.startOverload(pe, gate, cfg)
+	started = true
 	sys.armGauges()
 	return sys
 }
@@ -250,8 +251,12 @@ func (s *System) Shutdown(ctx context.Context) error {
 	if started {
 		// Logged after Do has returned, so a handler that calls Shutdown does not deadlock on
 		// the Once (OBS-060), and before the sweep is scheduled, so it precedes shutdown finished.
-		s.logShutdownStarted()
-		s.guardians.push(sweepStart{}, nil)
+		// The sweep is pushed in a defer: a handler that panics or calls runtime.Goexit must not
+		// leave the system closing with no sweep, or no later Shutdown could complete.
+		func() {
+			defer s.guardians.push(sweepStart{}, nil)
+			s.logShutdownStarted()
+		}()
 	}
 	// ACT-060: only a caller outside engine context on a blocking engine waits. Once the engine
 	// has stopped, nothing calls it again (ENG-140).
