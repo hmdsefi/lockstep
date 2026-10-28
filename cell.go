@@ -78,11 +78,12 @@ type actorCell interface {
 // one engine goroutine runs the cell's turn, which alone pops. mu makes an enqueue atomic with
 // the fields under "guarded by mu"; the Slot keeps turns from overlapping. The fields under
 // "turn-owned" are read and written only by RunTurn. No code that holds mu takes the ask table's
-// lock, resolves an ask or calls the engine; only Spawn holds a new cell's mu across
-// Registry.Add and the live index's add (lock order mu, then the registry's, then the live
-// index's, then a queue's). addr is written once, by Spawn while it holds mu and before the
-// cell's first Ready; code that reaches the cell through the registry reads it only after taking
-// mu (as every enqueue does), and turns read it freely.
+// lock, resolves an ask or calls the engine; only Spawn holds a new cell's mu across the live
+// index's add and Registry.Add (lock order mu, then a queue's lock, the live index's or the
+// registry's; the registry's and the live index's are never held together). addr is written
+// once, by Spawn while it holds mu and before the cell's first Ready; code that reaches the cell
+// through the registry reads it only after taking mu (as every enqueue does), and turns read it
+// freely.
 type cell[M any] struct {
 	sys     *System
 	addr    Address
