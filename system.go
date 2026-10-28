@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/overload"
@@ -31,6 +32,11 @@ type System struct {
 	// the system was built on a blocking engine and a discarding logger on any other (obs.go). The system's own events log through it with the node attribute (OBS-060),
 	// and the actor loggers build on it (OBS-030).
 	log *slog.Logger
+	// events is the logger of the runtime log events (obs_log.go): log for a system New built, nil
+	// for one built on a given bundle, which logs none of them (OBS-155). logOff removes the
+	// logging calls; only AT-OBS-06 sets it.
+	events *slog.Logger
+	logOff atomic.Bool
 
 	reg          *registry.Registry
 	user, system Address // the guardians; neither is registered (ACT-030)
@@ -135,6 +141,7 @@ func New(opts ...Option) *System {
 		pe.Stop()
 		panic(err) // unreachable: the options passed newConfig above
 	}
+	sys.events = sys.log
 	sys.startOverload(pe, gate, cfg)
 	return sys
 }
@@ -196,6 +203,8 @@ type shutdownState struct {
 	done  chan struct{} // closed when the system is stopped and phase=done is recorded (ACT-060)
 	over  atomic.Bool   // done is closed
 
+	began time.Time // the engine clock's Now when the shutdown started; set only if events is set
+
 	engOnce    sync.Once   // Engine.Stop is called at most once (ENG-140)
 	engStopped atomic.Bool // Engine.Stop has returned (or the engine has none)
 }
@@ -217,6 +226,7 @@ func (s *System) Shutdown(ctx context.Context) error {
 	}
 	if !s.shut.over.Load() {
 		if err := s.eng.Waiter.Wait(ctx, s.shut.done); err != nil {
+			s.logShutdownIncomplete(err)
 			return err // unwrapped (ACT-060); the shutdown continues
 		}
 	}
@@ -234,6 +244,10 @@ func (s *System) startShutdown() {
 	s.spawnMu.Lock()
 	s.closing.Store(true)
 	s.spawnMu.Unlock()
+	if s.events != nil {
+		s.shut.began = s.eng.Clock.Now()
+	}
+	s.logShutdownStarted()
 	s.recordShutdown("begin")
 	s.guardians.push(sweepStart{}, nil)
 }
@@ -245,6 +259,9 @@ func (s *System) completeShutdown() {
 	err := s.errStopped()
 	for _, ask := range s.asks.stop(&s.stopped) {
 		s.settle(ask, resolution{how: byStop, from: s.user, err: err})
+	}
+	if s.events != nil {
+		s.logShutdownFinished(s.eng.Clock.Now().Sub(s.shut.began))
 	}
 	s.recordShutdown("done")
 	s.shut.over.Store(true)

@@ -39,8 +39,8 @@ func (c *cell[M]) endIncarnation(m end) {
 // finishEnd completes the restart's end of the incarnation once its children have stopped
 // (SUP-190 steps 3 and 4): Stopped(ctx, Restarting(err)) if implemented, the owned resources
 // closed, then the incarnation is gone (Pipe's continuations drop, MSG-610), lockstep.restart is
-// recorded and ended is pushed to the supervisor. A Stopped failure pushes cleanupFailed before
-// ended.
+// recorded, actor restarted is logged (OBS-060) and ended is pushed to the supervisor. A Stopped
+// failure pushes cleanupFailed before ended.
 func (c *cell[M]) finishEnd() {
 	err := c.endErr
 	c.endErr = nil
@@ -60,6 +60,7 @@ func (c *cell[M]) finishEnd() {
 	c.starter, c.stopper, c.signals, c.memSizer = nil, nil, nil, nil
 	c.mem.setState(0) // the next incarnation starts at 0 state bytes (OVL-420)
 	c.recordRestart(err)
+	c.sys.logActorRestarted(c.addr, err)
 	c.sys.notifySupervisor(c.parent, ended{child: c.addr, inc: c.inc}, c)
 }
 

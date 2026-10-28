@@ -256,8 +256,8 @@ func (c *cell[M]) cancelEffect(pe *pendingEffect[M]) bool {
 }
 
 // cancelEffects cancels every pending effect of the cell, in ID order, as the incarnation ends
-// (EFF-100). The table holds the live incarnation's effects only: an earlier incarnation's were
-// cancelled when it ended.
+// (EFF-100), and logs message dropped for each. The table holds the live incarnation's effects
+// only: an earlier incarnation's were cancelled when it ended.
 func (c *cell[M]) cancelEffects() {
 	c.emu.Lock()
 	pes := make([]*pendingEffect[M], 0, len(c.effects))
@@ -267,19 +267,27 @@ func (c *cell[M]) cancelEffects() {
 	c.emu.Unlock()
 	slices.SortFunc(pes, func(a, b *pendingEffect[M]) int { return cmp.Compare(a.id, b.id) })
 	for _, pe := range pes {
-		c.cancelEffect(pe)
+		if c.cancelEffect(pe) {
+			// The result of an effect cancelled by a stop or restart is a drop (OBS-145); a
+			// CancelEffect call is not.
+			c.sys.logMessageDropped(c.addr, dropCancelledEffect)
+		}
 	}
 }
 
 // effectDone is the done function that Do gives the engine (EFF-060). It runs in engine context,
 // possibly on another goroutine than the turn. A call for an effect that is no longer pending is
-// ignored without a record. Otherwise the timeout timer is cancelled and the outcome follows err:
-// ErrOverloaded when the engine refused the effect, an error when err is not nil, ok otherwise.
+// ignored without a record. Otherwise the timeout timer is cancelled, a panic in Run is logged
+// (OBS-060), and the outcome follows err: ErrOverloaded when the engine refused the effect, an
+// error when err is not nil, ok otherwise.
 func (c *cell[M]) effectDone(pe *pendingEffect[M], v any, err error) {
 	if _, ok := c.takeEffect(pe); !ok {
 		return
 	}
 	pe.cancelTimer()
+	if err != nil {
+		c.sys.logEffectPanicked(c.addr, err)
+	}
 	outcome := outcomeOK
 	switch {
 	case errors.Is(err, engine.ErrOverloaded):

@@ -299,8 +299,8 @@ func TestATOVL30AdmissionOff(t *testing.T) {
 
 // AT-OVL-32: OVL-340. A memory change is logged through the system's logger, slog's default when
 // New runs, with the node: one Warn "admission refusing" when the source turns on and one Info
-// "admission resumed" when it turns off, with OBS-060's attributes and no others, and no other
-// record.
+// "admission resumed" when it turns off, with OBS-060's attributes and no others. The system's
+// other events, such as the shutdown's, are left out.
 func TestATOVL32AdmissionLogs(t *testing.T) {
 	verifyNoneAtEnd(t)
 	writer, flags := log.Writer(), log.Flags()
@@ -330,9 +330,14 @@ func TestATOVL32AdmissionLogs(t *testing.T) {
 		{slog.LevelInfo, "admission resumed", []slog.Attr{
 			slog.String("node", "n1"), slog.Uint64("heap_live_bytes", 900), slog.Uint64("low_mark_bytes", 1000)}},
 	}
-	got := records()
+	var got []slogRecord
+	for _, r := range records() {
+		if r.msg == "admission refusing" || r.msg == "admission resumed" {
+			got = append(got, r)
+		}
+	}
 	if len(got) != len(want) {
-		t.Fatalf("logged %d records %+v, want %d", len(got), got, len(want))
+		t.Fatalf("logged %d admission records %+v, want %d", len(got), got, len(want))
 	}
 	for i, w := range want {
 		g := got[i]
