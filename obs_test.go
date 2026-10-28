@@ -1,7 +1,7 @@
 // Copyright 2026 Hamed Yousefi
 // SPDX-License-Identifier: MPL-2.0
 
-package lockstep
+package lockstep_test
 
 import (
 	"bytes"
@@ -17,6 +17,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/internal/engine/enginetest"
+	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
 // recRecord is one record a recHandler received.
@@ -160,33 +164,78 @@ func setDefault(t *testing.T, l *slog.Logger) {
 	})
 }
 
-// waitFor fails the test unless ch is closed or receives within 5 s.
-func waitFor[T any](t *testing.T, ch <-chan T, what string) T {
+// recv returns the next value from ch, failing the test if none arrives within 10 s. It is the
+// external tests' copy of the package-internal helper of the same name, which they cannot see.
+func recv[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()
 	select {
 	case v := <-ch:
 		return v
-	case <-time.After(5 * time.Second):
-		t.Fatalf("%s did not happen within 5 s", what)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no %T within 10 s", *new(T))
 		panic("unreachable")
 	}
+}
+
+// newProdSystem returns lockstep.New(opts...) and shuts it down when the test ends.
+func newProdSystem(t *testing.T, opts ...lockstep.Option) *lockstep.System {
+	t.Helper()
+	sys := lockstep.New(opts...)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := sys.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	return sys
+}
+
+// manualSystem builds a system on node local with opts on a manual engine through hooks.NewSystem,
+// as simulation does: no turn runs until the test calls RunUntilIdle.
+func manualSystem(t *testing.T, opts ...lockstep.Option) (*lockstep.System, *enginetest.Engine) {
+	t.Helper()
+	eng := enginetest.New("local", 1)
+	b, err := hooks.NewSystem(eng.Engine(), opts)
+	if err != nil {
+		t.Fatalf("hooks.NewSystem: %v", err)
+	}
+	return systemOf(t, b), eng
+}
+
+// lockedWriter is a bytes.Buffer safe to write from a worker goroutine and read from the test.
+type lockedWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *lockedWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return bytes.Clone(w.buf.Bytes())
 }
 
 // AT-OBS-03: OBS-030.
 func TestATOBS03ActorLogger(t *testing.T) {
 	t.Run("one logger per actor", func(t *testing.T) {
 		l, h := newRecLogger(slog.LevelInfo)
-		sys := newLocalSystem(t, WithNodeName("n1"), WithLogger(l))
+		sys := newProdSystem(t, lockstep.WithNodeName("n1"), lockstep.WithLogger(l))
 		type result struct {
 			first, second *slog.Logger
 			inc           int
 		}
 		results := make(chan result, 2)
 		inc := 0
-		pid, err := Spawn(sys, "a", func() Actor[int] {
+		pid, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[int] {
 			inc++
 			n := inc
-			return &fnActor[int]{receive: func(ctx *Context[int], _ int) {
+			return &simActor[int]{receive: func(ctx *lockstep.Context[int], _ int) {
 				a, b := ctx.Logger(), ctx.Logger()
 				if n == 1 {
 					ctx.Logger().Info("hi", "k", 1)
@@ -199,12 +248,11 @@ func TestATOBS03ActorLogger(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 2 {
-			if err := Send(sys, pid, 0); err != nil {
+			if err := lockstep.Send(sys, pid, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
-		r1 := waitFor(t, results, "the first Receive")
-		r2 := waitFor(t, results, "the Receive after the restart")
+		r1, r2 := recv(t, results), recv(t, results)
 		if r1.inc != 1 || r2.inc != 2 {
 			t.Fatalf("incarnations %d and %d, want 1 and 2", r1.inc, r2.inc)
 		}
@@ -241,27 +289,29 @@ func TestATOBS03ActorLogger(t *testing.T) {
 
 	t.Run("Spawn builds no logger", func(t *testing.T) {
 		l, _ := newRecLogger(slog.LevelInfo)
-		sys, eng := newManualSystem(t, WithLogger(l))
+		sys, eng := manualSystem(t, lockstep.WithLogger(l))
 		var got *slog.Logger
-		pid, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{started: func(ctx *Context[int]) { got = ctx.Logger() }}))
+		pid, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[int] {
+			return &simActor[int]{started: func(ctx *lockstep.Context[int]) { got = ctx.Logger() }}
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := cellOf(t, sys, pid)
-		if p := c.log.Load(); p != nil {
-			t.Errorf("Spawn built the actor logger %p", p)
+		if lockstep.ActorLoggerBuilt(sys, pid) {
+			t.Error("Spawn built the actor logger")
 		}
 		eng.RunUntilIdle()
-		if p := c.log.Load(); p == nil || p != got {
-			t.Errorf("after Logger the cell holds %p, want %p", p, got)
+		if got == nil || !lockstep.ActorLoggerBuilt(sys, pid) {
+			t.Errorf("after Logger: logger %p, built %v; want a logger, built", got, lockstep.ActorLoggerBuilt(sys, pid))
 		}
 
-		if raceEnabled {
+		if lockstep.RaceEnabled {
 			t.Skip("allocation counts differ under the race detector")
 		}
-		measure := func(opts ...Option) float64 {
+		idle := func() lockstep.Actor[int] { return &simActor[int]{} }
+		measure := func(opts ...lockstep.Option) float64 {
 			// The manual engine runs no turn until it is told to, so only Spawn allocates.
-			sys, _ := newManualSystem(t, opts...)
+			sys, _ := manualSystem(t, opts...)
 			const runs = 200
 			names := make([]string, runs+1) // AllocsPerRun calls f once more to warm up
 			for i := range names {
@@ -269,14 +319,14 @@ func TestATOBS03ActorLogger(t *testing.T) {
 			}
 			i := 0
 			return testing.AllocsPerRun(runs, func() {
-				if _, err := Spawn(sys, names[i], idle[int]()); err != nil {
+				if _, err := lockstep.Spawn(sys, names[i], idle); err != nil {
 					t.Fatal(err)
 				}
 				i++
 			})
 		}
 		without := measure()
-		with := measure(WithLogger(l))
+		with := measure(lockstep.WithLogger(l))
 		if with != without {
 			t.Errorf("Spawn allocates %v times with WithLogger, %v without", with, without)
 		}
@@ -291,26 +341,37 @@ func (s *countingStringer) String() string {
 	return "s"
 }
 
+// spawnStarted spawns /user/a on sys running started in its Started hook, and waits until the
+// hook has returned.
+func spawnStarted(t *testing.T, sys *lockstep.System, started func(ctx *lockstep.Context[int])) lockstep.PID[int] {
+	t.Helper()
+	done := make(chan struct{}, 1)
+	pid, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[int] {
+		return &simActor[int]{started: func(ctx *lockstep.Context[int]) {
+			started(ctx)
+			done <- struct{}{}
+		}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recv(t, done)
+	return pid
+}
+
 // AT-OBS-04: OBS-040, OBS-050.
 func TestATOBS04Logf(t *testing.T) {
 	t.Run("source is the caller", func(t *testing.T) {
-		buf := &lockedBuffer{}
+		buf := &lockedWriter{}
 		l := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{AddSource: true}))
-		sys := newLocalSystem(t, WithLogger(l))
-		type site struct {
-			file string
-			line int
-		}
-		at := make(chan site, 1)
-		_, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{started: func(ctx *Context[int]) {
-			_, file, line, _ := runtime.Caller(0)
+		sys := newProdSystem(t, lockstep.WithLogger(l))
+		var file string
+		var line int
+		spawnStarted(t, sys, func(ctx *lockstep.Context[int]) {
+			_, file, line, _ = runtime.Caller(0)
 			ctx.Logf("n=%d", 7)
-			at <- site{file, line + 1}
-		}}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := waitFor(t, at, "Started")
+		})
+		line++ // the line of the Logf call
 
 		var got struct {
 			Level  string `json:"level"`
@@ -320,10 +381,10 @@ func TestATOBS04Logf(t *testing.T) {
 				Line int    `json:"line"`
 			} `json:"source"`
 		}
-		out := bytes.TrimSpace([]byte(buf.String()))
+		out := bytes.TrimSpace(buf.Bytes())
 		lines := bytes.Split(out, []byte("\n"))
 		if len(out) == 0 || len(lines) != 1 {
-			t.Fatalf("%d log lines, want 1: %s", len(lines), buf.String())
+			t.Fatalf("%d log lines, want 1: %s", len(lines), out)
 		}
 		if err := json.Unmarshal(lines[0], &got); err != nil {
 			t.Fatalf("%v: %s", err, lines[0])
@@ -331,23 +392,15 @@ func TestATOBS04Logf(t *testing.T) {
 		if got.Msg != "n=7" || got.Level != "INFO" {
 			t.Errorf("msg %q at %q, want n=7 at INFO", got.Msg, got.Level)
 		}
-		if got.Source.File != want.file || got.Source.Line != want.line {
-			t.Errorf("source %s:%d, want %s:%d", got.Source.File, got.Source.Line, want.file, want.line)
+		if got.Source.File != file || got.Source.Line != line {
+			t.Errorf("source %s:%d, want %s:%d", got.Source.File, got.Source.Line, file, line)
 		}
 	})
 
 	t.Run("handler gets context.Background", func(t *testing.T) {
 		l, h := newRecLogger(slog.LevelInfo)
-		sys := newLocalSystem(t, WithLogger(l))
-		done := make(chan struct{})
-		_, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{started: func(ctx *Context[int]) {
-			ctx.Logf("x=%d", 1)
-			close(done)
-		}}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		waitFor(t, done, "Started")
+		sys := newProdSystem(t, lockstep.WithLogger(l))
+		spawnStarted(t, sys, func(ctx *lockstep.Context[int]) { ctx.Logf("x=%d", 1) })
 		recs := h.withMsg("x=1")
 		if len(recs) != 1 {
 			t.Fatalf("%d records x=1, want 1", len(recs))
@@ -370,17 +423,9 @@ func TestATOBS04Logf(t *testing.T) {
 			calls int64
 		}{{slog.LevelWarn, 0}, {slog.LevelInfo, 1}} {
 			h.setLevel(tt.level)
-			sys := newLocalSystem(t, WithLogger(l))
+			sys := newProdSystem(t, lockstep.WithLogger(l))
 			s := &countingStringer{}
-			done := make(chan struct{})
-			_, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{started: func(ctx *Context[int]) {
-				ctx.Logf("%v", s)
-				close(done)
-			}}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			waitFor(t, done, "Started")
+			spawnStarted(t, sys, func(ctx *lockstep.Context[int]) { ctx.Logf("%v", s) })
 			if n := s.n.Load(); n != tt.calls {
 				t.Errorf("logger at %v: String called %d times, want %d", tt.level, n, tt.calls)
 			}
@@ -388,46 +433,79 @@ func TestATOBS04Logf(t *testing.T) {
 	})
 }
 
-// OBS-010: New resolves the system logger once.
+// OBS-010: the system logger is resolved once, when the system is built.
 func TestLoggerResolvedAtNew(t *testing.T) {
-	a, ha := newRecLogger(slog.LevelInfo)
-	b, hb := newRecLogger(slog.LevelInfo)
-	setDefault(t, a)
-	sys := newLocalSystem(t)
-	slog.SetDefault(b)
+	logBoth := func(n int) func(ctx *lockstep.Context[int]) {
+		return func(ctx *lockstep.Context[int]) {
+			ctx.Logf("n=%d", n)
+			ctx.Logger().Info("direct")
+		}
+	}
 
-	done := make(chan struct{})
-	_, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{started: func(ctx *Context[int]) {
-		ctx.Logf("n=%d", 1)
-		ctx.Logger().Info("direct")
-		close(done)
-	}}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, done, "Started")
-	if n, m := len(ha.withMsg("n=1")), len(ha.withMsg("direct")); n != 1 || m != 1 {
-		t.Errorf("the default logger at New got %d records n=1 and %d records direct, want 1 and 1", n, m)
-	}
-	if recs := hb.records(); len(recs) != 0 {
-		t.Errorf("the default logger set after New got %d records, want 0", len(recs))
-	}
+	t.Run("New", func(t *testing.T) {
+		a, ha := newRecLogger(slog.LevelInfo)
+		b, hb := newRecLogger(slog.LevelInfo)
+		setDefault(t, a)
+		sys := newProdSystem(t)
+		slog.SetDefault(b)
+		spawnStarted(t, sys, logBoth(1))
+		if n, m := len(ha.withMsg("n=1")), len(ha.withMsg("direct")); n != 1 || m != 1 {
+			t.Errorf("the default logger at New got %d records n=1 and %d records direct, want 1 and 1", n, m)
+		}
+		if recs := hb.records(); len(recs) != 0 {
+			t.Errorf("the default logger set after New got %d records, want 0", len(recs))
+		}
+	})
 
 	t.Run("WithLogger(nil)", func(t *testing.T) {
 		c, hc := newRecLogger(slog.LevelInfo)
 		setDefault(t, c)
-		sys := newLocalSystem(t, WithLogger(nil))
-		done := make(chan struct{})
-		_, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{started: func(ctx *Context[int]) {
-			ctx.Logf("n=%d", 2)
-			close(done)
-		}}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		waitFor(t, done, "Started")
+		sys := newProdSystem(t, lockstep.WithLogger(nil))
+		spawnStarted(t, sys, logBoth(2))
 		if n := len(hc.withMsg("n=2")); n != 1 {
 			t.Errorf("WithLogger(nil): the default logger got %d records n=2, want 1", n)
 		}
 	})
+
+	// ACT-130, OBS-155: on a non-blocking engine (simulation, the manual engine) the default system
+	// logger discards, so nothing reaches slog.Default(); WithLogger's logger gets the records.
+	t.Run("non-blocking engine", func(t *testing.T) {
+		d, hd := newRecLogger(slog.LevelDebug)
+		setDefault(t, d)
+		sys, eng := manualSystem(t)
+		spawnStartedManual(t, sys, eng, logBoth(3))
+		if recs := hd.records(); len(recs) != 0 {
+			t.Errorf("slog.Default() got %d records from a manual-engine actor, want 0", len(recs))
+		}
+
+		l, h := newRecLogger(slog.LevelInfo)
+		sys, eng = manualSystem(t, lockstep.WithLogger(l))
+		spawnStartedManual(t, sys, eng, logBoth(4))
+		if n, m := len(h.withMsg("n=4")), len(h.withMsg("direct")); n != 1 || m != 1 {
+			t.Errorf("WithLogger on a manual engine got %d records n=4 and %d records direct, want 1 and 1", n, m)
+		}
+		if recs := hd.records(); len(recs) != 0 {
+			t.Errorf("slog.Default() got %d records, want 0", len(recs))
+		}
+	})
+}
+
+// spawnStartedManual spawns /user/a on the manual-engine system sys running started in its Started
+// hook, and runs eng until it is idle.
+func spawnStartedManual(t *testing.T, sys *lockstep.System, eng *enginetest.Engine, started func(ctx *lockstep.Context[int])) {
+	t.Helper()
+	ran := false
+	_, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[int] {
+		return &simActor[int]{started: func(ctx *lockstep.Context[int]) {
+			started(ctx)
+			ran = true
+		}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	if !ran {
+		t.Fatal("Started did not run")
+	}
 }

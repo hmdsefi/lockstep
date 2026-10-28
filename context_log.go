@@ -13,7 +13,9 @@ import (
 )
 
 // Logger returns the actor logger: the system logger with the attributes node, path and uid of
-// this actor. It returns the same *slog.Logger for the actor's lifetime, across restarts.
+// this actor. It returns the same *slog.Logger for the actor's lifetime, across restarts. In
+// simulation the system logger discards every record unless the system's options include
+// WithLogger.
 func (c *Context[M]) Logger() *slog.Logger {
 	c.mustInTurn()
 	return c.cell.logger()
@@ -39,24 +41,17 @@ func (c *cell[M]) logger() *slog.Logger {
 }
 
 // Logf logs fmt.Sprintf(format, args...) at slog.LevelInfo through Logger, with the caller of Logf
-// as the record's source. It does not format the line when Logger is not enabled for
-// slog.LevelInfo. When the tracer is enabled it also records lockstep.log with the line. In
-// simulation the line reaches only the trace.
+// as the record's source. When the tracer is enabled it also records lockstep.log with the line.
+// It formats the line once, and not at all when Logger is not enabled for slog.LevelInfo and the
+// tracer is off.
 func (c *Context[M]) Logf(format string, args ...any) {
 	c.mustInTurn()
 	sys := c.cell.sys
 	tr := sys.eng.Tracer
 	traced := tr.Enabled()
-	// ACT-130 names the local and production engines for the log line; Blocking is true for exactly
-	// those, and false for the simulation engine and the manual engine.
-	var l *slog.Logger
-	if sys.eng.Blocking {
-		l = c.cell.logger()
-		if !l.Enabled(context.Background(), slog.LevelInfo) { // OBS-040: no formatting when disabled
-			l = nil
-		}
-	}
-	if !traced && l == nil {
+	l := c.cell.logger()
+	logged := l.Enabled(context.Background(), slog.LevelInfo) // OBS-040: no formatting when disabled
+	if !traced && !logged {
 		return
 	}
 	text := fmt.Sprintf(format, args...)
@@ -66,7 +61,7 @@ func (c *Context[M]) Logf(format string, args ...any) {
 			engine.Attr{Key: "text", Value: text},
 		)
 	}
-	if l != nil {
+	if logged {
 		// OBS-040: the record's PC is Logf's caller, so HandlerOptions.AddSource points at actor
 		// code; skip runtime.Callers and Logf. OBS-050: the handler gets context.Background().
 		var pcs [1]uintptr

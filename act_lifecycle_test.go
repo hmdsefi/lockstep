@@ -151,6 +151,7 @@ func TestATACT11ContextOutsideItsTurn(t *testing.T) {
 		call func()
 	}{
 		{"Logf", func() { saved.Logf("x") }},
+		{"Logger", func() { _ = saved.Logger() }},
 		{"Now", func() { _ = saved.Now() }},
 		{"After", func() { saved.After(time.Second, any("m")) }},
 		{"Fail", func() { saved.Fail(errProbe) }},

@@ -94,8 +94,8 @@ func TestATACT12Logf(t *testing.T) {
 	})
 
 	t.Run("simulation-style engine", func(t *testing.T) {
-		// The manual engine has Blocking false, as the simulation engine does: the line reaches
-		// only the trace.
+		// The manual engine does not block, as the simulation engine does not: without WithLogger
+		// its system logger discards, so the line reaches only the trace.
 		buf := setDefaultLogger(t)
 		sys, eng := newManualSystem(t)
 		pid, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{

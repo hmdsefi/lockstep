@@ -426,6 +426,7 @@ func TestNilContextPanics(t *testing.T) {
 		{"Self", func() { ctx.Self() }},
 		{"Parent", func() { ctx.Parent() }},
 		{"Logf", func() { ctx.Logf("x") }},
+		{"Logger", func() { ctx.Logger() }},
 		{"Fail", func() { ctx.Fail(errProbe) }},
 		{"Watch", func() { _ = Watch(ctx, addr) }},
 		{"Unwatch", func() { Unwatch(ctx, addr) }},
