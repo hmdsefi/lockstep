@@ -275,6 +275,9 @@ func (c *cell[M]) callStopped(r StopReason) {
 	failed, err := c.callGuarded(func() { c.stopper.Stopped(c.ctx, r) })
 	c.unmark()
 	if failed {
+		if pe, ok := err.(*PanicError); ok {
+			c.sys.logStoppedPanic(c.addr, pe) // a Fail in Stopped is no panic: not logged (OBS-060)
+		}
 		c.failCleanup(err)
 	}
 }

@@ -189,23 +189,30 @@ func (t *askTable) len() int {
 // pending ask with exactly the address ask (path and uid); if there is one, it removes it,
 // cancels its timer, emits the record of res.how and resolves the reply, which closes its done
 // channel. An answer that is not the ask's R resolves it with ErrWrongType instead (MSG-420).
-// Otherwise the ask resolved already, or is unknown here: a reply attempt is recorded as late and
-// every other attempt is dropped silently. res.err is described before the lock is taken, since
-// its Error or String method is user code that may use the table. The resolution then runs the
-// continuations of the reply's Pipe calls, after it has released the lock and before settle
-// returns (MSG-610).
+// Otherwise the ask resolved already, or is unknown here: a reply attempt is recorded as late, and
+// logged as dropped once the lock is released, and every other attempt is dropped silently.
+// res.err is described before the lock is taken, since its Error or String method is user code
+// that may use the table. The resolution then runs the continuations of the reply's Pipe calls,
+// after it has released the lock and before settle returns (MSG-610).
 func (s *System) settle(ask Address, res resolution) {
 	desc := ""
 	if res.how != byTimeout {
 		desc = s.describeErr(res.err)
 	}
-	if r := s.resolveLocked(ask, res, desc); r != nil {
+	r, late := s.resolveLocked(ask, res, desc)
+	if late {
+		// Logged after the table's lock is released: a handler is user code (OBS-060). The ask
+		// has resolved, so the reply's subject is the ask address.
+		s.logMessageDropped(ask, dropLateReply)
+	}
+	if r != nil {
 		r.fire()
 	}
 }
 
-// resolveLocked is settle under the table's lock. It returns the reply it resolved, or nil.
-func (s *System) resolveLocked(ask Address, res resolution, desc string) resolver {
+// resolveLocked is settle under the table's lock. It returns the reply it resolved, or nil, and
+// whether res is a late reply attempt.
+func (s *System) resolveLocked(ask Address, res resolution, desc string) (r resolver, late bool) {
 	t := &s.asks
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -213,8 +220,9 @@ func (s *System) resolveLocked(ask Address, res resolution, desc string) resolve
 	if p == nil || p.addr.uid != ask.uid {
 		if res.how == byReply {
 			s.recordReply(ask, res.from, "late", res.err, desc)
+			return nil, true
 		}
-		return nil
+		return nil, false
 	}
 	if res.err == nil {
 		if err := p.reply.wrongType(ask, res.v); err != nil {
@@ -232,9 +240,9 @@ func (s *System) resolveLocked(ask Address, res resolution, desc string) resolve
 		s.recordReply(ask, res.from, "resolved", res.err, desc)
 	}
 	if !p.reply.resolve(res.v, res.err) {
-		return nil
+		return nil, false
 	}
-	return p.reply
+	return p.reply, false
 }
 
 // describeErr returns Tracer.Describe(err) for the err attribute of lockstep.reply, or "" when

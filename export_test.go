@@ -48,3 +48,7 @@ func ActorLoggerBuilt[M any](sys *System, pid PID[M]) bool {
 	}
 	return c.log.Load() != nil
 }
+
+// SetLogOff removes (true) or restores (false) the logging calls of sys's runtime log events, so
+// AT-OBS-06 can measure what they cost.
+func SetLogOff(sys *System, off bool) { sys.logOff.Store(off) }

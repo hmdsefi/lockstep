@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/overload"
@@ -28,9 +29,14 @@ type System struct {
 	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
 	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
 	// log is the system logger (OBS-010): WithLogger's logger, or else slog's default logger when
-	// the system was built on a blocking engine and a discarding logger on any other (obs.go). The system's own events log through it with the node attribute (OBS-060),
-	// and the actor loggers build on it (OBS-030).
+	// the system was built on a blocking engine and a discarding logger on any other (obs.go). The
+	// actor loggers build on it (OBS-030); the runtime log events go through events.
 	log *slog.Logger
+	// events is the logger of the runtime log events (obs_log.go): log for a system New built, nil
+	// for one built on a given bundle, which logs none of them (OBS-155). logOff removes the
+	// logging calls; only AT-OBS-06 sets it.
+	events *slog.Logger
+	logOff atomic.Bool
 
 	reg          *registry.Registry
 	user, system Address // the guardians; neither is registered (ACT-030)
@@ -135,6 +141,7 @@ func New(opts ...Option) *System {
 		pe.Stop()
 		panic(err) // unreachable: the options passed newConfig above
 	}
+	sys.events = sys.log
 	sys.startOverload(pe, gate, cfg)
 	return sys
 }
@@ -196,6 +203,8 @@ type shutdownState struct {
 	done  chan struct{} // closed when the system is stopped and phase=done is recorded (ACT-060)
 	over  atomic.Bool   // done is closed
 
+	began time.Time // the engine clock's Now when the shutdown started; set only if events is set
+
 	engOnce    sync.Once   // Engine.Stop is called at most once (ENG-140)
 	engStopped atomic.Bool // Engine.Stop has returned (or the engine has none)
 }
@@ -209,7 +218,17 @@ func (s *System) Shutdown(ctx context.Context) error {
 	if s.discarded.Load() { // SUP-360: no Stopped hook runs, so there is no shutdown to start or wait for
 		return nil
 	}
-	s.shut.start.Do(s.startShutdown)
+	started := false
+	s.shut.start.Do(func() {
+		s.startShutdown()
+		started = true
+	})
+	if started {
+		// Logged after Do has returned, so a handler that calls Shutdown does not deadlock on
+		// the Once (OBS-060), and before the sweep is scheduled, so it precedes shutdown finished.
+		s.logShutdownStarted()
+		s.guardians.push(sweepStart{}, nil)
+	}
 	// ACT-060: only a caller outside engine context on a blocking engine waits. Once the engine
 	// has stopped, nothing calls it again (ENG-140).
 	if s.shut.engStopped.Load() || !s.eng.Blocking || s.eng.Scheduler.InTurn() {
@@ -217,6 +236,7 @@ func (s *System) Shutdown(ctx context.Context) error {
 	}
 	if !s.shut.over.Load() {
 		if err := s.eng.Waiter.Wait(ctx, s.shut.done); err != nil {
+			s.logShutdownIncomplete(err)
 			return err // unwrapped (ACT-060); the shutdown continues
 		}
 	}
@@ -228,14 +248,16 @@ func (s *System) Shutdown(ctx context.Context) error {
 }
 
 // startShutdown is the first Shutdown call's start (ACT-050): it marks the system shutting down,
-// so every later Spawn returns ErrStopped, records phase=begin and schedules the guardians' sweep,
-// which stops the actors in later engine callbacks (ACT-060).
+// so every later Spawn returns ErrStopped, and records phase=begin. That call then schedules the
+// guardians' sweep, which stops the actors in later engine callbacks (ACT-060).
 func (s *System) startShutdown() {
 	s.spawnMu.Lock()
 	s.closing.Store(true)
 	s.spawnMu.Unlock()
+	if s.events != nil {
+		s.shut.began = s.eng.Clock.Now()
+	}
 	s.recordShutdown("begin")
-	s.guardians.push(sweepStart{}, nil)
 }
 
 // completeShutdown runs once, in the guardians' turn after every actor has stopped (ACT-050): it
@@ -245,6 +267,9 @@ func (s *System) completeShutdown() {
 	err := s.errStopped()
 	for _, ask := range s.asks.stop(&s.stopped) {
 		s.settle(ask, resolution{how: byStop, from: s.user, err: err})
+	}
+	if s.events != nil {
+		s.logShutdownFinished(s.eng.Clock.Now().Sub(s.shut.began))
 	}
 	s.recordShutdown("done")
 	s.shut.over.Store(true)
