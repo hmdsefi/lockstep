@@ -60,3 +60,10 @@ func (w *Window[K]) Config() Config {
 func (w *Window[K]) MarshalJSON() ([]byte, error) {
 	return w.s.marshal(windowKind, nil)
 }
+
+// UnmarshalJSON replaces w with the window that data encodes, bounds included. It returns an
+// error wrapping ErrInvalidEncoding, and leaves w unchanged, if data is not a valid Window
+// encoding. data "null" leaves w unchanged.
+func (w *Window[K]) UnmarshalJSON(data []byte) error {
+	return w.s.unmarshal(windowKind, data, nil)
+}
