@@ -383,18 +383,22 @@ level=INFO msg="shutdown started" node=orders-1 actors=1
 level=INFO msg="shutdown finished" node=orders-1 elapsed=93µs
 ```
 
+Your `uid` and `elapsed` differ.
+
 The attributes have these values:
 
 - `err` is the error as it is. A panic arrives as a `*PanicError` whose text is
-  `lockstep: panic: <value>`. `actor restarted` logs the failure that ended the incarnation, and
+  `lockstep: panic: <value>`. `actor restarted` logs the failure that ended the incarnation.
   `shutdown incomplete` logs the context's error when the context given to `Shutdown` ends before
   the system has stopped.
 - `directive` is the directive that the supervisor applied: `restart`, `stop`, `escalate`, or
-  `resume`. When a restart would exceed the restart limit, lockstep logs `restart intensity exceeded`
-  first, and `actor failed` then shows the directive that replaced the restart. `max_restarts` and
-  `window` are the limit.
+  `resume`. When a restart would exceed the restart limit, lockstep logs
+  `restart intensity exceeded` first. `actor failed` then shows the directive that replaced the
+  restart. `max_restarts` and `window` are the limit.
 - `panic` in `actor failed` is `true` for a panic in the actor's own code. A `ctx.Fail` call and a
   failure that a child escalated log `false`.
+- `panic` in `stopped hook panicked` and `effect panicked` is a string: the panic value as
+  `fmt.Sprint` formats it.
 - `stack` is a goroutine stack as a string. For a stuck turn, it is the stack of the worker
   goroutine that runs the turn.
 - `index` is the position of the resource in the order of `ctx.Own` calls, counted from 0.
@@ -576,31 +580,36 @@ A gauge function returns the current value of its series when the backend calls 
 
 The depth gauges read the length of each live actor's mailbox when the backend collects, so they
 visit every live actor each time. They count user messages and not the system queue. They hold a
-lock that `Spawn` and an actor's final stop also take, so a collection can delay those, but never a
-`Send` or a turn.
+lock that `Spawn` and an actor's final stop also take. A collection can delay a `Spawn` or a final
+stop, and the turn that runs it, but never a `Send` or any other turn. `Shutdown` waits for a
+`Spawn` in progress before it starts, so a collection can also delay the start of a `Shutdown`.
 
-After `Shutdown` returns, every gauge function returns 0 and no longer refers to the system. The
-exception is `lockstep_goroutines`, which keeps returning the process's goroutine count.
+Once the system has stopped (a `Shutdown` that waits returns nil), every gauge function returns 0
+and no longer refers to the system. The exception is `lockstep_goroutines`, which keeps returning
+the process's goroutine count.
 
 ### Logs and metrics in simulation
 
-In simulation, the actor logger writes to the node's kernel log instead of the system logger. Each
-record at Info or above becomes a `kernel.log` record of the node, and records below Info are
-dropped. The record's text is the level and the message, then one `key=value` pair for each
-attribute, separated by spaces: `node`, `path`, and `uid` first, then the record's attributes in
-call order, with groups flattened as `group.key`. `ctx.Logf` produces the same text. For example, the actor `/user/orders`
-on node `n1` that calls `ctx.Logger().Info("order accepted", "id", "o-17")` writes this text:
+In simulation, the actor logger writes to the node's kernel log instead of the system logger.
+faultline gives each simulated node a kernel log, and its records go into `trace.jsonl` and the
+trace hash. Each actor log record at Info or above becomes a `kernel.log` record of the node, and
+records below Info are dropped. The record's text is the level and the message, then one `key=value`
+pair for each attribute, separated by spaces. `node`, `path`, and `uid` come first, then the
+record's attributes in call order, with groups flattened as `group.key`. `ctx.Logf` produces the
+same text. For example, the actor `/user/orders` on node `n1` that calls
+`ctx.Logger().Info("order accepted", "id", "o-17")` writes this text:
 
 ```text
 INFO order accepted node=n1 path=/user/orders uid=4294967299 id=o-17
 ```
 
-The record has no time, so its text depends only on the call. Like the `lockstep.<event>` records,
-it goes into `trace.jsonl` and the trace hash, so a replay of a seed writes the same lines.
+The record has no time, so its text depends only on the call, and a replay of a seed writes the same
+lines.
 
-A system built for simulation logs none of the events in the runtime events table: the
-`lockstep.<event>` records carry the same information. Metrics are off, so nothing registers a
-series. `WithLogger` and `WithMetrics` in `sim.Options.System` have no effect.
+A system built for simulation logs none of the events in the runtime events table. For the events
+that can happen in simulation, the `lockstep.<event>` records carry the same information. Metrics
+are off, so nothing registers a series. `WithLogger` and `WithMetrics` in `sim.Options.System` have
+no effect.
 
 ## Persistence
 
