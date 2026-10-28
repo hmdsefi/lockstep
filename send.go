@@ -115,12 +115,28 @@ func (s *System) recordSend(from, to Address, msg any) {
 	)
 }
 
+// deadReason is the reason of a dead letter (MBX-150): an index into deadReasons, so the counter of
+// each reason is found without a lookup (OBS-090).
+type deadReason uint8
+
 // The dead-letter reasons of MBX-150, in its order. REM adds its own in Phase 3.
 const (
-	reasonStopped     = "stopped"     // a local address that is not alive, or an inbound one that names no live actor
-	reasonNotFound    = "not-found"   // a path address that resolves to no actor of the sender's message type
-	reasonUnreachable = "unreachable" // another node, and the engine has no Transport
+	reasonStopped     deadReason = iota // a local address that is not alive, or an inbound one that names no live actor
+	reasonNotFound                      // a path address that resolves to no actor of the sender's message type
+	reasonUnreachable                   // another node, and the engine has no Transport
 )
+
+// deadReasons lists the spelling of every dead-letter reason, in the order of the constants: the
+// value of the reason attribute of lockstep.deadletter, of the dead letter log event and of the
+// label of lockstep_deadletters_total (OBS-145).
+var deadReasons = [...]string{
+	reasonStopped:     "stopped",
+	reasonNotFound:    "not-found",
+	reasonUnreachable: "unreachable",
+}
+
+// String returns the reason's spelling.
+func (r deadReason) String() string { return deadReasons[r] }
 
 // routeRequest is one user message on its way to a mailbox: what Send routes, and what Ask and
 // Host.Inbound route the same way.
@@ -159,9 +175,9 @@ const (
 // ask already; Ask applies routeFailed.
 type outcome struct {
 	kind   routeKind
-	cell   actorCell // routeEnqueued: the target's cell
-	reason string    // routeDead: one of the reason constants
-	err    error     // routeFailed: the wrapped transport error; routeRefused: ErrMailboxFull wrapped, nil for a drop, ctx.Err() of an ended wait
+	cell   actorCell  // routeEnqueued: the target's cell
+	reason deadReason // routeDead: one of the reason constants
+	err    error      // routeFailed: the wrapped transport error; routeRefused: ErrMailboxFull wrapped, nil for a drop, ctx.Err() of an ended wait
 }
 
 // route routes r by its target address (MSG-110): to the local actor, a dead letter, or the
@@ -323,24 +339,24 @@ func (s *System) offerWaiting(c actorCell, owner Address, r routeRequest, e entr
 }
 
 // resolve returns the cell the local address to names and the cell's full address, or nil and
-// the dead-letter reason. A full address needs an actor registered with exactly that path and uid
+// the dead-letter reason (which means nothing when the cell is not nil). A full address needs an actor registered with exactly that path and uid
 // (reason stopped). A path address (uid 0) names whichever actor is registered at its path,
 // provided it was spawned with message type typ (reason not-found; ACT-440). The address comes
 // from the registry, not from the cell: Spawn writes the cell's addr only after it registers the
 // cell, so reading it here without the cell's lock would race.
-func (s *System) resolve(to Address, typ reflect.Type) (actorCell, Address, string) {
+func (s *System) resolve(to Address, typ reflect.Type) (actorCell, Address, deadReason) {
 	uid, a, ok := s.reg.Lookup(to.path)
 	c, _ := a.(actorCell)
 	if to.uid == 0 {
 		if !ok || c == nil || typ != nil && c.msgType() != typ {
 			return nil, Address{}, reasonNotFound
 		}
-		return c, Address{node: s.node, path: to.path, uid: uid}, ""
+		return c, Address{node: s.node, path: to.path, uid: uid}, 0
 	}
 	if !ok || c == nil || uid != to.uid {
 		return nil, Address{}, reasonStopped
 	}
-	return c, Address{node: s.node, path: to.path, uid: uid}, ""
+	return c, Address{node: s.node, path: to.path, uid: uid}, 0
 }
 
 // sendRemote routes r to another node: to the transport, or to a dead letter when the engine has
@@ -366,7 +382,7 @@ func (s *System) sendRemote(r routeRequest) outcome {
 // Ask returns, or when the engine offers a request its interposer held. For an ask request that
 // arrived from another node, the system issues Fail(ErrTerminated) from the target address,
 // which travels back to the asker like any reply attempt (MSG-350).
-func (s *System) deadRequest(r routeRequest, reason string) outcome {
+func (s *System) deadRequest(r routeRequest, reason deadReason) outcome {
 	s.deadLetter(r.from, r.to, reason, r.msg)
 	switch {
 	case r.ask.IsZero():
@@ -496,7 +512,7 @@ func (s *System) recordMailboxFull(c actorCell, r routeRequest, action string, d
 // letter (OBS-060) and emits lockstep.deadletter (MBX §8): from is the sender, to the address the
 // message was sent to, reason one of the reason constants, msg the M value. For a reply attempt
 // that cannot reach another node it is the answer, or the error of a Fail.
-func (s *System) deadLetter(from, to Address, reason string, msg any) {
+func (s *System) deadLetter(from, to Address, reason deadReason, msg any) {
 	s.logDeadLetter(to, reason, msg)
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
@@ -505,7 +521,7 @@ func (s *System) deadLetter(from, to Address, reason string, msg any) {
 	tr.Record("lockstep.deadletter",
 		engine.Attr{Key: "from", Value: from.String()},
 		engine.Attr{Key: "to", Value: to.String()},
-		engine.Attr{Key: "reason", Value: reason},
+		engine.Attr{Key: "reason", Value: reason.String()},
 		engine.Attr{Key: "msg", Value: tr.Describe(msg)},
 	)
 }

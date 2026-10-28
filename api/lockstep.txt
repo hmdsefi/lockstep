@@ -68,6 +68,7 @@ pkg github.com/hmdsefi/lockstep, func WithLogger(*slog.Logger) Option
 pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithMaxActors(int) Option
 pkg github.com/hmdsefi/lockstep, func WithMemoryEstimates() Option
+pkg github.com/hmdsefi/lockstep, func WithMetrics(Metrics) Option
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithThroughput(int) Option
@@ -125,6 +126,8 @@ pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Cleanup bool
 pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Directive Directive
 pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Err error
 pkg github.com/hmdsefi/lockstep, type Context[M any] struct
+pkg github.com/hmdsefi/lockstep, type Counter interface { Add }
+pkg github.com/hmdsefi/lockstep, type Counter interface, Add(uint64)
 pkg github.com/hmdsefi/lockstep, type Directive uint8
 pkg github.com/hmdsefi/lockstep, type EffectID uint64
 pkg github.com/hmdsefi/lockstep, type EffectOption func(*effectConfig)
@@ -134,6 +137,12 @@ pkg github.com/hmdsefi/lockstep, type Effect[T any] interface, Run(context.Conte
 pkg github.com/hmdsefi/lockstep, type MailboxPolicy uint8
 pkg github.com/hmdsefi/lockstep, type MemSizer interface { MemSize }
 pkg github.com/hmdsefi/lockstep, type MemSizer interface, MemSize() int
+pkg github.com/hmdsefi/lockstep, type MetricLabel struct
+pkg github.com/hmdsefi/lockstep, type MetricLabel struct, Name string
+pkg github.com/hmdsefi/lockstep, type MetricLabel struct, Value string
+pkg github.com/hmdsefi/lockstep, type Metrics interface { Counter, GaugeFunc }
+pkg github.com/hmdsefi/lockstep, type Metrics interface, Counter(string, string, ...MetricLabel) Counter
+pkg github.com/hmdsefi/lockstep, type Metrics interface, GaugeFunc(string, string, func() int64, ...MetricLabel)
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type OverloadReason uint8
 pkg github.com/hmdsefi/lockstep, type Overloaded struct
