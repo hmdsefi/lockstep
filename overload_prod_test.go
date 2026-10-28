@@ -257,8 +257,8 @@ type countSeries struct{ n atomic.Uint64 }
 
 func (c *countSeries) Add(n uint64) { c.n.Add(n) }
 
-// seriesKey returns the key of the series name with the labels kv, name and value pairs after node.
-func seriesKey(name string, kv ...string) string {
+// ovlSeriesKey returns the key of the series name with the labels kv, name and value pairs after node.
+func ovlSeriesKey(name string, kv ...string) string {
 	return name + "|" + strings.Join(kv, ",")
 }
 
@@ -273,7 +273,7 @@ func (m *countMetrics) Counter(name, _ string, labels ...MetricLabel) Counter {
 	if m.series == nil {
 		m.series = make(map[string]*countSeries)
 	}
-	m.series[seriesKey(name, kv...)] = c
+	m.series[ovlSeriesKey(name, kv...)] = c
 	return c
 }
 
@@ -284,7 +284,7 @@ func (*countMetrics) GaugeFunc(string, string, func() int64, ...MetricLabel) {}
 func (m *countMetrics) count(name string, kv ...string) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if c := m.series[seriesKey(name, kv...)]; c != nil {
+	if c := m.series[ovlSeriesKey(name, kv...)]; c != nil {
 		return c.n.Load()
 	}
 	return 0
