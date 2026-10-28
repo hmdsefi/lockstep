@@ -259,6 +259,47 @@ func TestATOBS11MetricsOff(t *testing.T) {
 			t.Errorf("allocations of an actor-to-actor Send: %v with no metrics, %v with a no-op Metrics; want equal", off, noop)
 		}
 	})
+
+	// The paths that count: a Send that finds a full FailSend mailbox, a DropNewest drop and a dead
+	// letter allocate the same with a no-op backend as with metrics off (OBS-090).
+	t.Run("counting path allocations", func(t *testing.T) {
+		if lockstep.RaceEnabled {
+			t.Skip("allocation counts are not stable under the race detector")
+		}
+		off := countingAllocs(t)
+		noop := countingAllocs(t, lockstep.WithMetrics(noopMetrics{}))
+		if off != noop {
+			t.Errorf("allocations of a Send to a full mailbox, a drop and a dead letter: %v with no metrics, %v with a no-op Metrics; want equal", off, noop)
+		}
+	})
+}
+
+// countingAllocs returns testing.AllocsPerRun of one Send from outside to a full FailSend mailbox,
+// to a full DropNewest mailbox and to a stopped actor, in that order, on a New system built with
+// opts whose logger discards every record.
+func countingAllocs(t *testing.T, opts ...lockstep.Option) [3]float64 {
+	t.Helper()
+	const runs = 500
+	sys := newProdSystem(t, append(opts, lockstep.WithLogger(slog.New(slog.DiscardHandler)))...)
+	fs := spawnObs(t, sys, "fs", obsOf(&obsActor{}), lockstep.WithMailbox(1, lockstep.FailSend))
+	dn := spawnObs(t, sys, "dn", obsOf(&obsActor{}), lockstep.WithMailbox(1, lockstep.DropNewest))
+	t.Cleanup(lockstep.Hold(sys, fs.Address()))
+	t.Cleanup(lockstep.Hold(sys, dn.Address()))
+	for _, pid := range []lockstep.PID[ping]{fs, dn} { // fill both mailboxes
+		if err := lockstep.Send(sys, pid, ping{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone := spawnObs(t, sys, "gone", obsOf(&obsActor{}))
+	if err := lockstep.Stop(sys, gone.Address()); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, sys, gone)
+	var out [3]float64
+	for i, pid := range []lockstep.PID[ping]{fs, dn, gone} {
+		out[i] = testing.AllocsPerRun(runs, func() { _ = lockstep.Send(sys, pid, ping{}) })
+	}
+	return out
 }
 
 // sendAllocs returns testing.AllocsPerRun of one Send from an actor, inside its turn, to a held
