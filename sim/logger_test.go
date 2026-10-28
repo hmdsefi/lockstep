@@ -123,16 +123,37 @@ func TestKernelLogText(t *testing.T) {
 	}
 }
 
-// SIM-120, OBS-160: a logger of a crashed node's system writes nothing; the node's next
-// system has its own.
+// incLog is one kernel.log record of a node: its incarnation and text.
+type incLog struct {
+	inc  uint32
+	text string
+}
+
+// kernelLogsByInc returns node's kernel.log records with their incarnations, in order.
+func kernelLogsByInc(recs []kernel.Record, node kernel.NodeID) []incLog {
+	var out []incLog
+	for _, r := range ofKind(recs, "kernel.log") {
+		if r.Node == node {
+			out = append(out, incLog{r.Inc, r.Text})
+		}
+	}
+	return out
+}
+
+// SIM-120, OBS-160: a logger kept from a node's first incarnation writes nothing once the node
+// crashed, neither while it is down nor after its restart, when the kernel would stamp its
+// records with the new incarnation. The actor of the new incarnation logs through its own logger.
 func TestKernelLogAfterCrash(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var a lockstep.PID[Deposit]
-		var l *slog.Logger
+		var kept *slog.Logger
 		n1 := s.Node("n1", func(sys *lockstep.System) {
-			a = spawn(sys, "a", &actor[Deposit]{receive: func(ctx *lockstep.Context[Deposit], _ Deposit) {
-				l = ctx.Logger()
+			a = spawn(sys, "a", &actor[Deposit]{receive: func(ctx *lockstep.Context[Deposit], m Deposit) {
+				ctx.Logger().Info("turn", "n", m.N)
+				if kept == nil {
+					kept = ctx.Logger()
+				}
 			}})
 		})
 		w.RunFor(time.Millisecond)
@@ -140,14 +161,82 @@ func TestKernelLogAfterCrash(t *testing.T) {
 			tt.Fatal(err)
 		}
 		w.RunFor(time.Millisecond)
-		l.Info("up")
+		first := a
+		kept.Info("up")
+
 		now := w.Sim.Now()
 		w.Sim.At(now.Add(time.Millisecond), "test/crash", n1.Crash)
-		w.RunFor(2 * time.Millisecond)
-		l.Info("crashed")
+		w.Sim.At(now.Add(2*time.Millisecond), "test/restart", n1.Restart)
+		w.RunFor(1500 * time.Microsecond)
+		kept.Info("down")
+		w.RunFor(time.Millisecond)
+		if n1.Incarnation() != 2 || a == first {
+			tt.Fatalf("n1 is in incarnation %d with /user/a %v (first %v), want a restart to 2 with a new PID", n1.Incarnation(), a, first)
+		}
+		kept.Info("restarted")
+		if err := sim.Send(s, "n1", a, Deposit{2}); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(time.Millisecond)
 
-		if got, want := kernelLogs(w.Sim.Records(), n1.ID()), []string{"INFO up " + actorAttrs(a)}; !slices.Equal(got, want) {
-			tt.Errorf("kernel.log texts of n1 %q, want %q", got, want)
+		want := []incLog{
+			{1, "INFO turn " + actorAttrs(first) + " n=1"},
+			{1, "INFO up " + actorAttrs(first)},
+			{2, "INFO turn " + actorAttrs(a) + " n=2"},
+		}
+		if got := kernelLogsByInc(w.Sim.Records(), n1.ID()); !slices.Equal(got, want) {
+			tt.Errorf("kernel.log records of n1 %v, want %v", got, want)
+		}
+	})
+}
+
+// OBS-155, OBS-060: a node system logs no runtime event, although its logger writes to the
+// kernel log. An actor that panics and is restarted, a child that panics and is stopped by its
+// parent's decider, and the system's shutdown leave their lockstep.* records, and the kernel log
+// holds only the lines the actors log themselves: no actor failed, actor restarted or shutdown
+// started line.
+func TestKernelLogNoRuntimeEvents(t *testing.T) {
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		var r, c lockstep.PID[Deposit]
+		n1 := s.Node("n1", func(sys *lockstep.System) {
+			r = spawn(sys, "r", &actor[Deposit]{
+				started: func(ctx *lockstep.Context[Deposit]) { ctx.Logger().Info("started") },
+				receive: func(*lockstep.Context[Deposit], Deposit) { panic("boom") },
+			})
+			stop := lockstep.OneForOne(func(error) lockstep.Directive { return lockstep.DirectiveStop })
+			spawn(sys, "p", &actor[Deposit]{started: func(ctx *lockstep.Context[Deposit]) {
+				c = spawn(ctx, "c", &actor[Deposit]{receive: func(*lockstep.Context[Deposit], Deposit) { panic("boom") }})
+			}}, lockstep.WithStrategy(stop))
+		})
+		w.RunFor(time.Millisecond)
+		for _, pid := range []lockstep.PID[Deposit]{r, c} {
+			if err := sim.Send(s, "n1", pid, Deposit{1}); err != nil {
+				tt.Fatal(err)
+			}
+		}
+		w.RunFor(time.Second)
+		if err := s.System("n1").Shutdown(context.Background()); err != nil {
+			tt.Fatalf("Shutdown: %v", err)
+		}
+		w.RunFor(time.Second)
+
+		recs := w.Sim.Records()
+		if n := len(ofKind(recs, "lockstep.fail")); n != 2 {
+			tt.Errorf("%d lockstep.fail records, want 2", n)
+		}
+		if rs := ofKind(recs, "lockstep.restart"); len(rs) != 1 || attr(rs[0], "actor") != r.String() {
+			tt.Errorf("lockstep.restart records %v, want one for %v", rs, r)
+		}
+		failed := slices.IndexFunc(ofKind(recs, "lockstep.stop"), func(rec kernel.Record) bool {
+			return attr(rec, "actor") == c.String() && attr(rec, "reason") == "failed"
+		})
+		if failed < 0 {
+			tt.Errorf("no lockstep.stop record with reason failed for %v", c)
+		}
+		started := "INFO started " + actorAttrs(r)
+		if got, want := kernelLogs(recs, n1.ID()), []string{started, started}; !slices.Equal(got, want) {
+			tt.Errorf("kernel.log texts of n1 %q, want only the actor's own lines %q", got, want)
 		}
 	})
 }
