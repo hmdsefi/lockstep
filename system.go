@@ -27,8 +27,9 @@ type System struct {
 	node        string
 	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
 	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
-	// log is the system's logger: slog's default logger when the system was built (OBS-010). The
-	// system's own events log through it with the node attribute (OBS-060).
+	// log is the system logger (OBS-010): WithLogger's logger, or else slog's default logger when
+	// the system was built on a blocking engine and a discarding logger on any other (obs.go). The system's own events log through it with the node attribute (OBS-060),
+	// and the actor loggers build on it (OBS-030).
 	log *slog.Logger
 
 	reg          *registry.Registry
@@ -168,7 +169,7 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 	s := &System{
 		eng:         eng,
 		node:        cfg.node,
-		log:         slog.Default(),
+		log:         systemLogger(cfg, eng),
 		mbx:         cfg.mbx,
 		estimates:   cfg.estimates,
 		incarnation: eng.Epoch,

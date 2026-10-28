@@ -33,3 +33,18 @@ func SkipEffectCancelAtStop(sys *System) { sys.skipEffectCancel.Store(true) }
 func SpawnSystem[M any](sys *System, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
 	return spawnSystem(sys, name, factory, opts...)
 }
+
+// RaceEnabled reports whether the test binary was built with -race, for the external tests that
+// skip allocation counts under the race detector.
+const RaceEnabled = raceEnabled
+
+// ActorLoggerBuilt reports whether the actor logger of the actor registered as pid on sys has been
+// built (OBS-030: Spawn does not build it). It panics if pid is not a registered actor of type M.
+func ActorLoggerBuilt[M any](sys *System, pid PID[M]) bool {
+	uid, a, ok := sys.reg.Lookup(pid.addr.path)
+	c, isCell := a.(*cell[M])
+	if !ok || uid != pid.addr.uid || !isCell {
+		panic("lockstep: ActorLoggerBuilt: " + pid.String() + " is not a registered actor")
+	}
+	return c.log.Load() != nil
+}
