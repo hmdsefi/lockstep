@@ -348,7 +348,7 @@ func TestShedToStuckActor(t *testing.T) {
 			close(entered)
 			<-release
 		}
-	}}), lockstep.WithMailbox(8, lockstep.FailSend))
+	}}), lockstep.WithMailbox(1024, lockstep.FailSend)) // room for the sends until the mark
 	if err := lockstep.Send(sys, pid, ping{}); err != nil {
 		t.Fatal(err)
 	}
