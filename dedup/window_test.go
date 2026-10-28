@@ -61,6 +61,14 @@ func check(t *testing.T, call string, got, want bool) {
 	}
 }
 
+// checkGet reports a Get whose result differs from want.
+func checkGet[V comparable](t *testing.T, call string, got V, ok bool, want V, wantOK bool) {
+	t.Helper()
+	if got != want || ok != wantOK {
+		t.Errorf("%s = %v, %t; want %v, %t", call, got, ok, want, wantOK)
+	}
+}
+
 // ent is a Window[string] entry in an expected encoding.
 type ent struct {
 	k  string
@@ -89,6 +97,8 @@ func TestATDLV02ConstructorsPanic(t *testing.T) {
 		f    func()
 	}{
 		{"NewWindow[string]", func() { NewWindow[string](bad) }},
+		{"NewReplies[string, int]", func() { NewReplies[string, int](bad) }},
+		{"NewVersions[string]", func() { NewVersions[string](bad) }},
 	} {
 		v := panicOf(tc.f)
 		err, ok := v.(error)
@@ -120,6 +130,20 @@ var decodedConfigCases = []struct {
 			return Config{}, err
 		}
 		return w.Config(), nil
+	}},
+	{"Replies", func() (Config, error) {
+		var c Replies[string, int]
+		if err := c.UnmarshalJSON([]byte(repliesJSON(3, 7*sec, 1_000_000_000, repEnt{"a", 1_000_000_000, 1}))); err != nil {
+			return Config{}, err
+		}
+		return c.Config(), nil
+	}},
+	{"Versions", func() (Config, error) {
+		var v Versions[string]
+		if err := v.UnmarshalJSON([]byte(versionsJSON(3, 7*sec, 1_000_000_000, verEnt{"a", 1_000_000_000, 1}))); err != nil {
+			return Config{}, err
+		}
+		return v.Config(), nil
 	}},
 }
 
@@ -159,20 +183,71 @@ func TestATDLV03TimeRange(t *testing.T) {
 	}
 }
 
-// AT-DLV-04, DLV-100, DLV-040: a zero Window panics on every method, before the range check, and
+// A zeroCall is a method call on a zero value.
+type zeroCall struct {
+	call string
+	f    func()
+}
+
+// zeroValueCases are zero values of AT-DLV-04: every method panics with text, a zero now
+// included (DLV-040 step 1 comes first), and marshal returns text as an error.
+var zeroValueCases = []struct {
+	name    string
+	text    string
+	calls   []zeroCall
+	marshal func() ([]byte, error)
+}{
+	{"Window", "dedup: Window used before NewWindow or UnmarshalJSON", func() []zeroCall {
+		var w Window[string]
+		return []zeroCall{
+			{`Add(t0, "a")`, func() { w.Add(t0, "a") }},
+			{`Contains(t0, "a")`, func() { w.Contains(t0, "a") }},
+			{`Len(t0)`, func() { w.Len(t0) }},
+			{`Forget("a")`, func() { w.Forget("a") }},
+			{`Config()`, func() { w.Config() }},
+			{`Add(time.Time{}, "a")`, func() { w.Add(time.Time{}, "a") }},
+			{`Len(time.Time{})`, func() { w.Len(time.Time{}) }},
+		}
+	}(), func() ([]byte, error) { return (&Window[string]{}).MarshalJSON() }},
+	{"Replies", "dedup: Replies used before NewReplies or UnmarshalJSON", func() []zeroCall {
+		var c Replies[string, int]
+		return []zeroCall{
+			{`Put(t0, "a", 1)`, func() { c.Put(t0, "a", 1) }},
+			{`Get(t0, "a")`, func() { c.Get(t0, "a") }},
+			{`Len(t0)`, func() { c.Len(t0) }},
+			{`Forget("a")`, func() { c.Forget("a") }},
+			{`Config()`, func() { c.Config() }},
+			{`Put(time.Time{}, "a", 1)`, func() { c.Put(time.Time{}, "a", 1) }},
+			{`Get(time.Time{}, "a")`, func() { c.Get(time.Time{}, "a") }},
+		}
+	}(), func() ([]byte, error) { return (&Replies[string, int]{}).MarshalJSON() }},
+	{"Versions", "dedup: Versions used before NewVersions or UnmarshalJSON", func() []zeroCall {
+		var v Versions[string]
+		return []zeroCall{
+			{`Accept(t0, "a", 1)`, func() { v.Accept(t0, "a", 1) }},
+			{`Get(t0, "a")`, func() { v.Get(t0, "a") }},
+			{`Len(t0)`, func() { v.Len(t0) }},
+			{`Forget("a")`, func() { v.Forget("a") }},
+			{`Config()`, func() { v.Config() }},
+			{`Accept(time.Time{}, "a", 1)`, func() { v.Accept(time.Time{}, "a", 1) }},
+			{`Get(time.Time{}, "a")`, func() { v.Get(time.Time{}, "a") }},
+		}
+	}(), func() ([]byte, error) { return (&Versions[string]{}).MarshalJSON() }},
+}
+
+// AT-DLV-04, DLV-100, DLV-040: a zero value panics on every method, before the range check, and
 // MarshalJSON returns the text as an error.
 func TestATDLV04ZeroValue(t *testing.T) {
-	const want = "dedup: Window used before NewWindow or UnmarshalJSON"
-	var w Window[string]
-	wantPanic(t, `Add(t0, "a")`, want, func() { w.Add(t0, "a") })
-	wantPanic(t, `Contains(t0, "a")`, want, func() { w.Contains(t0, "a") })
-	wantPanic(t, `Len(t0)`, want, func() { w.Len(t0) })
-	wantPanic(t, `Forget("a")`, want, func() { w.Forget("a") })
-	wantPanic(t, `Config()`, want, func() { w.Config() })
-	wantPanic(t, `Add(time.Time{}, "a")`, want, func() { w.Add(time.Time{}, "a") })
-	b, err := w.MarshalJSON()
-	if err == nil || err.Error() != want || b != nil {
-		t.Errorf("MarshalJSON() = %q, %v; want nil, %q", b, err, want)
+	for _, tc := range zeroValueCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, c := range tc.calls {
+				wantPanic(t, c.call, tc.text, c.f)
+			}
+			b, err := tc.marshal()
+			if err == nil || err.Error() != tc.text || b != nil {
+				t.Errorf("MarshalJSON() = %q, %v; want nil, %q", b, err, tc.text)
+			}
+		})
 	}
 	// UnmarshalJSON fills a zero value of each type, which then accepts a write.
 	for _, tc := range zeroFillCases {
@@ -195,6 +270,16 @@ var zeroFillCases = []struct {
 		var w Window[string]
 		err := w.UnmarshalJSON([]byte(windowJSON(2, 0, 1_000_000_000, ent{"a", 1_000_000_000})))
 		return func() bool { return w.Add(at(sec), "b") }, err
+	}},
+	{"Replies", func() (func() bool, error) {
+		var c Replies[string, int]
+		err := c.UnmarshalJSON([]byte(repliesJSON(2, 0, 1_000_000_000, repEnt{"a", 1_000_000_000, 1})))
+		return func() bool { return c.Put(at(sec), "b", 2) }, err
+	}},
+	{"Versions", func() (func() bool, error) {
+		var v Versions[string]
+		err := v.UnmarshalJSON([]byte(versionsJSON(2, 0, 1_000_000_000, verEnt{"a", 1_000_000_000, 1})))
+		return func() bool { return v.Accept(at(sec), "b", 1) }, err
 	}},
 }
 
@@ -352,6 +437,38 @@ var readsCases = []struct {
 			func(time.Time) { w.Contains(at(1000*time.Hour), "c") }, // later now, all expired
 		}
 	}},
+	{"Replies", func() (json.Marshaler, []func(time.Time)) {
+		c := NewReplies[string, int](Config{4, 10 * sec})
+		c.Put(t0, "a", 1)
+		c.Put(at(5*sec), "b", 2)
+		c.Put(at(8*sec), "c", 3)
+		return c, []func(time.Time){
+			func(now time.Time) { c.Get(now, "b") },            // hit
+			func(now time.Time) { c.Get(now, "z") },            // miss
+			func(now time.Time) { c.Get(now, "a") },            // expired
+			func(time.Time) { c.Get(t0, "a") },                 // earlier now
+			func(now time.Time) { c.Len(now) },                 // Len
+			func(time.Time) { c.Config() },                     // Config
+			func(time.Time) { _, _ = c.MarshalJSON() },         // MarshalJSON
+			func(time.Time) { c.Get(at(1000*time.Hour), "c") }, // later now, all expired
+		}
+	}},
+	{"Versions", func() (json.Marshaler, []func(time.Time)) {
+		v := NewVersions[string](Config{4, 10 * sec})
+		v.Accept(t0, "a", 1)
+		v.Accept(at(5*sec), "b", 2)
+		v.Accept(at(8*sec), "c", 3)
+		return v, []func(time.Time){
+			func(now time.Time) { v.Get(now, "b") },            // hit
+			func(now time.Time) { v.Get(now, "z") },            // miss
+			func(now time.Time) { v.Get(now, "a") },            // expired
+			func(time.Time) { v.Get(t0, "a") },                 // earlier now
+			func(now time.Time) { v.Len(now) },                 // Len
+			func(time.Time) { v.Config() },                     // Config
+			func(time.Time) { _, _ = v.MarshalJSON() },         // MarshalJSON
+			func(time.Time) { v.Get(at(1000*time.Hour), "c") }, // later now, all expired
+		}
+	}},
 }
 
 // AT-DLV-12, DLV-080: read calls change nothing.
@@ -414,6 +531,69 @@ var encodingCases = []struct {
 			w.Add(t0, 1)
 			w.Add(t0, 2)
 			return w.MarshalJSON()
+		},
+		wantErr: "dedup: encode entry 1: ",
+		wantIs:  errFailKey,
+	},
+	{
+		name: "Replies with one reply",
+		marshal: func() ([]byte, error) {
+			c := NewReplies[string, int](Config{2, 0})
+			c.Put(t0, "r1", 7)
+			return c.MarshalJSON()
+		},
+		want: `{"dedup":1,"type":"replies","capacity":2,"ttl":0,"last":1000000000,"entries":[{"k":"r1","at":1000000000,"r":7}]}`,
+	},
+	{
+		name: "Versions with one entity",
+		marshal: func() ([]byte, error) {
+			v := NewVersions[string](Config{2, time.Minute})
+			v.Accept(t0, "e", 3)
+			return v.MarshalJSON()
+		},
+		want: `{"dedup":1,"type":"versions","capacity":2,"ttl":60000000000,"last":1000000000,"entries":[{"k":"e","at":1000000000,"v":3}]}`,
+	},
+	{
+		name: "Replies with a reply that is a struct",
+		marshal: func() ([]byte, error) {
+			c := NewReplies[string, struct {
+				Sum  int64
+				Note string
+			}](Config{2, 0})
+			c.Put(t0, "<k>", struct {
+				Sum  int64
+				Note string
+			}{5, "a<b&c"})
+			return c.MarshalJSON()
+		},
+		want: `{"dedup":1,"type":"replies","capacity":2,"ttl":0,"last":1000000000,"entries":[{"k":"\u003ck\u003e","at":1000000000,"r":{"Sum":5,"Note":"a\u003cb\u0026c"}}]}`,
+	},
+	{
+		name: "Replies with a reply that does not encode",
+		marshal: func() ([]byte, error) {
+			c := NewReplies[string, chan int](Config{2, 0})
+			c.Put(t0, "k", make(chan int))
+			return c.MarshalJSON()
+		},
+		wantErr: "dedup: encode entry 0: ",
+	},
+	{
+		name: "Replies with a reply whose encoder fails",
+		marshal: func() ([]byte, error) {
+			c := NewReplies[string, replyFail](Config{3, 0})
+			c.Put(t0, "a", replyFail{})
+			return c.MarshalJSON()
+		},
+		wantErr: "dedup: encode entry 0: ",
+		wantIs:  errReplyFail,
+	},
+	{
+		name: "Versions with a key that does not encode",
+		marshal: func() ([]byte, error) {
+			v := NewVersions[failKey](Config{3, 0})
+			v.Accept(t0, 1, 1)
+			v.Accept(t0, 2, 1)
+			return v.MarshalJSON()
 		},
 		wantErr: "dedup: encode entry 1: ",
 		wantIs:  errFailKey,
