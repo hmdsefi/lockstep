@@ -47,6 +47,8 @@ type actorCell interface {
 	// mailboxState returns the number of entries in the user mailbox, its capacity and its policy,
 	// for the records of MBX §8.
 	mailboxState() (length, capacity int, policy MailboxPolicy)
+	// policy returns the user mailbox's policy; it takes no lock.
+	policy() MailboxPolicy
 	// pushSystem appends m to the system queue and schedules the cell (ENG-350); a closed queue
 	// drops m. from is the cell whose turn pushes, or nil.
 	pushSystem(m sysMsg, from engine.ActorRef)
@@ -280,6 +282,9 @@ func (c *cell[M]) offerWait(ctx context.Context, e entry, admit func() bool, wai
 	}
 	return out, err
 }
+
+// policy returns the user mailbox's policy without taking a lock (actorCell).
+func (c *cell[M]) policy() MailboxPolicy { return MailboxPolicy(c.user.Policy()) }
 
 // mailboxState returns the user mailbox's length, capacity and policy (actorCell).
 func (c *cell[M]) mailboxState() (length, capacity int, policy MailboxPolicy) {

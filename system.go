@@ -29,8 +29,8 @@ type System struct {
 	incarnation uint32        // Engine.Epoch; constant for the system's life (ACT-045)
 	mbx         mailboxConfig // the mailbox of an actor spawned without WithMailbox (MBX-010)
 	// log is the system logger (OBS-010): WithLogger's logger, or else slog's default logger when
-	// the system was built on a blocking engine and a discarding logger on any other (obs.go). The system's own events log through it with the node attribute (OBS-060),
-	// and the actor loggers build on it (OBS-030).
+	// the system was built on a blocking engine and a discarding logger on any other (obs.go). The
+	// actor loggers build on it (OBS-030); the runtime log events go through events.
 	log *slog.Logger
 	// events is the logger of the runtime log events (obs_log.go): log for a system New built, nil
 	// for one built on a given bundle, which logs none of them (OBS-155). logOff removes the
@@ -218,7 +218,17 @@ func (s *System) Shutdown(ctx context.Context) error {
 	if s.discarded.Load() { // SUP-360: no Stopped hook runs, so there is no shutdown to start or wait for
 		return nil
 	}
-	s.shut.start.Do(s.startShutdown)
+	started := false
+	s.shut.start.Do(func() {
+		s.startShutdown()
+		started = true
+	})
+	if started {
+		// Logged after Do has returned, so a handler that calls Shutdown does not deadlock on
+		// the Once (OBS-060), and before the sweep is scheduled, so it precedes shutdown finished.
+		s.logShutdownStarted()
+		s.guardians.push(sweepStart{}, nil)
+	}
 	// ACT-060: only a caller outside engine context on a blocking engine waits. Once the engine
 	// has stopped, nothing calls it again (ENG-140).
 	if s.shut.engStopped.Load() || !s.eng.Blocking || s.eng.Scheduler.InTurn() {
@@ -238,8 +248,8 @@ func (s *System) Shutdown(ctx context.Context) error {
 }
 
 // startShutdown is the first Shutdown call's start (ACT-050): it marks the system shutting down,
-// so every later Spawn returns ErrStopped, records phase=begin and schedules the guardians' sweep,
-// which stops the actors in later engine callbacks (ACT-060).
+// so every later Spawn returns ErrStopped, and records phase=begin. That call then schedules the
+// guardians' sweep, which stops the actors in later engine callbacks (ACT-060).
 func (s *System) startShutdown() {
 	s.spawnMu.Lock()
 	s.closing.Store(true)
@@ -247,9 +257,7 @@ func (s *System) startShutdown() {
 	if s.events != nil {
 		s.shut.began = s.eng.Clock.Now()
 	}
-	s.logShutdownStarted()
 	s.recordShutdown("begin")
-	s.guardians.push(sweepStart{}, nil)
 }
 
 // completeShutdown runs once, in the guardians' turn after every actor has stopped (ACT-050): it

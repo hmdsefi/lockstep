@@ -245,7 +245,7 @@ func TestATOBS02AttributeOrder(t *testing.T) {
 		deadline := time.Now().Add(5 * time.Second)
 		for rec.msg == "" {
 			for _, r := range h.withMsg("actor failed") {
-				if r.attrs[1].Value.String() == "/user/b" {
+				if attrOf(t, r, "path").String() == "/user/b" {
 					rec = r
 				}
 			}
@@ -399,20 +399,21 @@ func TestATOBS05DebugEvents(t *testing.T) {
 		if _, err := r.Await(context.Background()); !errors.Is(err, lockstep.ErrTimeout) {
 			t.Fatalf("Await = %v, want ErrTimeout", err)
 		}
+		n := len(h.withMsg("message dropped"))
 		if err := lockstep.Send(sys, late, lateAsk{answer: true}); err != nil {
 			t.Fatal(err)
 		}
-		recs := waitRecords(t, h, "message dropped", 3)
+		dropped := waitRecords(t, h, "message dropped", n+1)[n]
 		// The subject of a late reply is the ask address, /temp/<n>, the one address the reply
 		// names: the ask has resolved, so no actor waits for it.
-		path := attrOf(t, recs[2], "path").String()
+		path := attrOf(t, dropped, "path").String()
 		if !strings.HasPrefix(path, "/temp/") {
 			t.Errorf("late reply path = %q, want the ask address /temp/<n>", path)
 		}
 		expect(t, rec("message dropped",
 			slog.String("node", "n1"),
 			slog.String("path", path),
-			slog.Uint64("uid", attrOf(t, recs[2], "uid").Uint64()),
+			slog.Uint64("uid", attrOf(t, dropped, "uid").Uint64()),
 			slog.String("reason", "late-reply"),
 		))
 	})

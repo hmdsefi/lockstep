@@ -148,8 +148,7 @@ func (s *System) logMailboxFull(c actorCell, owner Address) {
 	if l == nil {
 		return
 	}
-	_, _, policy := c.mailboxState()
-	logActorEvent(l, slog.LevelDebug, "mailbox full", owner, slog.String("policy", policy.String()))
+	logActorEvent(l, slog.LevelDebug, "mailbox full", owner, slog.String("policy", c.policy().String()))
 }
 
 // logMessageShed logs message shed for a message to c, the actor at owner, that its mailbox
@@ -159,9 +158,8 @@ func (s *System) logMessageShed(c actorCell, owner Address, err error) {
 	if l == nil {
 		return
 	}
-	_, _, policy := c.mailboxState()
 	logActorEvent(l, slog.LevelDebug, "message shed", owner,
-		slog.String("policy", policy.String()),
+		slog.String("policy", c.policy().String()),
 		slog.String("reason", overloadReason(err)),
 	)
 }
