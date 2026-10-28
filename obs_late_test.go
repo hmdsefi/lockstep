@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -285,6 +286,63 @@ func TestLateRegistrationDuringShutdown(t *testing.T) {
 	if got := rec.gauge(t, sessions); got != 0 {
 		t.Errorf("after Shutdown: %s = %d, want 0", sessions, got)
 	}
+}
+
+// Late registrations race Shutdown while the backend polls every gauge: once Shutdown has returned
+// nil, no registration reaches the backend and every late gauge reads 0. Registration checks that
+// Shutdown has not started under the lock that dropGauges takes, so no late gauge registered while
+// the shutdown completes outlives it (OBS-150).
+func TestLateRegistrationRacesShutdown(t *testing.T) {
+	m := &pollingMetrics{stop: make(chan struct{})}
+	t.Cleanup(func() { close(m.stop); m.wg.Wait() })
+	sys := lockstep.New(lockstep.WithMetrics(m), lockstep.WithLogger(slog.New(slog.DiscardHandler)))
+	rec := &m.recMetrics
+	// The held actor keeps the shutdown from completing until release.
+	h := spawnObs(t, sys, "held", obsOf(&obsActor{}))
+	release := lockstep.Hold(sys, h.Address())
+
+	var stopReg atomic.Bool
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			for j := 0; !stopReg.Load(); j++ {
+				peer := strconv.Itoa(i) + "-" + strconv.Itoa(j)
+				hooks.MetricGauge(sys, sessions, sessionsHelp, func() int64 { return 1 }, "peer", peer)
+				if add := hooks.MetricCounter(sys, framesSent, framesSentHelp, "peer", peer); add != nil {
+					add(1)
+				}
+			}
+		})
+	}
+	time.Sleep(20 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		done <- sys.Shutdown(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	before := len(rec.registered())
+	time.Sleep(10 * time.Millisecond)
+	stopReg.Store(true)
+	wg.Wait()
+	if after := len(rec.registered()); after != before {
+		t.Errorf("%d registrations after Shutdown returned", after-before)
+	}
+	late := 0
+	for _, s := range rec.registered() {
+		if s.gauge && s.name == sessions {
+			late++
+			if v := s.fn(); v != 0 {
+				t.Errorf("%s = %d after Shutdown, want 0", s, v)
+			}
+		}
+	}
+	t.Logf("%d late gauges registered before Shutdown", late)
 }
 
 // gaugeSource is what a late gauge function reads.
