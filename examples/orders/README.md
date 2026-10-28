@@ -7,8 +7,10 @@ bugs and the patterns that fix them.
 
 The service has two actors:
 
-- `Orders` creates, charges, cancels and refunds orders. The order ID is an idempotency key, and a
-  Cancel for an order it has not seen leaves a tombstone.
+- `Orders` creates, charges, cancels and refunds orders. The order ID is an idempotency key. A
+  retry that arrives while the charge is in flight waits for it, a `dedup.Replies` answers a retry
+  that arrives after it ended with the first result, and a `dedup.Window` holds a tombstone for
+  each order cancelled before its Create arrived.
 - `Checkout` runs a fraud check on each order, asks `Orders` to create it, and asks again when the
   ask times out.
 

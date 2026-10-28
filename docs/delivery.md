@@ -77,19 +77,32 @@ Cancel, the Create that comes next places an order the customer cancelled.
 ## Patterns
 
 Idempotency keys handle duplicates, and tombstones handle a Cancel that comes first. Most
-services need both. A single route or a version per entity removes the race instead.
+services need both. A single route or a version per entity removes the race instead. Package
+[`dedup`](../dedup) holds the state for each pattern: a `Window` of keys, a `Replies` cache of
+first replies, and a `Versions` gate per entity.
 
 ### Idempotency keys
 
 An *idempotency key* is an ID that the client picks once per request and sends again with every
-retry. The receiver records each key it has seen and answers a repeat from that record instead
-of doing the work again. Orders uses the order ID as the key. The following code is from
-`orders.go`, with the bug switch left out:
+retry. The receiver records each key it has handled and answers a repeat from that record instead
+of doing the work again. Orders uses the order ID as the key and keeps it in two places, because
+a retry arrives either while the charge is in flight or after it ended:
+
+- While the charge is in flight, the order's record in the `orders` map holds the key. A retry
+  joins the record's waiters and gets the `Result` when the charge ends.
+- When the charge ends, Orders stores the `Result` in `settled`, a `dedup.Replies`, which keeps
+  the first reply to each key. A retry that arrives later gets that first `Result`.
+
+The following code is from `orders.go`, with the bug switch left out:
 
 ```go
 func (s *Orders) create(ctx *lockstep.Context[Msg], m Create) {
-	if o, seen := s.orders[m.ID]; seen {
-		// A retry, or a Create after its Cancel: answer from the record, never charge again.
+	if r, ok := s.settled.Get(ctx.Now(), m.ID); ok {
+		m.Reply.Send(ctx, r) // a retry of an order that has ended: the first Result
+		return
+	}
+	if o, ok := s.orders[m.ID]; ok {
+		// A retry of a live order: wait for its charge, or answer Created.
 		if o.status == Pending {
 			o.waiters = append(o.waiters, m.Reply)
 			return
@@ -97,61 +110,108 @@ func (s *Orders) create(ctx *lockstep.Context[Msg], m Create) {
 		m.Reply.Send(ctx, Result{ID: m.ID, Status: o.status})
 		return
 	}
+	// ... the tombstone check, described under Tombstones
 	s.orders[m.ID] = &order{amount: m.Amount, status: Pending, waiters: []lockstep.ReplyTo[Result]{m.Reply}}
 	// ... start the Charge effect
 }
 ```
 
-Record the key when the work starts, not when it ends. A retry can arrive while the first charge
-is still in flight, and then it must wait for that charge instead of starting another one.
+Record the order when the charge starts, not when it ends. A retry can arrive while the first
+charge is still in flight, and then it must wait for that charge instead of starting another one.
 
-Keep each key for longer than a retry can take to arrive. For Checkout's retries, that is the
-number of attempts times the ask timeout, plus a margin. Then drop the key from a timer. Orders
-keeps every key; the following sketch, which is not part of the example, prunes them. It keeps
-the keys in a slice in the order it saw them, because `lockstep-vet` reports a range over a map
-in actor code:
+When the charge ends, `charged` stores the `Result` and decides what stays in `orders`:
 
 ```go
-func (s *Orders) Started(ctx *lockstep.Context[Msg]) {
-	ctx.Every(time.Minute, prune{})
-}
-
-// In Receive:
-case prune:
-	for len(s.seen) > 0 && ctx.Now().Sub(s.seen[0].at) > keep {
-		delete(s.orders, s.seen[0].id)
-		s.seen = s.seen[1:]
+func (s *Orders) charged(ctx *lockstep.Context[Msg], m charged) {
+	// ... set o.status from the charge: Failed, Cancelled or Created
+	res := Result{ID: m.id, Status: o.status}
+	s.settled.Put(ctx.Now(), m.id, res)
+	if o.status != Created {
+		delete(s.orders, m.id)
 	}
+	// ... answer every waiter with res
+}
 ```
 
-The keys live in the actor's memory, so a restart forgets them. To keep them across restarts,
-run the actor as a [persistent actor](../README.md#persistent-actors-state-that-survives-a-restart)
-and record each key in an event.
+A Failed or Cancelled order has nothing left to refund, so its record goes and `settled` answers
+for it. A Created order keeps its record, because a later Cancel needs its amount. The record is
+the order's own state, which `dedup` does not bound: a service of real size keeps it in a database
+or a persistent actor.
 
 ### Tombstones
 
 A *tombstone* is a record of a Cancel for an entity that the receiver has not seen. When the
-Create arrives later, the receiver finds the tombstone and refuses the Create. In Orders, the
-tombstone is an order record with the status `Cancelled`. The idempotency check above finds it,
-answers the late Create with `Cancelled`, and charges nothing. From `orders.go`, with the bug
-switch left out:
+Create arrives later, the receiver finds the tombstone and refuses the Create. Orders keeps its
+tombstones in `tombs`, a `dedup.Window`: `Add` records an order ID, and `Contains` asks whether
+an ID is recorded. The late Create finds its ID in `tombs`, gets the answer `Cancelled`, and
+charges nothing. The following code is from `orders.go`, with the bug switch left out. `create`
+checks `tombs` after the two checks above, and `cancel` fills it:
+
+```go
+func (s *Orders) create(ctx *lockstep.Context[Msg], m Create) {
+	// ... answer a retry from settled or from the order's record
+	if s.tombs.Contains(ctx.Now(), m.ID) {
+		// The Cancel came first: refuse the Create and charge nothing.
+		m.Reply.Send(ctx, Result{ID: m.ID, Status: Cancelled})
+		return
+	}
+	// ... record the order and start the Charge effect
+}
+```
 
 ```go
 func (s *Orders) cancel(ctx *lockstep.Context[Msg], m Cancel) {
 	o, seen := s.orders[m.ID]
 	switch {
 	case !seen:
-		s.orders[m.ID] = &order{status: Cancelled} // tombstone
+		s.tombs.Add(ctx.Now(), m.ID)
 	case o.status == Pending:
 		o.cancel = true // refund once the charge completes
 	case o.status == Created:
-		o.status = Cancelled
+		delete(s.orders, m.ID)
 		s.refund(ctx, m.ID, o.amount)
 	}
 }
 ```
 
-Keep a tombstone for as long as its Create can still arrive, and prune it like a seen key.
+A tombstone must stay in `tombs` for as long as its Create can still arrive. The next section
+says how long that is.
+
+### Size the window
+
+`dedup.Config` bounds `settled` and `tombs` by age and by count, and both bounds must fit your
+retries. Orders builds one `Config` in `New`:
+
+```go
+cfg := dedup.Config{Capacity: 1024, TTL: time.Second}
+```
+
+`TTL` is how long an entry stays visible after it was written. It must be longer than the *retry
+horizon*, the longest time from the first handling of a request to the handling of its last copy.
+For a caller that makes `n` attempts, the horizon is at most the timeouts and backoff waits before
+the last attempt, added up, plus the longest time a request takes from send to handling.
+Checkout makes three attempts with a timeout of 100 ms and no backoff, and the simulated network
+adds up to 5 ms. Orders therefore handles a retry within 2 x 100 + 5 = 205 ms of the moment
+Checkout sends the first Create.
+
+A tombstone needs longer. A Cancel can reach Orders before Checkout has sent the first Create,
+because the submit takes up to 5 ms to reach Checkout and its fraud check up to 50 ms. A
+tombstone must last 5 + 50 + 205 = 260 ms. One second covers both.
+
+`Capacity` must hold every key written within one `TTL`. Orders sets 1024, which is room for 1024
+orders per second. A full value removes its oldest entry to make room for a new one, so that key
+stops being visible before its `TTL` ends.
+
+A key that leaves early, by age or by capacity, lets a late copy through as a new request. If
+`settled` has forgotten an order that ended Failed or Cancelled, a late retry is charged again,
+and if `tombs` has forgotten a Cancel, the late Create is charged.
+
+The values live in the actor's memory, so a restart forgets them, and the copies that arrive
+after it are handled as new. To keep them across restarts, run the actor as a
+[persistent actor](../README.md#persistent-actors-state-that-survives-a-restart) and keep the
+values in its state. They encode to JSON, so snapshots hold them. Write to a value in `Apply`,
+with a time that the event carries, and only read it in `Handle`. Recovery then rebuilds the
+value the actor had.
 
 ### One route, or a version, per entity
 
@@ -174,17 +234,22 @@ case CancelOrder:
 When the messages for one entity must come from several senders, give each change a version
 number from one source, such as the client. The receiver applies a message only if it is newer
 than what it has. A version that is too old is a duplicate or a stale message, and the receiver
-drops it. Another sketch:
+drops it. A `dedup.Versions` keeps the highest version per entity: `Accept` records a version
+and returns true only if it is higher than the one held. Another sketch, with a `versions` field
+of type `*dedup.Versions[string]`:
 
 ```go
 case Update:
-	o, ok := s.orders[m.ID]
-	if !ok || m.Version <= o.version {
-		return // unknown, a duplicate, or older than what this order has
+	if !s.versions.Accept(ctx.Now(), m.ID, m.Version) {
+		return // a duplicate, or older than the newest update of this order
 	}
-	o.version = m.Version
 	// ... apply the change
 ```
+
+`Versions` forgets an entity as a `Window` forgets a key, and an order it has forgotten accepts
+any version. Set `TTL` longer than the time an update can take to arrive, retries included, and
+`Capacity` to the number of orders updated within one `TTL`. If the actor keeps a record per
+order anyway, store the version in the record and compare it there.
 
 ## Find both bugs with a seed
 
@@ -210,7 +275,7 @@ go test -run '^(TestRetry|TestCancelBeforeCreate)$' -v . | grep -E '^(--- |ok)'
 ```text
 --- PASS: TestRetry (0.01s)
 --- PASS: TestCancelBeforeCreate (0.01s)
-ok  	github.com/hmdsefi/lockstep/examples/orders	0.222s
+ok  	github.com/hmdsefi/lockstep/examples/orders	0.257s
 ```
 
 ### A retry that charges twice
@@ -231,7 +296,7 @@ ORDERS_BUG=no-dedup go test -run '^TestRetry$' .
         artifacts: $TMPDIR/faultline-501/github.com_hmdsefi_lockstep_examples_orders/TestRetry/56247cd01be260d5/
     sim_test.go:37: faultline: stopping after failing seed 0x56247cd01be260d5; 199 of 200 seeds not run (set Options.KeepGoing to run all)
 FAIL
-FAIL	github.com/hmdsefi/lockstep/examples/orders	0.228s
+FAIL	github.com/hmdsefi/lockstep/examples/orders	0.241s
 FAIL
 ```
 
@@ -266,7 +331,7 @@ ORDERS_BUG=drop-early-cancel go test -run '^TestCancelBeforeCreate$' .
         artifacts: $TMPDIR/faultline-501/github.com_hmdsefi_lockstep_examples_orders/TestCancelBeforeCreate/144668b471a38445/
     sim_test.go:48: faultline: stopping after failing seed 0x144668b471a38445; 198 of 200 seeds not run (set Options.KeepGoing to run all)
 FAIL
-FAIL	github.com/hmdsefi/lockstep/examples/orders	0.237s
+FAIL	github.com/hmdsefi/lockstep/examples/orders	0.308s
 FAIL
 ```
 
@@ -274,7 +339,8 @@ On this seed the fraud check runs from 13.7 ms to 49.5 ms. The shopper's Cancel 
 31.5 ms, while the check still runs. The Create reaches Orders at 54.3 ms. Both messages carry
 sequence number 1, because each is the first message of its own pair. Orders had not seen `o1`
 when the Cancel came, so it dropped the Cancel and then charged the order. The ask also timed out
-on this seed, and the retry found the order's record and charged nothing.
+on this seed. The retry reached Orders at 152.4 ms, while the charge was still in flight, found
+the order's record, and waited for that charge instead of starting another.
 
 ### Pin the seeds
 

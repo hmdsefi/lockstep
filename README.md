@@ -688,8 +688,10 @@ Three planted bugs show what a failing seed looks like.
 lockstep delivers each message at most once, in send order between one sender and one receiver,
 and never retries. [Message delivery](docs/delivery.md) explains what your actors must handle
 themselves: a retried request that arrives twice, and a Cancel that arrives before its Create.
-[`examples/orders`](examples/orders/README.md) is an order service whose simulation tests find
-both bugs from a seed and pin the fixes.
+Package [`dedup`](dedup) holds the state for that: a `Window` of keys and tombstones, a `Replies`
+cache of first replies, and a `Versions` gate per entity.
+[`examples/orders`](examples/orders/README.md) is an order service that keeps its delivery state
+in `dedup` types, and whose simulation tests find both bugs from a seed and pin the fixes.
 
 ## Why the name "lockstep"
 

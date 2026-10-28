@@ -103,7 +103,10 @@ whether the message was already in flight.
 
 lockstep delivers a message at most once and never retries one. [Message delivery](delivery.md)
 explains where duplicates and out-of-order requests come from in application code, and the
-patterns that handle them.
+patterns that handle them. Package `dedup` holds the state those patterns keep in an actor: a
+`Window` of idempotency keys and tombstones, a `Replies` cache of first replies, and a `Versions`
+gate per entity. The runtime does not import it. It reads no clock: the actor passes `ctx.Now()`,
+so a value holds the same entries in production and in simulation.
 
 ## Requests and replies
 
