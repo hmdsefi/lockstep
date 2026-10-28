@@ -139,13 +139,14 @@ func (sv *supervisor) current(sys *System, n failed) (actorCell, bool) {
 	return child, true
 }
 
-// apply applies the directive d to the failed child of notice n and returns the directive
-// applied. Under AllForOne a restart or stop acts on the group (startGroup). A restart is admitted
-// by restart intensity first (SUP-270): one more restart in the
-// window than MaxRestarts allows becomes an escalation, which a guardian applies as a stop
-// (SUP-300). It records lockstep.directive, with the restarts in the window for every directive,
-// then pushes the command (SUP-190 to SUP-210). An escalation at a cell pushes nothing: the caller
-// fails the cell (SUP-220).
+// apply applies the directive d to the failed child of notice n and returns the directive applied.
+// Under AllForOne a restart or stop acts on the group (startGroup). A restart is admitted by
+// restart intensity first (SUP-270): one more restart in the window than MaxRestarts allows becomes
+// an escalation, which a guardian applies as a stop (SUP-300). It records lockstep.directive, with
+// the restarts in the window for every directive, and logs actor failed with the final directive,
+// after restart intensity exceeded when intensity turned a restart into an escalation (OBS-060);
+// then it pushes the command (SUP-190 to SUP-210). An escalation at a cell pushes nothing: the
+// caller fails the cell (SUP-220).
 func (sv *supervisor) apply(sys *System, self Address, child actorCell, n failed, d supervise.Directive,
 	from engine.ActorRef,
 ) supervise.Directive {
@@ -179,6 +180,10 @@ func (sv *supervisor) apply(sys *System, self Address, child actorCell, n failed
 		d, escalated = supervise.Stop, true
 	}
 	sys.recordDirective(self, n, supervise.Scope(sv.strategy.scope), d, restarts, delay, limit, escalated)
+	if limit {
+		sys.logRestartIntensity(n.child, l)
+	}
+	sys.logActorFailed(n.child, n.err, n.source, d)
 	switch d {
 	case supervise.Restart:
 		if allForOne {

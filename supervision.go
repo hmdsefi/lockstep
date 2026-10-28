@@ -37,6 +37,9 @@ func (c *cell[M]) closeOwned() {
 			err = perr
 		}
 		c.recordClose(i, owned[i], err)
+		if err != nil {
+			c.sys.logCloseFailed(c.addr, i, err)
+		}
 	}
 }
 
