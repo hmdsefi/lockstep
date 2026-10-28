@@ -226,8 +226,12 @@ func (s *System) Shutdown(ctx context.Context) error {
 	if started {
 		// Logged after Do has returned, so a handler that calls Shutdown does not deadlock on
 		// the Once (OBS-060), and before the sweep is scheduled, so it precedes shutdown finished.
-		s.logShutdownStarted()
-		s.guardians.push(sweepStart{}, nil)
+		// The sweep is pushed in a defer: a handler that panics or calls runtime.Goexit must not
+		// leave the system closing with no sweep, or no later Shutdown could complete.
+		func() {
+			defer s.guardians.push(sweepStart{}, nil)
+			s.logShutdownStarted()
+		}()
 	}
 	// ACT-060: only a caller outside engine context on a blocking engine waits. Once the engine
 	// has stopped, nothing calls it again (ENG-140).
