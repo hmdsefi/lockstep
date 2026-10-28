@@ -47,10 +47,10 @@ func WithMetrics(m Metrics) Option {
 }
 
 // Metrics is the backend lockstep reports to. Implementations must be safe for concurrent use.
-// lockstep calls Counter and GaugeFunc once per series: from New, in a fixed order, and later,
-// from any goroutine, when remote, cluster or persist is enabled on the system (late
-// registration). Duplicate registration (two systems with the same node name on one backend) is
-// the implementation's to handle.
+// lockstep calls Counter and GaugeFunc once per series: from New, in a fixed order, and may call
+// them later, from any goroutine, when a package enabled on the system after New registers series
+// of its own (late registration). Duplicate registration (two systems with the same node name on
+// one backend) is the implementation's to handle.
 //
 // lockstep does not recover panics from Metrics, Counter or a gauge function.
 type Metrics interface {
