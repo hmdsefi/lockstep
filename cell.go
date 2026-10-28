@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"context"
+	"log/slog"
 	"math/rand/v2"
 	"reflect"
 	"sync"
@@ -105,6 +106,10 @@ type cell[M any] struct {
 	// the watchdog's adapter reads turns and stores stuckAt.
 	turns   atomic.Uint64
 	stuckAt atomic.Pointer[stuckMark]
+
+	// log is the actor logger, nil until the first Context.Logger or Logf call builds it (OBS-030,
+	// context_log.go). It lives in the cell, so every incarnation shares it.
+	log atomic.Pointer[slog.Logger]
 
 	// guarded by mu
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)

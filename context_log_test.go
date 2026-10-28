@@ -85,8 +85,9 @@ func TestATACT12Logf(t *testing.T) {
 			t.Errorf("lockstep.log = %q, want %q", got, want)
 		}
 
-		uid := strconv.FormatUint(pid.Address().UID(), 16)
-		want := `{"level":"INFO","msg":"n=3","node":"local","path":"/user/a","uid":"` + uid + `"}` + "\n"
+		// OBS-030: the actor logger carries uid as a slog.Uint64Value, so JSON prints it in decimal.
+		uid := strconv.FormatUint(pid.Address().UID(), 10)
+		want := `{"level":"INFO","msg":"n=3","node":"local","path":"/user/a","uid":` + uid + `}` + "\n"
 		if got := buf.String(); got != want {
 			t.Errorf("slog output %q, want %q", got, want)
 		}

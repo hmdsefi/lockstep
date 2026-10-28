@@ -64,6 +64,7 @@ pkg github.com/hmdsefi/lockstep, func WithEffectPool(int, int) Option
 pkg github.com/hmdsefi/lockstep, func WithEffectTimeout(time.Duration) EffectOption
 pkg github.com/hmdsefi/lockstep, func WithGoroutineWarning(int) Option
 pkg github.com/hmdsefi/lockstep, func WithGuardianStrategy(Strategy) Option
+pkg github.com/hmdsefi/lockstep, func WithLogger(*slog.Logger) Option
 pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithMaxActors(int) Option
 pkg github.com/hmdsefi/lockstep, func WithMemoryEstimates() Option
@@ -79,6 +80,7 @@ pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Every(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Fail(error)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logf(string, ...any)
+pkg github.com/hmdsefi/lockstep, method (*Context[M]) Logger() *slog.Logger
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Now() time.Time
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Own(io.Closer)
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Parent() Address

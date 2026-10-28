@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"fmt"
+	"log/slog"
 	"runtime"
 	"time"
 )
@@ -27,6 +28,8 @@ type systemConfig struct {
 	mbx   mailboxConfig // the default mailbox of the system's actors (MBX-010)
 
 	guardian Strategy // the user guardian's strategy (SUP-370)
+
+	log *slog.Logger // WithLogger's logger; nil means slog.Default() when the system is built (OBS-010)
 
 	// The overload options (OVL §4.1). The cap and the estimates act on every engine; the admission
 	// thresholds, the watchdog timeout and the goroutine bound act only in a system New builds,
