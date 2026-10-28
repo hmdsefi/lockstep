@@ -27,9 +27,9 @@ func NewVersions[K comparable](cfg Config) *Versions[K] {
 	return &Versions[K]{s: newStore[K, uint64](cfg)}
 }
 
-// Accept records v as k's version at now and returns true if Versions holds no version for k or
-// v is greater than the one it holds; the entry then ages from now. Otherwise it returns false
-// and changes nothing for k.
+// Accept records version as k's version at now and returns true if Versions holds no version
+// for k or version is greater than the one it holds; the entry then ages from now. Otherwise it
+// returns false and changes nothing for k.
 func (v *Versions[K]) Accept(now time.Time, k K, version uint64) bool {
 	e := v.s.begin(versionsKind, now) // a write call even when the version is rejected (DLV-040, DLV-060)
 	n, ok := v.s.index[k]             // live: begin removed the expired entries (DLV-140)
