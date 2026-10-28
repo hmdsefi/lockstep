@@ -198,6 +198,7 @@ pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Contains(time.Time, K
 pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Forget(K)
 pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Len(time.Time) int
 pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) MarshalJSON() ([]byte, error)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) UnmarshalJSON([]byte) error
 pkg github.com/hmdsefi/lockstep/dedup, method (Config) Validate() error
 pkg github.com/hmdsefi/lockstep/dedup, type Config struct
 pkg github.com/hmdsefi/lockstep/dedup, type Config struct, Capacity int

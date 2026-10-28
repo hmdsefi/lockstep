@@ -29,12 +29,20 @@ type Config struct {
 // Validate returns nil if c is valid, and otherwise an error wrapping ErrInvalidConfig that
 // names the first invalid field: Capacity below 1, then a negative TTL.
 func (c Config) Validate() error {
-	// DLV-010: Capacity first, then TTL.
-	if c.Capacity < 1 {
-		return fmt.Errorf("%w: Capacity must be at least 1 (got %d)", ErrInvalidConfig, c.Capacity)
-	}
-	if c.TTL < 0 {
-		return fmt.Errorf("%w: TTL must not be negative (got %s)", ErrInvalidConfig, c.TTL)
+	if p := c.problem(); p != "" {
+		return fmt.Errorf("%w: %s", ErrInvalidConfig, p)
 	}
 	return nil
+}
+
+// problem returns the text of c's first invalid field, or "" if c is valid. Validate and the
+// decoder wrap it in their own errors (DLV-010, DLV-210). Capacity comes first, then TTL.
+func (c Config) problem() string {
+	if c.Capacity < 1 {
+		return fmt.Sprintf("Capacity must be at least 1 (got %d)", c.Capacity)
+	}
+	if c.TTL < 0 {
+		return fmt.Sprintf("TTL must not be negative (got %s)", c.TTL)
+	}
+	return ""
 }

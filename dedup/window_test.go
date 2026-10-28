@@ -100,6 +100,27 @@ func TestATDLV02ConstructorsPanic(t *testing.T) {
 			t.Errorf("%s(%+v) panicked with %q, want %q wrapping ErrInvalidConfig", tc.name, bad, err, want)
 		}
 	}
+	// A value decoded from an encoding with "capacity":3 reports the encoded bounds.
+	for _, tc := range decodedConfigCases {
+		got, err := tc.decode()
+		if want := (Config{3, 7 * sec}); err != nil || got != want {
+			t.Errorf("%s: decoded Config() = %+v, %v; want %+v", tc.name, got, err, want)
+		}
+	}
+}
+
+// decodedConfigCases fill a value by UnmarshalJSON from an encoding with "capacity":3 and a TTL of 7s.
+var decodedConfigCases = []struct {
+	name   string
+	decode func() (Config, error)
+}{
+	{"Window", func() (Config, error) {
+		var w Window[string]
+		if err := w.UnmarshalJSON([]byte(windowJSON(3, 7*sec, 1_000_000_000, ent{"a", 1_000_000_000}))); err != nil {
+			return Config{}, err
+		}
+		return w.Config(), nil
+	}},
 }
 
 // AT-DLV-03, DLV-030, DLV-040, DLV-050: now outside the UnixNano range panics and changes nothing;
@@ -153,6 +174,28 @@ func TestATDLV04ZeroValue(t *testing.T) {
 	if err == nil || err.Error() != want || b != nil {
 		t.Errorf("MarshalJSON() = %q, %v; want nil, %q", b, err, want)
 	}
+	// UnmarshalJSON fills a zero value of each type, which then accepts a write.
+	for _, tc := range zeroFillCases {
+		add, err := tc.fill()
+		if err != nil {
+			t.Errorf("%s: UnmarshalJSON: %v", tc.name, err)
+			continue
+		}
+		check(t, tc.name+": Add after UnmarshalJSON", add(), true)
+	}
+}
+
+// zeroFillCases are zero values that UnmarshalJSON fills with a valid encoding and that then accept
+// a write.
+var zeroFillCases = []struct {
+	name string
+	fill func() (add func() bool, err error)
+}{
+	{"Window", func() (func() bool, error) {
+		var w Window[string]
+		err := w.UnmarshalJSON([]byte(windowJSON(2, 0, 1_000_000_000, ent{"a", 1_000_000_000})))
+		return func() bool { return w.Add(at(sec), "b") }, err
+	}},
 }
 
 // AT-DLV-05, DLV-110, DLV-120: Add records once; Contains records nothing.

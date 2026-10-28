@@ -6,7 +6,9 @@ package dedup
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
+	"time"
 )
 
 // entryField appends the type's own field of an entry holding v, after its "at": `,"r":<reply>`
@@ -58,4 +60,96 @@ func (s *store[K, V]) marshal(k kind, field entryField[V]) ([]byte, error) {
 	}
 	b = append(b, "]}"...)
 	return b, nil
+}
+
+// rawEntry is one entry of an encoding before its key and its type's own field are decoded. A
+// store's entryValue reads R or V.
+type rawEntry struct {
+	K  json.RawMessage `json:"k"`
+	At int64           `json:"at"`
+	R  json.RawMessage `json:"r"`
+	V  uint64          `json:"v"`
+}
+
+// envelope is the whole encoding, as decoded by encoding/json (unknown fields are ignored).
+type envelope struct {
+	Dedup    int        `json:"dedup"`
+	Type     string     `json:"type"`
+	Capacity int        `json:"capacity"`
+	TTL      int64      `json:"ttl"`
+	Last     int64      `json:"last"`
+	Entries  []rawEntry `json:"entries"`
+}
+
+// entryValue returns the value of an entry from its raw fields: the decoded reply for Replies, the
+// version for Versions. Window has none and passes nil. An error is the value's decoding error,
+// which names the field ("reply: <err>"); unmarshal adds the entry index.
+type entryValue[V any] func(e *rawEntry) (V, error)
+
+// invalidf returns an error wrapping ErrInvalidEncoding with the formatted text appended.
+func invalidf(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{ErrInvalidEncoding}, args...)...)
+}
+
+// unmarshal replaces s with the store that data encodes as type k (DLV-210). It checks data in the
+// order of DLV-210, builds the entries into a fresh store and assigns it to s only when every check
+// passes, so any error leaves s unchanged. data "null" is a no-op.
+func (s *store[K, V]) unmarshal(k kind, data []byte, value entryValue[V]) error {
+	var env *envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return invalidf("%w", err)
+	}
+	if env == nil { // null
+		return nil
+	}
+	if env.Dedup != 1 {
+		return invalidf("format %d, want 1", env.Dedup)
+	}
+	if env.Type != k.tag {
+		return invalidf("type %q, want %q", env.Type, k.tag)
+	}
+	cfg := Config{Capacity: env.Capacity, TTL: time.Duration(env.TTL)}
+	if p := cfg.problem(); p != "" {
+		return invalidf("%s", p)
+	}
+	if len(env.Entries) > env.Capacity {
+		return invalidf("%d entries, more than capacity %d", len(env.Entries), env.Capacity)
+	}
+
+	fresh := store[K, V]{
+		cfg:   cfg,
+		last:  env.Last,
+		index: make(map[K]*node[K, V], len(env.Entries)), // never sized by the decoded capacity
+	}
+	nodes := make([]*node[K, V], 0, len(env.Entries)) // by entry index, to name j in a duplicate
+	for i := range env.Entries {
+		e := &env.Entries[i]
+		var key K
+		if err := json.Unmarshal(e.K, &key); err != nil {
+			return invalidf("entry %d: key: %w", i, err)
+		}
+		var v V
+		if value != nil {
+			var err error
+			if v, err = value(e); err != nil {
+				return invalidf("entry %d: %w", i, err)
+			}
+		}
+		if i > 0 && e.At < env.Entries[i-1].At {
+			return invalidf("entry %d: at %d before entry %d's %d", i, e.At, i-1, env.Entries[i-1].At)
+		}
+		if e.At > env.Last {
+			return invalidf("entry %d: at %d after last %d", i, e.At, env.Last)
+		}
+		if prev, dup := fresh.index[key]; dup {
+			j := slices.Index(nodes, prev)
+			return invalidf("entry %d: key equals entry %d's", i, j)
+		}
+		n := &node[K, V]{k: key, v: v, at: e.At}
+		fresh.index[key] = n
+		fresh.append(n)
+		nodes = append(nodes, n)
+	}
+	*s = fresh
+	return nil
 }
