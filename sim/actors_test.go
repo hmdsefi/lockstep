@@ -159,8 +159,8 @@ func TestATACT05UidEpochInSimulation(t *testing.T) {
 	})
 }
 
-// AT-ACT-12 (sim clause), ACT-130: ctx.Logf in a simulated actor adds a lockstep.log record and
-// writes nothing to slog.Default().
+// AT-ACT-12 (sim clause), ACT-130: ctx.Logf in a simulated actor adds a lockstep.log record,
+// reaches the node's kernel log (OBS-160) and writes nothing to slog.Default().
 func TestATACT12LogfInSimulation(t *testing.T) {
 	var buf bytes.Buffer
 	old := slog.Default()
@@ -175,7 +175,7 @@ func TestATACT12LogfInSimulation(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var a lockstep.PID[Deposit]
-		s.Node("n1", func(sys *lockstep.System) {
+		n1 := s.Node("n1", func(sys *lockstep.System) {
 			a = spawn(sys, "a", &actor[Deposit]{receive: func(ctx *lockstep.Context[Deposit], m Deposit) {
 				ctx.Logf("n=%d", m.N)
 			}})
@@ -189,6 +189,10 @@ func TestATACT12LogfInSimulation(t *testing.T) {
 		logs := ofKind(w.Sim.Records(), "lockstep.log")
 		if len(logs) != 1 || attr(logs[0], "addr") != a.Address().String() || attr(logs[0], "text") != "n=3" {
 			tt.Errorf("lockstep.log records %v, want one with addr %s and text n=3", logs, a.Address())
+		}
+		want := []string{"INFO n=3 " + actorAttrs(a)}
+		if got := kernelLogs(w.Sim.Records(), n1.ID()); !slices.Equal(got, want) {
+			tt.Errorf("kernel.log texts of n1 %q, want %q", got, want)
 		}
 	})
 	if buf.Len() != 0 {

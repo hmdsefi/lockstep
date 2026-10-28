@@ -5,6 +5,7 @@ package sim
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel"
@@ -138,12 +139,14 @@ func (s *Sim) fifo(a, b kernel.NodeID) {
 }
 
 // boot is the boot function of lockstep node ln, run by the kernel at every boot of n (SIM-070).
-// The boot is an event of n (PER-510).
+// The boot is an event of n (PER-510). The system's logger writes to n's kernel log: its option
+// comes last, so it overrides a lockstep.WithLogger in Options.System (OBS-155, OBS-160).
 func (s *Sim) boot(ln *node, n *kernel.Node) {
 	e := newEngine(s, n, n.Incarnation())
 	ln.eng = e
 	defer s.enter(execution{eng: e})()
-	b, err := hooks.NewSystem(e.bundle, s.systemOptions())
+	opts := append(s.systemOptions(), lockstep.WithLogger(slog.New(newKernelHandler(e))))
+	b, err := hooks.NewSystem(e.bundle, opts)
 	if err != nil {
 		ln.sys = nil
 		e.misuse(err)
