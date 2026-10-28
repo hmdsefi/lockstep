@@ -249,7 +249,6 @@ func TestATOBS14OverloadEvents(t *testing.T) {
 		pid := spawnObs(t, sys, "a", obsOf(&obsActor{receive: func(*lockstep.Context[ping], ping) {
 			// The turn spins 200 ms. It goes on, up to 10 s, until the watchdog has counted it, so a
 			// machine that is too busy to poll within 200 ms does not end the turn unseen.
-			//lockstep:allow LS100 the test spins a turn on purpose, to outlast the watchdog
 			start := time.Now()
 			for time.Since(start) < 200*time.Millisecond || (stuckTurns.n.Load() == 0 && time.Since(start) < 10*time.Second) {
 				runtime.Gosched()
