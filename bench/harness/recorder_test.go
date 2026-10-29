@@ -11,8 +11,8 @@ import (
 )
 
 // TestATBEN06Recorder covers AT-BEN-06: nearest-rank percentiles, a recorder with one sample and
-// with none, Add without allocations within capacity, and Merge. It also checks that Now measures
-// from base.
+// with none, Add without allocations within capacity, and Merge. It also checks that Len counts the
+// samples (BEN-130 checks sample counts through it) and that Now measures from base.
 func TestATBEN06Recorder(t *testing.T) {
 	base := time.Now()
 
@@ -20,6 +20,9 @@ func TestATBEN06Recorder(t *testing.T) {
 		r := harness.NewRecorder(base, 100)
 		for ns := int64(100); ns >= 1; ns-- {
 			r.Add(ns)
+		}
+		if got := r.Len(); got != 100 {
+			t.Errorf("Len() = %d, want 100", got)
 		}
 		for _, c := range []struct {
 			p    float64
@@ -43,6 +46,9 @@ func TestATBEN06Recorder(t *testing.T) {
 
 	t.Run("no samples", func(t *testing.T) {
 		r := harness.NewRecorder(base, 10)
+		if got := r.Len(); got != 0 {
+			t.Errorf("Len() = %d, want 0", got)
+		}
 		for _, p := range []float64{1, 50, 99, 100} {
 			if got := r.Percentile(p); got != 0 {
 				t.Errorf("Percentile(%v) = %d, want 0", p, got)
@@ -71,6 +77,9 @@ func TestATBEN06Recorder(t *testing.T) {
 			b.Add(ns)
 		}
 		a.Merge(b)
+		if got := a.Len(); got != 7 {
+			t.Errorf("after Merge, Len() = %d, want 7", got)
+		}
 		// With the seven samples 1 to 7, nearest rank k covers p in ((k-1)*100/7, k*100/7], so the
 		// middle of each range gives sample k only if a holds exactly these seven samples.
 		for k := int64(1); k <= 7; k++ {
@@ -79,8 +88,8 @@ func TestATBEN06Recorder(t *testing.T) {
 				t.Errorf("after Merge, Percentile(%.2f) = %d, want %d", p, got, k)
 			}
 		}
-		if got := b.Percentile(1); got != 4 {
-			t.Errorf("Merge changed its argument: Percentile(1) = %d, want 4", got)
+		if got, n := b.Percentile(1), b.Len(); got != 4 || n != 4 {
+			t.Errorf("Merge changed its argument: Percentile(1) = %d, Len() = %d, want 4 and 4", got, n)
 		}
 	})
 

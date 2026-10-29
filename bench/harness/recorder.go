@@ -35,6 +35,11 @@ func (r *Recorder) Merge(o *Recorder) {
 	r.samples = append(r.samples, o.samples...)
 }
 
+// Len returns the number of samples.
+func (r *Recorder) Len() int {
+	return len(r.samples)
+}
+
 // Percentile returns the nearest-rank percentile p (0 < p <= 100): the sorted sample at
 // index ceil(p/100*n)-1. It returns 0 with no samples.
 func (r *Recorder) Percentile(p float64) int64 {
