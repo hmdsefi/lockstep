@@ -1,21 +1,11 @@
 name: bench
 
-# The suite takes up to half an hour, so a push or pull request runs it only when it changes what
-# the bench module builds: the packages it imports, the module itself, and the root go.mod, whose
-# requirements enter the module graph. The replaced root's go.sum is never read.
 on:
   push:
     branches: [main]
-    paths:
-      - '*.go'
-      - 'internal/**'
-      - 'persist/**'
-      - 'sim/**'
-      - '!**_test.go'
-      - '!**/testdata/**'
-      - 'bench/**'
-      - 'go.mod'
-      - '.github/workflows/bench.yml'
+  # The suite takes up to half an hour, so a pull request runs it only when it changes what the
+  # bench module builds: the packages it imports, the module itself, and the root go.mod, whose
+  # requirements enter the module graph. The replaced root's go.sum is never read.
   pull_request:
     paths:
       - '*.go'
