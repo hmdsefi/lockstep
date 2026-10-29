@@ -21,22 +21,25 @@ type derived struct {
 	repoPath string // the file, as a path from the repository root
 }
 
-// derivedFiles lists the files that must always equal the output of budget on the baseline
-// (BEN-190).
-var derivedFiles = []derived{
-	{"derive", "../../budgets.txt", "bench/budgets.txt"},
-	{"report", "../../RESULTS.md", "bench/RESULTS.md"},
-}
+// The files that must always equal the output of budget on the baseline (BEN-190).
+var (
+	budgetsFile = derived{"derive", "../../budgets.txt", "bench/budgets.txt"}
+	reportFile  = derived{"report", "../../RESULTS.md", "bench/RESULTS.md"}
+)
 
-// regenerate runs the budget command on the committed baseline in this process and returns what
-// it writes to stdout.
-func (d derived) regenerate(t *testing.T) string {
+// load returns the committed text of the file and the text that the budget command writes for the
+// committed baseline, which it runs in this process.
+func (d derived) load(t *testing.T) (have, want string) {
 	t.Helper()
+	committed, err := os.ReadFile(d.file)
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, stdout, stderr := budgetRun(t, d.command, baselineFile)
 	if code != 0 || stderr != "" {
 		t.Fatalf("budget %s %s: exit code %d, stderr %q", d.command, baselineFile, code, stderr)
 	}
-	return stdout
+	return string(committed), stdout
 }
 
 // compare returns nil when have, the text of the committed file, equals want byte for byte.
@@ -78,33 +81,25 @@ func lineAt(lines []string, i int) string {
 // bench/RESULTS.md are the output of budget derive and budget report on
 // bench/results/baseline.txt, byte for byte, and a budgets file that differs by one byte fails.
 func TestBudgetsMatchBaseline(t *testing.T) {
-	for _, d := range derivedFiles {
+	for _, d := range []derived{budgetsFile, reportFile} {
 		t.Run(d.command, func(t *testing.T) {
-			want := d.regenerate(t)
-			have, err := os.ReadFile(d.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := d.compare(string(have), want); err != nil {
+			have, want := d.load(t)
+			if err := d.compare(have, want); err != nil {
 				t.Error(err)
 			}
 		})
 	}
 
 	t.Run("a changed byte of budgets.txt fails", func(t *testing.T) {
-		d := derivedFiles[0]
-		want := d.regenerate(t)
-		have, err := os.ReadFile(d.file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d.compare(string(have), want) != nil {
+		d := budgetsFile
+		have, want := d.load(t)
+		if d.compare(have, want) != nil {
 			t.Skip("budgets.txt is out of sync, which the test above reports")
 		}
 		for i := range have {
-			changed := append([]byte(nil), have...)
+			changed := []byte(have)
 			changed[i] ^= 1
-			wantLine := "at line " + strconv.Itoa(1+strings.Count(string(have[:i]), "\n")) + ":"
+			wantLine := "at line " + strconv.Itoa(1+strings.Count(have[:i], "\n")) + ":"
 			err := d.compare(string(changed), want)
 			if err == nil {
 				t.Fatalf("changing byte %d of budgets.txt did not fail the comparison", i)
@@ -115,8 +110,8 @@ func TestBudgetsMatchBaseline(t *testing.T) {
 			}
 		}
 		for name, changed := range map[string]string{
-			"a missing last byte": string(have[:len(have)-1]),
-			"an extra line":       string(have) + "x\n",
+			"a missing last byte": have[:len(have)-1],
+			"an extra line":       have + "x\n",
 		} {
 			if d.compare(changed, want) == nil {
 				t.Errorf("%s of budgets.txt did not fail the comparison", name)
