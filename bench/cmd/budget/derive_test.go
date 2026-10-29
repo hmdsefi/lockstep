@@ -323,6 +323,9 @@ func TestCeil3(t *testing.T) {
 		{124000, 124000},
 		{1234567, 1240000},
 		{1e6, 1e6},
+		// From 1e7 the power of ten of the plain formula, 10^-5, is no longer exact.
+		{16550000, 16600000},
+		{29800000, 29800000},
 	} {
 		if got := ceil3(c.x); got != c.want {
 			t.Errorf("ceil3(%v) = %v, want %v", c.x, got, c.want)

@@ -75,7 +75,9 @@ func ceil3(x float64) float64 {
 // atThreeDigits scales x so that three significant digits lie before the decimal point, applies
 // round to the scaled value, and scales the result back. When x has more than three digits before
 // the decimal point it divides by the power of ten instead of multiplying by its inverse, because
-// 10^n is exact for the n that matter here and 10^-n is not. x must be finite and not zero.
+// 10^n is exact for the n that matter here and 10^-n is not. The display of a ratio in check uses
+// the same form, which agrees with the multiplying formula below 1e7. x must be finite and not
+// zero.
 func atThreeDigits(x float64, round func(float64) float64) float64 {
 	e := int(math.Floor(math.Log10(math.Abs(x))))
 	if e > 2 {
