@@ -95,9 +95,9 @@ func derive(file string, res *results) (string, error) {
 // deriveBudget builds the budget for series s, whose unit has a rule.
 func deriveBudget(res *results, s series) (budget, error) {
 	r := rules[s.unit]
-	median, _ := res.median(s)
-	if !(median >= 0) || math.IsInf(median, 0) {
-		return budget{}, fmt.Errorf("%s %s has median %s, want a non-negative finite number", s.name, s.unit, formatFloat(median))
+	median, _ := res.median(s) // readResults accepts finite values only
+	if median < 0 {
+		return budget{}, fmt.Errorf("%s %s has median %s, want a non-negative number", s.name, s.unit, formatFloat(median))
 	}
 	b := budget{series: s, kind: r.kind}
 	if r.kind == kindAbs {
@@ -110,8 +110,8 @@ func deriveBudget(res *results, s series) (budget, error) {
 		return budget{}, err
 	}
 	refMedian, _ := res.median(ref)
-	if !(refMedian > 0) || math.IsInf(refMedian, 0) {
-		return budget{}, fmt.Errorf("reference %s %s has median %s, want a positive finite number",
+	if refMedian <= 0 {
+		return budget{}, fmt.Errorf("reference %s %s has median %s, want a positive number",
 			ref.name, ref.unit, formatFloat(refMedian))
 	}
 	b.ref = ref

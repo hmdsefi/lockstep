@@ -283,22 +283,12 @@ func TestDeriveErrors(t *testing.T) {
 		{
 			"a reference of zero",
 			[]string{"BenchmarkA/lib=lockstep 10 100 ns/op", "BenchmarkA/lib=hollywood 10 0 ns/op"},
-			"reference BenchmarkA/lib=hollywood ns/op has median 0, want a positive finite number",
-		},
-		{
-			"a reference that is not a number",
-			[]string{"BenchmarkA/lib=lockstep 10 100 ns/op", "BenchmarkA/lib=hollywood 10 NaN ns/op"},
-			"reference BenchmarkA/lib=hollywood ns/op has median NaN, want a positive finite number",
-		},
-		{
-			"an infinite median",
-			[]string{"BenchmarkA/lib=lockstep 10 +Inf allocs/op"},
-			"BenchmarkA/lib=lockstep allocs/op has median +Inf, want a non-negative finite number",
+			"reference BenchmarkA/lib=hollywood ns/op has median 0, want a positive number",
 		},
 		{
 			"a negative median",
 			[]string{"BenchmarkA/lib=lockstep 10 -3 B/op"},
-			"BenchmarkA/lib=lockstep B/op has median -3, want a non-negative finite number",
+			"BenchmarkA/lib=lockstep B/op has median -3, want a non-negative number",
 		},
 		{
 			"the first error wins",
@@ -320,6 +310,13 @@ func TestDeriveErrors(t *testing.T) {
 		malformed := filepath.Join("testdata", "malformed.txt")
 		wantRun(t, []string{"derive", malformed}, 2, "", `budget: `+malformed+`:3: invalid value "abc"`+"\n")
 	})
+
+	for _, v := range []string{"NaN", "+Inf"} {
+		t.Run("a value "+v, func(t *testing.T) {
+			path := writeFile(t, "baseline.txt", "BenchmarkA/lib=lockstep 10 100 ns/op", "BenchmarkA/lib=hollywood 10 "+v+" ns/op")
+			wantRun(t, []string{"derive", path}, 2, "", "budget: "+path+`:2: invalid value "`+v+`"`+"\n")
+		})
+	}
 
 	t.Run("missing baseline", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "baseline.txt")
