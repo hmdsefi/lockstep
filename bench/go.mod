@@ -7,6 +7,7 @@ replace github.com/hmdsefi/lockstep => ..
 require (
 	github.com/anthdm/hollywood v1.0.5
 	github.com/asynkron/protoactor-go v0.0.0-20260118094027-288962e52f3f
+	github.com/hmdsefi/faultline v0.1.2
 	github.com/hmdsefi/lockstep v0.1.0
 	github.com/tochemey/goakt/v4 v4.6.3
 	go.uber.org/goleak v1.3.0
@@ -41,6 +42,7 @@ require (
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
 	github.com/hashicorp/memberlist v0.7.0 // indirect
+	github.com/hmdsefi/gograph v0.8.2 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
