@@ -3,11 +3,15 @@
 
 // Package goakt runs the benchmark workloads on GoAkt, the system actor.NewActorSystem builds.
 //
-// The system uses GoAkt's defaults with one exception: it discards its log, since GoAkt's default
-// logger writes errors to standard error. Every actor is spawned long-lived, so GoAkt's passivation
-// never stops an idle one. The messages are the harness values, passed as GoAkt's any. An actor that
-// needs to know who sent a message asks GoAkt: the fan-out consumers answer the producer that sent
-// an item, and the producer tells its consumers apart by the sender of an ack.
+// The system uses GoAkt's defaults with two exceptions: it discards its log, since GoAkt's default
+// logger writes errors to standard error, and every actor is spawned long-lived, so GoAkt's
+// passivation never stops an idle one. The messages are the harness values, passed as GoAkt's any.
+// An actor that needs to know who sent a message asks GoAkt: the fan-out consumers answer the
+// producer that sent an item, and the producer tells its consumers apart by the sender of an ack.
+//
+// An actor sends with ReceiveContext.Tell, which records a failed send in the receive context
+// instead of returning it. The adapter does not observe such a failure: the run never ends, and Run
+// blocks until the go test timeout stops the binary.
 package goakt
 
 import (
