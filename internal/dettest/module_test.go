@@ -42,7 +42,7 @@ func TestLockstepTables(t *testing.T) {
 		want := map[string]Class{}
 		for _, p := range []string{"internal/engine", "internal/engine/enginetest", "internal/hooks", "internal/supervise",
 			"internal/registry", "internal/overload", "internal/remoting", "internal/toys", "internal/viz", "sim",
-			"persist", "persist/filestore", "codec", "cluster"} {
+			"persist", "persist/filestore", "dedup", "codec", "cluster"} {
 			want[p] = ClassCore
 		}
 		for _, p := range []string{"", "internal/mailbox"} {
@@ -96,6 +96,7 @@ func TestLockstepTables(t *testing.T) {
 					"internal/overload", "internal/remoting", "internal/viz"}},
 			"persist":           std("", "internal/hooks"),
 			"persist/filestore": std("", "persist"),
+			"dedup":             std(),
 			"codec":             std(""),
 			"remote":            std("", "codec", "internal/engine", "internal/hooks", "internal/remoting"),
 			"cluster":           std("", "codec", "internal/hooks"),
@@ -124,8 +125,8 @@ func TestLockstepTables(t *testing.T) {
 		if got, want := slices.Sorted(maps.Keys(m.Imports)), slices.Sorted(maps.Keys(m.Classes)); !slices.Equal(got, want) {
 			t.Errorf("Imports rows %q differ from Classes rows %q", got, want)
 		}
-		if n := len(m.Classes); n != 22 {
-			t.Errorf("%d classified packages, want the 22 of DET-050", n)
+		if n := len(m.Classes); n != 23 {
+			t.Errorf("%d classified packages, want the 23 of DET-050", n)
 		}
 	})
 

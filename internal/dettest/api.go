@@ -15,7 +15,7 @@ import (
 )
 
 // APIPackages are the packages snapshotted in api/lockstep.txt, relative to the module path.
-var APIPackages = []string{"", "sim", "persist", "persist/filestore", "codec", "remote", "cluster"}
+var APIPackages = []string{"", "sim", "persist", "persist/filestore", "dedup", "codec", "remote", "cluster"}
 
 // API returns the snapshot text of DET-110 for pkgs (relative to m.Path): the lines of every
 // exported object, deduplicated and sorted bytewise, each ending in "\n". A missing directory, or

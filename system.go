@@ -47,6 +47,11 @@ type System struct {
 	// to the system.
 	gauges *gaugeState
 	live   *liveIndex
+	// metrics is WithMetrics's backend once New has registered the series of OBS-120 and OBS-130
+	// with it, and late registers the series of OBS-150 on it after New; metrics is nil when obs
+	// is, and then late stays empty.
+	metrics Metrics
+	late    lateRegistry
 
 	reg          *registry.Registry
 	user, system Address // the guardians; neither is registered (ACT-030)
@@ -303,8 +308,10 @@ func (s *System) completeShutdown() {
 	s.recordShutdown("done")
 	if s.gauges != nil {
 		// Before over and done: a Shutdown that returns has seen the gauges at 0 (OBS-100), and the
-		// functions the backend keeps no longer refer to the system.
+		// functions the backend keeps no longer refer to the system, nor to a late gauge's function
+		// (OBS-150).
 		s.gauges.sys.Store(nil)
+		s.late.dropGauges()
 	}
 	s.shut.over.Store(true)
 	close(s.shut.done)

@@ -31,6 +31,11 @@ engine through the runtime, and `filestore` runs on a small file system interfac
 operating system's files in production and faultline's simulated disk in tests.
 [Persistence](#persistence) describes both.
 
+Package `lockstep/dedup` stands beside them. It holds the state that handling duplicate and stale
+messages needs, as plain actor state: a window of keys, a cache of first replies, and a version
+gate. It uses only the standard library, and no runtime package imports it.
+[Message delivery](delivery.md) says where those messages come from and how `dedup` handles them.
+
 ## Nondeterminism goes through the runtime
 
 A simulation can replay a run exactly only if nothing in it depends on the real world. lockstep
@@ -103,7 +108,10 @@ whether the message was already in flight.
 
 lockstep delivers a message at most once and never retries one. [Message delivery](delivery.md)
 explains where duplicates and out-of-order requests come from in application code, and the
-patterns that handle them.
+patterns that handle them. Package `dedup` holds the state those patterns keep in an actor: a
+`Window` of idempotency keys and tombstones, a `Replies` cache of first replies, and a `Versions`
+gate per entity. It reads no clock: the actor passes `ctx.Now()`, so a value holds the same entries
+in production and in simulation.
 
 ## Requests and replies
 
@@ -535,17 +543,19 @@ The same analyzers run in golangci-lint as a module plugin.
 
 ## Modules and the production boundary
 
-The repository holds three Go modules:
+The repository holds four Go modules:
 
 - `github.com/hmdsefi/lockstep`, the root module: the runtime, `sim`, `persist`,
-  `persist/filestore`, and internal packages for the engine seam, the production engine, mailboxes,
-  supervision, the registry and overload state.
+  `persist/filestore`, `dedup`, and internal packages for the engine seam, the production engine,
+  mailboxes, supervision, the registry and overload state.
 - `github.com/hmdsefi/lockstep/analysis`: `lockstep-vet` and the golangci-lint plugin.
 - `github.com/hmdsefi/lockstep/examples/raft`: the Raft example.
+- `github.com/hmdsefi/lockstep/examples/orders`: the order service example of
+  [Message delivery](delivery.md).
 
-Only `sim` imports faultline. A program that imports `lockstep`, `persist` and
-`persist/filestore` and not `sim` never links faultline or gograph; CI checks this with
-`go list -deps` over the production packages. `sim` reaches the simulated disk through `Volume`,
+Only `sim` imports faultline. A program that imports `lockstep`, `persist`, `persist/filestore`
+and `dedup` and not `sim` never links faultline or gograph; CI checks this with `go list -deps`
+over the production packages. `sim` reaches the simulated disk through `Volume`,
 which returns a `filestore.FS`, so `persist` and `filestore` never name a faultline type. faultline
 and gograph still appear in your `go.mod`, because the root module requires them for `sim`.
 
