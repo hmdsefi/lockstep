@@ -33,13 +33,13 @@ const (
 	simSeeds = 50
 )
 
-// runChanging reports whether the environment variable name changes the work done per seed
+// simRunChanging reports whether the environment variable name changes the work done per seed
 // (BEN-100): LOCKSTEP_CHECK_DETERMINISM, and every FAULTLINE_ variable but the two that only say
 // where faultline writes. That includes FAULTLINE_SEED, FAULTLINE_SEEDS, FAULTLINE_SEED_LIST,
 // FAULTLINE_BASE_SEED, FAULTLINE_EXPLORE, FAULTLINE_TRACE and FAULTLINE_CHECK_DETERMINISM, and
 // also FAULTLINE_SCHEDULE, which replays a schedule. TestSimSeeds appends nothing while one is
 // set, since seeds per second would no longer compare identical work.
-func runChanging(name string) bool {
+func simRunChanging(name string) bool {
 	switch name {
 	case "LOCKSTEP_CHECK_DETERMINISM":
 		return true
@@ -53,13 +53,14 @@ func runChanging(name string) bool {
 var seedsResult = regexp.MustCompile(`^BenchmarkSimSeeds/workload=(pingpong|crash3) 50 ([0-9]+) ns/op ([0-9]+\.[0-9]{2}) seeds/s$`)
 
 // TestSimSeeds measures simulation seeds per second (BEN-100). Each subtest runs one world for 50
-// seeds and times the sim.Simulate call. If LOCKSTEP_BENCH_OUT names a file, and no variable of
-// runChanging is set, it appends the time per seed and the seeds per second to the file in Go
-// benchmark format.
+// seeds and times the sim.Simulate call. If LOCKSTEP_BENCH_OUT names a file, no variable that
+// simRunChanging names is set and -short is not, it appends the time per seed and the seeds per
+// second to the file in Go benchmark format.
 //
-// The actors follow lockstep's actor rules and BaseSeed is 1, so every run executes the same 50
-// seeds and seeds per second compares identical work. The wall clock is read around the call to
-// sim.Simulate, never inside the simulation.
+// The actors follow lockstep's actor rules and BaseSeed is 1, so without those variables and
+// -short every run executes the same 50 seeds and seeds per second compares identical work. Under
+// -short faultline runs 5 seeds: the test still runs, as a quick check, and appends nothing. The
+// wall clock is read around the call to sim.Simulate, never inside the simulation.
 //
 // The race detector makes the crash3 world much slower, and the numbers would not be comparable,
 // so the test skips under -race; TestATBEN07SeedsOut runs it in a child process without.
@@ -78,9 +79,9 @@ func TestSimSeeds(t *testing.T) {
 	} {
 		t.Run("workload="+w.name, func(t *testing.T) {
 			opts := sim.Options{Options: faultline.Options{Seeds: simSeeds, BaseSeed: 1, Duration: w.duration}}
-			out := seedsOutPath()
+			out := seedsOutPath(testing.Short())
 			start := time.Now()
-			sim.Simulate(t, opts, pairsWorld(w.nodes, w.crashes))
+			sim.Simulate(t, opts, simPairsWorld(w.nodes, w.crashes))
 			elapsed := time.Since(start)
 			if out != "" && !t.Failed() {
 				appendSeedsResult(t, out, w.name, elapsed)
@@ -94,17 +95,20 @@ func TestSimSeeds(t *testing.T) {
 // whose value is empty after trimming as not set.
 func TestSeedsOutPath(t *testing.T) {
 	for _, kv := range os.Environ() { // the test must not depend on its caller's variables
-		if name, _, _ := strings.Cut(kv, "="); runChanging(name) {
+		if name, _, _ := strings.Cut(kv, "="); simRunChanging(name) {
 			t.Setenv(name, "")
 		}
 	}
 	t.Setenv(seedsOutEnv, "")
-	if got := seedsOutPath(); got != "" {
-		t.Errorf("seedsOutPath() = %q with %s empty, want none", got, seedsOutEnv)
+	if got := seedsOutPath(false); got != "" {
+		t.Errorf("seedsOutPath(false) = %q with %s empty, want none", got, seedsOutEnv)
 	}
 	t.Setenv(seedsOutEnv, "sim.txt")
-	if got := seedsOutPath(); got != "sim.txt" {
-		t.Errorf("seedsOutPath() = %q, want sim.txt", got)
+	if got := seedsOutPath(false); got != "sim.txt" {
+		t.Errorf("seedsOutPath(false) = %q, want sim.txt", got)
+	}
+	if got := seedsOutPath(true); got != "" {
+		t.Errorf("seedsOutPath(true) = %q, want none: under -short faultline runs 5 seeds", got)
 	}
 
 	changing := []string{
@@ -115,49 +119,54 @@ func TestSeedsOutPath(t *testing.T) {
 	}
 	for _, name := range changing {
 		t.Setenv(name, " \t")
-		if got := seedsOutPath(); got != "sim.txt" {
-			t.Errorf("seedsOutPath() = %q with %s blank, want sim.txt", got, name)
+		if got := seedsOutPath(false); got != "sim.txt" {
+			t.Errorf("seedsOutPath(false) = %q with %s blank, want sim.txt", got, name)
 		}
 		t.Setenv(name, "1")
-		if got := seedsOutPath(); got != "" {
-			t.Errorf("seedsOutPath() = %q with %s=1, want none", got, name)
+		if got := seedsOutPath(false); got != "" {
+			t.Errorf("seedsOutPath(false) = %q with %s=1, want none", got, name)
 		}
 		t.Setenv(name, "")
 	}
 	for _, name := range []string{"FAULTLINE_ARTIFACTS", "FAULTLINE_RESULTS", "LOCKSTEP_BENCH_LARGE"} {
 		t.Setenv(name, "1")
-		if got := seedsOutPath(); got != "sim.txt" {
-			t.Errorf("seedsOutPath() = %q with %s=1, want sim.txt", got, name)
+		if got := seedsOutPath(false); got != "sim.txt" {
+			t.Errorf("seedsOutPath(false) = %q with %s=1, want sim.txt", got, name)
 		}
 		t.Setenv(name, "")
 	}
 
-	got := withoutRunChanging([]string{
+	got := simWithoutRunChanging([]string{
 		"PATH=/bin", "FAULTLINE_SEED=1", "LOCKSTEP_BENCH_OUT=x", "FAULTLINE_ARTIFACTS=/a",
 		"FAULTLINE_SCHEDULE=", "LOCKSTEP_BENCH_LARGE=1", "LOCKSTEP_CHECK_DETERMINISM=0",
 	})
 	if want := []string{"PATH=/bin", "FAULTLINE_ARTIFACTS=/a", "LOCKSTEP_BENCH_LARGE=1"}; !slices.Equal(got, want) {
-		t.Errorf("withoutRunChanging = %q, want %q", got, want)
+		t.Errorf("simWithoutRunChanging = %q, want %q", got, want)
 	}
 }
 
 // seedsOutPath returns the file TestSimSeeds appends to, or "" when it appends nothing: no
-// LOCKSTEP_BENCH_OUT, or a variable that runChanging names is set.
-func seedsOutPath() string {
+// LOCKSTEP_BENCH_OUT, a variable that simRunChanging names is set, or short is true. Under -short
+// faultline runs 5 seeds instead of the 50 the result line would name, so seeds per second would
+// not be the rate of 50 seeds.
+func seedsOutPath(short bool) string {
+	if short {
+		return ""
+	}
 	for _, kv := range os.Environ() {
-		if name, value, _ := strings.Cut(kv, "="); runChanging(name) && strings.TrimSpace(value) != "" {
+		if name, value, _ := strings.Cut(kv, "="); simRunChanging(name) && strings.TrimSpace(value) != "" {
 			return ""
 		}
 	}
 	return os.Getenv(seedsOutEnv)
 }
 
-// withoutRunChanging returns the environment environ without LOCKSTEP_BENCH_OUT and without the
-// variables that runChanging names, whatever their values.
-func withoutRunChanging(environ []string) []string {
+// simWithoutRunChanging returns the environment environ without LOCKSTEP_BENCH_OUT and without the
+// variables that simRunChanging names, whatever their values.
+func simWithoutRunChanging(environ []string) []string {
 	return slices.DeleteFunc(slices.Clone(environ), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
-		return name == seedsOutEnv || runChanging(name)
+		return name == seedsOutEnv || simRunChanging(name)
 	})
 }
 
@@ -183,14 +192,14 @@ func appendSeedsResult(t *testing.T, out, name string, elapsed time.Duration) {
 	}
 }
 
-// pairsWorld returns the body of one subtest: one node for each of the names, each running a
+// simPairsWorld returns the body of one subtest: one node for each of the names, each running a
 // ping-pong pair, and, with crashes, a plan that crashes at most one node at a time, about once a
 // second and for at most half a second. The body runs the world to the end of the run.
-func pairsWorld(nodes []string, crashes bool) func(s *sim.Sim) {
+func simPairsWorld(nodes []string, crashes bool) func(s *sim.Sim) {
 	return func(s *sim.Sim) {
 		w := s.World()
 		for _, name := range nodes {
-			s.Node(name, func(sys *lockstep.System) { spawnPair(sys, name) })
+			s.Node(name, func(sys *lockstep.System) { simSpawnPair(sys, name) })
 		}
 		if crashes {
 			w.Plan(&fault.Random{MaxDown: 1, Rules: []fault.Rule{
@@ -207,33 +216,34 @@ func pairsWorld(nodes []string, crashes bool) func(s *sim.Sim) {
 	}
 }
 
-// spawnPair spawns the ping-pong pair on sys, the system of the node named node: actor a sends b
+// simSpawnPair spawns the ping-pong pair on sys, the system of the node named node: actor a sends b
 // a Ping every millisecond and b answers each with a Pong.
-func spawnPair(sys *lockstep.System, node string) {
+func simSpawnPair(sys *lockstep.System, node string) {
 	a := lockstep.PIDAt[any](node, "/user/a")
 	b := lockstep.PIDAt[harness.Ping](node, "/user/b")
-	if _, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[any] { return &pinger{peer: b} }); err != nil {
+	if _, err := lockstep.Spawn(sys, "a", func() lockstep.Actor[any] { return &simPinger{peer: b} }); err != nil {
 		panic(err)
 	}
-	if _, err := lockstep.Spawn(sys, "b", func() lockstep.Actor[harness.Ping] { return &ponger{peer: a} }); err != nil {
+	if _, err := lockstep.Spawn(sys, "b", func() lockstep.Actor[harness.Ping] { return &simPonger{peer: a} }); err != nil {
 		panic(err)
 	}
 }
 
-// tick is the timer message of pinger.
-type tick struct{}
+// simTick is the timer message of simPinger.
+type simTick struct{}
 
-// pinger is actor a of a pair. It receives its own tick and the Pong that answers each Ping.
-type pinger struct {
+// simPinger is actor a of a pair. It receives its own timer message and the Pong that answers
+// each Ping.
+type simPinger struct {
 	peer lockstep.PID[harness.Ping]
 	seq  int64
 }
 
-func (p *pinger) Started(ctx *lockstep.Context[any]) { ctx.Every(time.Millisecond, tick{}) }
+func (p *simPinger) Started(ctx *lockstep.Context[any]) { ctx.Every(time.Millisecond, simTick{}) }
 
-func (p *pinger) Receive(ctx *lockstep.Context[any], msg any) {
+func (p *simPinger) Receive(ctx *lockstep.Context[any], msg any) {
 	switch msg.(type) {
-	case tick:
+	case simTick:
 		p.seq++
 		if err := lockstep.Send(ctx, p.peer, harness.Ping{Seq: p.seq}); err != nil {
 			ctx.Fail(err)
@@ -243,10 +253,10 @@ func (p *pinger) Receive(ctx *lockstep.Context[any], msg any) {
 	}
 }
 
-// ponger is actor b of a pair. It answers every Ping with a Pong.
-type ponger struct{ peer lockstep.PID[any] }
+// simPonger is actor b of a pair. It answers every Ping with a Pong.
+type simPonger struct{ peer lockstep.PID[any] }
 
-func (p *ponger) Receive(ctx *lockstep.Context[harness.Ping], msg harness.Ping) {
+func (p *simPonger) Receive(ctx *lockstep.Context[harness.Ping], msg harness.Ping) {
 	// A Pong has the fields of a Ping, and carries its Seq back.
 	if err := lockstep.Send(ctx, p.peer, any(harness.Pong(msg))); err != nil {
 		ctx.Fail(err)
@@ -257,7 +267,7 @@ func (p *ponger) Receive(ctx *lockstep.Context[harness.Ping], msg harness.Ping) 
 // four result blocks, the pingpong and crash3 lines twice each, each after the goos, goarch and
 // pkg lines. With FAULTLINE_CHECK_DETERMINISM=1 or LOCKSTEP_CHECK_DETERMINISM=1 also set, the test
 // passes and appends nothing; those two cases run with -count 1, since the variables make every
-// seed run twice.
+// seed run twice. So does go test -short, which runs 5 seeds instead of 50.
 func TestATBEN07SeedsOut(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go test in a child process")
@@ -265,48 +275,60 @@ func TestATBEN07SeedsOut(t *testing.T) {
 
 	t.Run("appends", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "sim.txt") // absent: the test creates it
-		goTestSimSeeds(t, out, 2)
-		checkSeedBlocks(t, readFile(t, out))
+		goTestSimSeeds(t, out, []string{"-count", "2"})
+		checkSeedBlocks(t, simReadFile(t, out))
 	})
 
 	// The file already holds a line, so "appends nothing" means the line is all it holds.
 	const existing = "BenchmarkExisting 1 1 ns/op\n"
-	for _, env := range []string{"FAULTLINE_CHECK_DETERMINISM=1", "LOCKSTEP_CHECK_DETERMINISM=1"} {
-		t.Run(env, func(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		flags []string // go test flags
+		env   []string // NAME=value pairs
+	}{
+		{"FAULTLINE_CHECK_DETERMINISM=1", []string{"-count", "1"}, []string{"FAULTLINE_CHECK_DETERMINISM=1"}},
+		{"LOCKSTEP_CHECK_DETERMINISM=1", []string{"-count", "1"}, []string{"LOCKSTEP_CHECK_DETERMINISM=1"}},
+		{"-short", []string{"-count", "1", "-short"}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "sim.txt")
 			if err := os.WriteFile(out, []byte(existing), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			goTestSimSeeds(t, out, 1, env)
-			if got := readFile(t, out); got != existing {
-				t.Errorf("%s: file is %q after the run, want %q", env, got, existing)
+			goTestSimSeeds(t, out, c.flags, c.env...)
+			if got := simReadFile(t, out); got != existing {
+				t.Errorf("file is %q after the run, want %q", got, existing)
 			}
 		})
 	}
 }
 
-// goTestSimSeeds runs TestSimSeeds count times in a child go test with LOCKSTEP_BENCH_OUT=out and
-// the variables extra, which are NAME=value pairs, and fails t unless the child passes and runs
-// the test. The child gets the parent's environment without LOCKSTEP_BENCH_OUT and without the
-// variables runChanging names, so a variable set around the parent cannot change what a case
-// measures. The child is built without -race (TestSimSeeds skips under it), even if GOFLAGS asks
-// for it.
-func goTestSimSeeds(t *testing.T, out string, count int, extra ...string) {
+// goTestSimSeeds runs TestSimSeeds in a child go test with the go test flags flags and
+// LOCKSTEP_BENCH_OUT=out and the variables env, which are NAME=value pairs, and fails t unless the
+// child passes and runs the test. The child gets the parent's environment without
+// LOCKSTEP_BENCH_OUT and without the variables simRunChanging names, so a variable set around the
+// parent cannot change what a case measures. The child is built without -race (TestSimSeeds skips
+// under it), even if GOFLAGS asks for it, and gets an explicit timeout.
+func goTestSimSeeds(t *testing.T, out string, flags []string, env ...string) {
 	t.Helper()
-	args := []string{"test", "-race=false", "-run", "^TestSimSeeds$", "-count", strconv.Itoa(count), "-timeout", "10m", "."}
+	args := slices.Concat([]string{"test", "-race=false", "-run", "^TestSimSeeds$"}, flags, []string{"-timeout", "10m", "."})
 	cmd := exec.Command("go", args...)
-	cmd.Env = slices.Concat(withoutRunChanging(os.Environ()), []string{seedsOutEnv + "=" + out}, extra)
+	cmd.Env = slices.Concat(simWithoutRunChanging(os.Environ()), []string{seedsOutEnv + "=" + out}, env)
+	desc := "go " + strings.Join(args, " ")
+	if len(env) > 0 {
+		desc += " with " + strings.Join(env, " ")
+	}
 	got, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("go %s (%v): %v\n%s", strings.Join(args, " "), extra, err, got)
+		t.Fatalf("%s: %v\n%s", desc, err, got)
 	}
 	if bytes.Contains(got, []byte("no tests to run")) {
-		t.Fatalf("go %s ran no TestSimSeeds:\n%s", strings.Join(args, " "), got)
+		t.Fatalf("%s ran no TestSimSeeds:\n%s", desc, got)
 	}
 }
 
-// readFile returns the content of the file name, or "" if it does not exist.
-func readFile(t *testing.T, name string) string {
+// simReadFile returns the content of the file name, or "" if it does not exist.
+func simReadFile(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(name)
 	if err != nil && !os.IsNotExist(err) {
