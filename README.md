@@ -797,22 +797,37 @@ a simulated disk through `(*Sim).Volume`.
 ## Benchmarks
 
 The `bench` module runs the same workloads on lockstep, protoactor-go, Hollywood, and GoAkt:
-ping-pong, fan-out, idle actors, send latency, and ask latency. Two more benchmarks run on lockstep
-only: `AskPipe`, and `SimSeeds`, which counts the seeds per second that `sim.Simulate` runs. Run the
-suite from the repository root:
+ping-pong, fan-out, idle actors, send latency, and ask latency. `AskPipe` runs on lockstep only, and
+`BenchmarkCalibrate` runs no library at all: it sorts a fixed slice to measure the speed of the
+machine. This command runs them all:
 
 ```sh
 go -C bench test -run '^$' -bench . ./...
 ```
 
-The other three libraries appear only in `bench/go.mod`, so your own module never requires them.
+`SimSeeds` measures how many seeds per second `sim.Simulate` runs. It is a test, `TestSimSeeds`, not
+a benchmark, and it appends its results to the file that `LOCKSTEP_BENCH_OUT` names. Run it in
+`bench/`:
 
-The budgets in [`bench/budgets.txt`](bench/budgets.txt) come from the baseline in
-[`bench/results/baseline.txt`](bench/results/baseline.txt), which a CI run on `main` measured on
-`ubuntu-latest`. Time budgets are ratios to another benchmark in the same run, so a slower runner
-moves both sides. CI's `bench` job runs the suite on every pull request, on every push to `main`,
-and every week, and it fails when a lockstep result goes over a budget.
-[`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the baseline, library by library.
+```sh
+LOCKSTEP_BENCH_OUT=$PWD/sim.txt go test -run '^TestSimSeeds$' .
+```
+
+The other three libraries are required only by `bench/go.mod`, so the root module never depends on
+them.
+
+A budget is a ceiling on one lockstep result. The budgets in [`bench/budgets.txt`](bench/budgets.txt)
+come from the baseline in [`bench/results/baseline.txt`](bench/results/baseline.txt), which a
+continuous integration (CI) run on `main` measured on `ubuntu-latest`. Time budgets are ratios to
+another benchmark in the same run, so a slower runner moves both sides.
+
+CI's `bench` job runs on every pull request, on every push to `main`, and every week. It fails when a
+lockstep result goes over a budget. [`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the
+baseline, library by library.
+
+The job runs the benchmarks without GoAkt first (`-skip '/lib=goakt'`), then GoAkt's alone
+(`-bench '/lib=goakt'`). A stopped GoAkt system stays in memory and would change what later
+benchmarks measure. A single run of the command above is therefore not how the baseline was produced.
 
 ## Limitations
 
