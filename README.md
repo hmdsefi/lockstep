@@ -794,6 +794,26 @@ github.com/hmdsefi/lockstep          actor runtime
 `persist`, `persist/filestore` and `dedup` do not import faultline either. `sim` gives the first two
 a simulated disk through `(*Sim).Volume`.
 
+## Benchmarks
+
+The `bench` module runs the same workloads on lockstep, protoactor-go, Hollywood, and GoAkt:
+ping-pong, fan-out, idle actors, send latency, and ask latency. Two more benchmarks run on lockstep
+only: `AskPipe`, and `SimSeeds`, which counts the seeds per second that `sim.Simulate` runs. Run the
+suite from the repository root:
+
+```sh
+go -C bench test -run '^$' -bench . ./...
+```
+
+The other three libraries appear only in `bench/go.mod`, so your own module never requires them.
+
+The budgets in [`bench/budgets.txt`](bench/budgets.txt) come from the baseline in
+[`bench/results/baseline.txt`](bench/results/baseline.txt), which a CI run on `main` measured on
+`ubuntu-latest`. Time budgets are ratios to another benchmark in the same run, so a slower runner
+moves both sides. CI's `bench` job runs the suite on every pull request, on every push to `main`,
+and every week, and it fails when a lockstep result goes over a budget.
+[`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the baseline, library by library.
+
 ## Limitations
 
 lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`. It
