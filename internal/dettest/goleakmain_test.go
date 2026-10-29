@@ -213,7 +213,7 @@ func TestGoleakMainCases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "dettest: x has tests but no TestMain calling dettest.Main, or dettest.Prepare and then goleak.VerifyTestMain"
+		want := line("x")
 		if strings.Join(got, "\n") != want {
 			t.Errorf("violations:\n  %s\nwant:\n  %s", strings.Join(got, "\n  "), want)
 		}
