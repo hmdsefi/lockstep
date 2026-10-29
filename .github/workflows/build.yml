@@ -277,7 +277,7 @@ jobs:
           set -e
           for p in bench/results/baseline.txt bench/budgets.txt bench/go.mod; do
             msgs=$(git log --format=%B "origin/${{ github.base_ref }}..HEAD" -- "../$p")
-            if [ -n "$msgs" ] && ! printf '%s\n' "$msgs" | grep -q '^Budget-Update: '; then
+            if [ -n "$msgs" ] && ! grep -q '^Budget-Update: ' <<<"$msgs"; then
               echo "bench: $p changed without a Budget-Update trailer"
               exit 1
             fi
