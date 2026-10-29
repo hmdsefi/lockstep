@@ -19,14 +19,9 @@ const tolerance = 1e-9
 // check runs budget check -budgets <file> <results>... (BEN-160) and returns the exit code.
 func check(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("check", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
 	budgetsPath := flags.String("budgets", "", "the budgets file")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stderr, usage)
-			return 0
-		}
-		return usageError(stderr, err.Error())
+	if code, done := parseFlags(flags, args, stderr); done {
+		return code
 	}
 	if *budgetsPath == "" {
 		return usageError(stderr, "missing -budgets flag")
