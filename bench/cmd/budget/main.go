@@ -37,9 +37,10 @@
 // file with the comment lines # commit: <sha>, # date: <YYYY-MM-DD> and # runner: <label> in
 // front. derive writes a budget for every lockstep result and every BenchmarkSimSeeds result, in
 // the units below, and none for msgs/s, seeds/s and ns/actor, which restate ns/op. A result in a
-// rel unit that has no reference makes the baseline malformed.
+// rel unit that has no reference makes the baseline malformed, and so does a baseline that yields
+// no budget.
 //
-//	allocs/op          abs   the median, rounded up to an integer
+//	allocs/op          abs   c + floor(c/100), where c is the median rounded up to an integer
 //	B/op, B/actor      abs   the median plus 10 percent, rounded up to an integer
 //	goroutines/actor   abs   the median, rounded up to hundredths
 //	ns/op, p50-ns      rel   the ratio to the reference plus 25 percent, rounded up to hundredths

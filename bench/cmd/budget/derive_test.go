@@ -11,8 +11,8 @@ import (
 
 // baseline is the AT-BEN-10 fixture: PingPong pairs=1 at 100, 80, 60 and 90 ns/op for lockstep,
 // protoactor, hollywood and goakt, with several samples each, a lockstep IdleActors row of 100
-// B/actor, a SendLatency p99 without goakt, BenchmarkCalibrate and one BenchmarkSimSeeds result.
-// The report tests use it too.
+// B/actor and 110021.5 allocs/op, a SendLatency p99 without goakt, BenchmarkCalibrate and one
+// BenchmarkSimSeeds result. The report tests use it too.
 var baseline = filepath.Join("testdata", "derive-report.txt")
 
 // wantDerive checks that budget derive succeeds on a baseline made of results and prints want.
@@ -21,13 +21,15 @@ func wantDerive(t *testing.T, want string, results ...string) {
 	wantRun(t, []string{"derive", writeFile(t, "baseline.txt", results...)}, 0, want, "")
 }
 
-// TestATBEN10Derive covers AT-BEN-10: the fixture baseline gives exactly six budgets, sorted, and
+// TestATBEN10Derive covers AT-BEN-10: the fixture baseline gives exactly seven budgets, sorted, and
 // none for the other libraries, msgs/s, seeds/s or ns/actor (BEN-170). The 100 B/actor of the
 // IdleActors row is where 100 * 1.10 is 110.00000000000001 in floating point, and the budget is
-// 110, not 111.
+// 110, not 111. Its 110021.5 allocs/op round up to 110022, and the budget adds 1100, one
+// hundredth of that rounded down.
 func TestATBEN10Derive(t *testing.T) {
 	wantRun(t, []string{"derive", baseline}, 0, lines(
 		"BenchmarkIdleActors/lib=lockstep/n=10000 B/actor abs 110",
+		"BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op abs 111122",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 B/op abs 37",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 1",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 2.09",
@@ -47,6 +49,7 @@ func TestDeriveHoldOnTheirBaseline(t *testing.T) {
 	budgets := writeFile(t, "budgets.txt", strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")...)
 	wantRun(t, []string{"check", "-budgets", budgets, baseline}, 0, lines(
 		"ok   BenchmarkIdleActors/lib=lockstep/n=10000 B/actor 100 <= 110",
+		"ok   BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op 110021.5 <= 111122",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 B/op 33 <= 37",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op 1 <= 1",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 ns/op 100 / 60 = 1.67 <= 2.09",
@@ -72,6 +75,13 @@ func TestDeriveRules(t *testing.T) {
 		{"allocs/op", "1.0000000001", "", "abs 1"},
 		{"allocs/op", "1.5", "", "abs 2"},
 		{"allocs/op", "2.01", "", "abs 3"},
+		{"allocs/op", "99", "", "abs 99"},
+		{"allocs/op", "99.5", "", "abs 101"},
+		{"allocs/op", "100", "", "abs 101"},
+		{"allocs/op", "100.0000000001", "", "abs 101"},
+		{"allocs/op", "199", "", "abs 200"},
+		{"allocs/op", "200", "", "abs 202"},
+		{"allocs/op", "110021.5", "", "abs 111122"},
 		{"B/op", "0", "", "abs 0"},
 		{"B/op", "33", "", "abs 37"},
 		{"B/op", "100", "", "abs 110"},
@@ -320,10 +330,21 @@ func TestDeriveErrors(t *testing.T) {
 	})
 }
 
-// TestDeriveEmpty checks that a baseline with no lockstep result gives an empty budgets file.
+// TestDeriveEmpty checks that a baseline that yields no budget, with no lockstep or
+// BenchmarkSimSeeds result in a unit that has a rule, is malformed: derive prints nothing and
+// exits 2 (BEN-170, BEN §7).
 func TestDeriveEmpty(t *testing.T) {
-	wantDerive(t, "",
-		"BenchmarkA/lib=hollywood 10 100 ns/op",
-		"BenchmarkCalibrate 10 1000 ns/op",
-	)
+	for _, c := range []struct {
+		name    string
+		results []string
+	}{
+		{"no lockstep result", []string{"BenchmarkA/lib=hollywood 10 100 ns/op", "BenchmarkCalibrate 10 1000 ns/op"}},
+		{"no unit with a rule", []string{"BenchmarkA/lib=lockstep 10 100 msgs/s 5 ns/actor"}},
+		{"no result", []string{"goos: linux", "PASS"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeFile(t, "baseline.txt", c.results...)
+			wantRun(t, []string{"derive", path}, 2, "", "budget: "+path+": no budgets\n")
+		})
+	}
 }

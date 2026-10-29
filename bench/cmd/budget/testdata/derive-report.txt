@@ -9,7 +9,7 @@ BenchmarkPingPong/lib=lockstep/pairs=1-4 	     100	       130 ns/op	     7692308
 BenchmarkPingPong/lib=protoactor/pairs=1-4 	     100	        80 ns/op	    12500000 msgs/s	      48 B/op	       2 allocs/op
 BenchmarkPingPong/lib=hollywood/pairs=1-4 	     100	        70 ns/op	    14285714 msgs/s	      40 B/op	       2 allocs/op
 BenchmarkPingPong/lib=goakt/pairs=1-4 	     100	        85 ns/op	    11764706 msgs/s	      64 B/op	       3 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4 	       3	       140 B/actor	      5000 ns/actor
+BenchmarkIdleActors/lib=lockstep/n=10000-4 	       3	       140 B/actor	      5000 ns/actor	  110021.5 allocs/op
 BenchmarkSendLatency/lib=lockstep-4 	     100	       900 p99-ns
 BenchmarkSendLatency/lib=protoactor-4 	     100	       700 p99-ns
 BenchmarkSendLatency/lib=hollywood-4 	     100	       600 p99-ns
@@ -18,7 +18,7 @@ BenchmarkPingPong/lib=lockstep/pairs=1-4 	     100	       100 ns/op	    10000000
 BenchmarkPingPong/lib=protoactor/pairs=1-4 	     100	        80 ns/op	    12500000 msgs/s	      48 B/op	       2 allocs/op
 BenchmarkPingPong/lib=hollywood/pairs=1-4 	     100	        60 ns/op	    16666667 msgs/s	      40 B/op	       2 allocs/op
 BenchmarkPingPong/lib=goakt/pairs=1-4 	     100	        95 ns/op	    10526316 msgs/s	      64 B/op	       3 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4 	       3	       100 B/actor	      5000 ns/actor
+BenchmarkIdleActors/lib=lockstep/n=10000-4 	       3	       100 B/actor	      5000 ns/actor	  110021.5 allocs/op
 BenchmarkSendLatency/lib=lockstep-4 	     100	       900 p99-ns
 BenchmarkSendLatency/lib=protoactor-4 	     100	       700 p99-ns
 BenchmarkSendLatency/lib=hollywood-4 	     100	       600 p99-ns
@@ -26,7 +26,7 @@ BenchmarkCalibrate-4 	     100	      1000 ns/op
 BenchmarkPingPong/lib=lockstep/pairs=1-4 	     100	        90 ns/op	    11111111 msgs/s	      33 B/op	     1.0 allocs/op
 BenchmarkPingPong/lib=protoactor/pairs=1-4 	     100	        80 ns/op	    12500000 msgs/s	      48 B/op	       2 allocs/op
 BenchmarkPingPong/lib=hollywood/pairs=1-4 	     100	        50 ns/op	    20000000 msgs/s	      40 B/op	       2 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4 	       3	        95 B/actor	      5000 ns/actor
+BenchmarkIdleActors/lib=lockstep/n=10000-4 	       3	        95 B/actor	      5000 ns/actor	  110021.5 allocs/op
 BenchmarkSendLatency/lib=lockstep-4 	     100	       900 p99-ns
 BenchmarkSendLatency/lib=protoactor-4 	     100	       700 p99-ns
 BenchmarkSendLatency/lib=hollywood-4 	     100	       600 p99-ns

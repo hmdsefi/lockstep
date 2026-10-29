@@ -21,14 +21,14 @@ var wantFamilyIntro = map[string]string{
 	"PingPong":    "Pairs of actors exchange `Ping` and `Pong` messages; one op is one message, and `pairs=procs` runs `GOMAXPROCS` pairs.",
 	"FanOut":      "One producer sends items to many consumers under credit flow control; one op is one item.",
 	"IdleActors":  "Each op spawns `n` idle actors and sends each one a `Hello` message; `B/actor` is the heap growth per actor.",
-	"SendLatency": "One outside goroutine sends to an echo actor; one op is one send, and latency runs from the send call to the start of the receive function.",
+	"SendLatency": "One outside goroutine sends to an echo actor; one op is one send, and latency runs from the send call until `Receive` starts.",
 	"AskLatency":  "Callers ask an echo actor and wait for the reply; one op is one ask, and `callers=procs` runs `GOMAXPROCS` callers in parallel.",
-	"AskPipe":     "Only lockstep runs this workload: one actor asks another with `Ask` and routes the reply to its own mailbox with `Pipe`; one op is one round trip.",
+	"AskPipe":     "Only lockstep runs this workload: one actor asks another with `Ask` and pipes the reply to its mailbox; one op is one round trip.",
 	"SimSeeds":    "Only lockstep runs this workload: `sim.Simulate` runs one simulated world per seed, and one op is one seed.",
 }
 
-// wantTable returns the expected lead-in and table of one unit, as one paragraph. Each row is
-// written without its outer bars.
+// wantTable returns the expected lead-in and table of one unit, two paragraphs separated by a
+// blank line. Each row is written without its outer bars.
 func wantTable(unit string, rows ...string) string {
 	text := "Median `" + unit + "`:\n\n" +
 		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
@@ -95,8 +95,12 @@ func TestATBEN11Report(t *testing.T) {
 		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
 			"|---|---:|---:|---:|---:|\n" +
 			"| n=10000 | 100 | n/a | n/a | n/a |",
+		"Median `allocs/op`:",
+		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
+			"|---|---:|---:|---:|---:|\n" +
+			"| n=10000 | 110021.5 | n/a | n/a | n/a |",
 		"## SendLatency",
-		"One outside goroutine sends to an echo actor; one op is one send, and latency runs from the send call to the start of the receive function.",
+		"One outside goroutine sends to an echo actor; one op is one send, and latency runs from the send call until `Receive` starts.",
 		"Median `p99-ns`:",
 		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
 			"|---|---:|---:|---:|---:|\n" +

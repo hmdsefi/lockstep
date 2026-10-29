@@ -28,7 +28,7 @@ type rule struct {
 // rules holds the rule of every unit that gets a budget. The units msgs/s, seeds/s and ns/actor
 // restate ns/op and have none.
 var rules = map[string]rule{
-	"allocs/op":        {kindAbs, 1, ceilInt},
+	"allocs/op":        {kindAbs, 1, ceilAllocs},
 	"B/op":             {kindAbs, 1.10, ceilInt},
 	"B/actor":          {kindAbs, 1.10, ceilInt},
 	"goroutines/actor": {kindAbs, 1, ceilHundredths},
@@ -40,6 +40,15 @@ var rules = map[string]rule{
 // ceilInt returns the smallest integer that is at least x, within the tolerance of floating-point
 // error: 100 * 1.10 is 110.00000000000001 and rounds to 110 (BEN §11).
 func ceilInt(x float64) float64 { return noNegativeZero(math.Ceil(x - tolerance)) }
+
+// ceilAllocs returns c + floor(c/100), where c is ceilInt(x): exact below 100 allocations and 1
+// percent above. Allocation counts are exact for the message benchmarks, but those of
+// BenchmarkIdleActors vary by a few between runs, as its op spawns n actors while the engine's
+// workers run.
+func ceilAllocs(x float64) float64 {
+	c := ceilInt(x)
+	return c + math.Floor(c/100)
+}
 
 // ceilHundredths returns the smallest multiple of 0.01 that is at least x, within the same
 // tolerance, so that 0.44 * 1.25 gives 0.55 and not 0.56.
@@ -55,7 +64,7 @@ func noNegativeZero(v float64) float64 {
 
 // derive builds the budgets file for the baseline in res, read from file (BEN-170): a budget for
 // every lockstep result and every BenchmarkSimSeeds result in a unit that has a rule, sorted by
-// name then unit.
+// name then unit. A baseline that yields no budget is malformed.
 func derive(file string, res *results) (string, error) {
 	var picked []series
 	for _, s := range res.order {
@@ -63,6 +72,9 @@ func derive(file string, res *results) (string, error) {
 		if hasRule && (isLockstep(s.name) || strings.HasPrefix(s.name, "BenchmarkSimSeeds/")) {
 			picked = append(picked, s)
 		}
+	}
+	if len(picked) == 0 {
+		return "", fmt.Errorf("%s: no budgets", file)
 	}
 	slices.SortFunc(picked, func(a, b series) int {
 		return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.unit, b.unit))
