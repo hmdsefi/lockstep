@@ -89,14 +89,14 @@ func evaluate(b budget, res *results) (ok bool, line string, absent []series) {
 	if !found {
 		absent = append(absent, b.series)
 	}
-	value, shown := median, formatFloat(median)
+	value, shown := median, formatMedian(median)
 	if b.kind == kindRel {
 		ref, found := res.median(b.ref)
 		if !found {
 			absent = append(absent, b.ref)
 		}
 		value = median / ref
-		shown += " / " + formatFloat(ref) + " = " + formatFloat(round3(value))
+		shown += " / " + formatMedian(ref) + " = " + formatFloat(round3(value))
 	}
 	if len(absent) > 0 {
 		return false, "", absent
@@ -108,8 +108,18 @@ func evaluate(b budget, res *results) (ok bool, line string, absent []series) {
 	return false, fmt.Sprintf("FAIL %s %s %s > %s", b.name, b.unit, shown, b.maxText), nil
 }
 
-// formatFloat formats a median with the fewest digits that represent it exactly.
+// formatFloat formats v with the fewest digits that represent it exactly.
 func formatFloat(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// formatMedian formats a median rounded to 15 significant digits, so the mean of two middle samples
+// such as 231.6 and 232.7 shows as 232.15 and not as 232.14999999999998 (BEN-160, BEN-180). A
+// float64 keeps every decimal of up to 15 significant digits, and the mean of two values that go
+// test prints has at most 11, so the rounding drops only the error of the mean. Comparisons use the
+// unrounded median.
+func formatMedian(v float64) string {
+	r, _ := strconv.ParseFloat(strconv.FormatFloat(v, 'g', 15, 64), 64) // fails only within 1e-15 of MaxFloat64
+	return formatFloat(r)
+}
 
 // round3 rounds v half away from zero to three significant digits, so a ratio of 0.0006964 shows
 // as 0.000696 and not as 0 (BEN-160). It returns 0, NaN and the infinities unchanged. The

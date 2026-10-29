@@ -131,7 +131,7 @@ func deriveBudget(res *results, s series) (budget, error) {
 	r := rules[s.unit]
 	median, _ := res.median(s) // readResults accepts finite values only
 	if median < 0 {
-		return budget{}, fmt.Errorf("%s %s has median %s, want a non-negative number", s.name, s.unit, formatFloat(median))
+		return budget{}, fmt.Errorf("%s %s has median %s, want a non-negative number", s.name, s.unit, formatMedian(median))
 	}
 	b := budget{series: s, kind: r.kind}
 	if r.kind == kindAbs {
@@ -146,7 +146,7 @@ func deriveBudget(res *results, s series) (budget, error) {
 	refMedian, _ := res.median(ref)
 	if refMedian <= 0 {
 		return budget{}, fmt.Errorf("reference %s %s has median %s, want a positive number",
-			ref.name, ref.unit, formatFloat(refMedian))
+			ref.name, ref.unit, formatMedian(refMedian))
 	}
 	b.ref = ref
 	factor := r.factor

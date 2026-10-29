@@ -20,7 +20,7 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| pairs=1 | 645.05 | 1836 | 232.14999999999998 | 303.65 |
+| pairs=1 | 645.05 | 1836 | 232.15 | 303.65 |
 | pairs=procs | 197.3 | 500.9 | 114.5 | 196.5 |
 
 Median `allocs/op`:
@@ -39,7 +39,7 @@ Median `ns/op`:
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
 | consumers=16 | 308.85 | 98.935 | 150.55 | 66.77 |
-| consumers=1024 | 319.04999999999995 | 176.95 | 212.3 | 185.95 |
+| consumers=1024 | 319.05 | 176.95 | 212.3 | 185.95 |
 
 Median `allocs/op`:
 

@@ -302,9 +302,9 @@ func TestATBEN09Check(t *testing.T) {
 }
 
 // TestCheckTolerance checks that comparisons use the unrounded median and ratio with a tolerance
-// of 1e-9 (BEN-150, BEN §11): 0.15000000000000002 holds for 0.15 and 5.7 / 3 =
-// 1.9000000000000001 holds for 1.9, which prints as 1.9, while a budget 1e-6 below the median
-// fails.
+// of 1e-9 (BEN-150, BEN §11): the median of 0.1 and 0.2, 0.15000000000000002, holds for 0.15 and
+// prints as 0.15, and 5.7 / 3 = 1.9000000000000001 holds for 1.9, which prints as 1.9, while a
+// budget 1e-6 below the median fails.
 func TestCheckTolerance(t *testing.T) {
 	budgets := writeFile(t, "budgets.txt",
 		"BenchmarkT ns/op abs 0.15",
@@ -312,9 +312,9 @@ func TestCheckTolerance(t *testing.T) {
 		"BenchmarkT ns/op abs 0.149999",
 	)
 	wantRun(t, []string{"check", "-budgets", budgets, filepath.Join("testdata", "boundary.txt")}, 1, lines(
-		"ok   BenchmarkT ns/op 0.15000000000000002 <= 0.15",
+		"ok   BenchmarkT ns/op 0.15 <= 0.15",
 		"ok   BenchmarkU ns/op 5.7 / 3 = 1.9 <= 1.9",
-		"FAIL BenchmarkT ns/op 0.15000000000000002 > 0.149999",
+		"FAIL BenchmarkT ns/op 0.15 > 0.149999",
 	), "")
 }
 
@@ -325,6 +325,44 @@ func TestCheckUnroundedRatio(t *testing.T) {
 	results := writeFile(t, "results.txt", "BenchmarkA-4 1 18249 ns/op", "BenchmarkR-4 1 10000 ns/op")
 	wantRun(t, []string{"check", "-budgets", budgets, results}, 1,
 		"FAIL BenchmarkA ns/op 18249 / 10000 = 1.82 > 1.82\n", "")
+}
+
+// TestCheckMedianNoise checks that a reference median, the mean of its two middle samples, prints
+// without float noise: 318.9 and 319.2 have the median 319.05, which a float64 holds as
+// 319.04999999999995 (BEN-160).
+func TestCheckMedianNoise(t *testing.T) {
+	budgets := writeFile(t, "budgets.txt", "BenchmarkA ns/op rel BenchmarkR ns/op 2")
+	results := writeFile(t, "results.txt", "BenchmarkA-4 1 600 ns/op", "BenchmarkR-4 1 318.9 ns/op", "BenchmarkR-4 1 319.2 ns/op")
+	wantRun(t, []string{"check", "-budgets", budgets, results}, 0,
+		"ok   BenchmarkA ns/op 600 / 319.05 = 1.88 <= 2\n", "")
+}
+
+// TestFormatMedian checks how a median prints (BEN-160, BEN-180): rounded to 15 significant digits,
+// which drops the noise of the mean of two middle samples a and b and keeps every digit of the
+// samples, in the fewest digits and never in exponent form. The mean is computed at run time, as
+// median does; a constant expression would be exact.
+func TestFormatMedian(t *testing.T) {
+	for _, c := range []struct {
+		a, b float64
+		want string
+	}{
+		{231.6, 232.7, "232.15"},
+		{318.9, 319.2, "319.05"},
+		{0.1, 0.2, "0.15"},
+		{1250123456, 1250123457, "1250123456.5"},
+		{99.99, 100, "99.995"},
+		{644.3435649, 521.3493098, "582.84643735"},               // 16 digits would keep noise
+		{123456789.012345, 123456789.012345, "123456789.012345"}, // 14 digits would drop one
+		{0.6964, 0.6964, "0.6964"},
+		{0.00006964, 0.00006964, "0.00006964"},
+		{12345.678, 12345.678, "12345.678"},
+		{1e9, 1e9, "1000000000"},
+		{0, 0, "0"},
+	} {
+		if got := formatMedian((c.a + c.b) / 2); got != c.want {
+			t.Errorf("median of %v and %v prints as %s, want %s", c.a, c.b, got, c.want)
+		}
+	}
 }
 
 // TestCheckSmallRatio checks that a small ratio prints with three significant digits, where two
