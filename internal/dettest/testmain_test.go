@@ -23,21 +23,20 @@ const (
 	noPrepareFormat = "%s: TestMain calls goleak.VerifyTestMain without calling dettest.Prepare first"
 )
 
-// testMainInfo is what the check of DET-150 and DET-155 reads from the test files of one
+// testMainInfo is what the checks of DET-150, DET-155 and BEN-205 read from the test files of one
 // directory.
 type testMainInfo struct {
+	dir        string // slash-separated, relative to the module root ("." for the root itself)
 	importsSim bool
-	hasTests   bool
-	mains      []*ast.FuncDecl // every func TestMain, with the package name of its file
-	mainPkgs   []string
+	mains      []*ast.FuncDecl // every func TestMain
+	mainFiles  []*ast.File     // the file of each TestMain
 }
 
-// testMainViolations returns the lines of DET-150 and DET-155 for the module at root. A line names
-// the slash-separated directory relative to root ("." for root itself). Lines come in directory
-// order, a directory's DET-150 line first. It reads test files with go/parser and does no type
-// checking, so the imports of the files need not resolve. The walk skips testdata, vendor,
-// directories starting with "." or "_" and nested modules (DET-060).
-func testMainViolations(root string) ([]string, error) {
+// testDirs returns, in directory order, what the test files of each directory of the module at
+// root declare, for the directories that have test files. It reads the files with go/parser and
+// does no type checking, so the imports of the files need not resolve. The walk skips testdata,
+// vendor, directories starting with "." or "_" and nested modules (DET-060).
+func testDirs(root string) ([]*testMainInfo, error) {
 	infos := map[string]*testMainInfo{}
 	var dirs []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -70,11 +69,10 @@ func testMainViolations(root string) ([]string, error) {
 		dir := filepath.ToSlash(rel)
 		info := infos[dir]
 		if info == nil {
-			info = &testMainInfo{}
+			info = &testMainInfo{dir: dir}
 			infos[dir] = info
 			dirs = append(dirs, dir)
 		}
-		info.hasTests = true
 		for _, imp := range f.Imports {
 			if p, err := strconv.Unquote(imp.Path.Value); err == nil && p == simPkg {
 				info.importsSim = true
@@ -83,7 +81,7 @@ func testMainViolations(root string) ([]string, error) {
 		for _, decl := range f.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "TestMain" {
 				info.mains = append(info.mains, fn)
-				info.mainPkgs = append(info.mainPkgs, f.Name.Name)
+				info.mainFiles = append(info.mainFiles, f)
 			}
 		}
 		return nil
@@ -93,14 +91,28 @@ func testMainViolations(root string) ([]string, error) {
 	}
 
 	sort.Strings(dirs)
+	out := make([]*testMainInfo, len(dirs))
+	for i, dir := range dirs {
+		out[i] = infos[dir]
+	}
+	return out, nil
+}
+
+// testMainViolations returns the lines of DET-150 and DET-155 for the module at root. A line names
+// the slash-separated directory relative to root ("." for root itself). Lines come in directory
+// order, a directory's DET-150 line first. The directories are those of testDirs.
+func testMainViolations(root string) ([]string, error) {
+	infos, err := testDirs(root)
+	if err != nil {
+		return nil, err
+	}
 	var lines []string
-	for _, dir := range dirs {
-		info := infos[dir]
-		if (info.importsSim || dir == "sim") && !info.callsMainOrPrepare() {
-			lines = append(lines, strings.Replace(noMainFormat, "%s", dir, 1))
+	for _, info := range infos {
+		if (info.importsSim || info.dir == "sim") && !info.callsMainOrPrepare() {
+			lines = append(lines, strings.Replace(noMainFormat, "%s", info.dir, 1))
 		}
 		if info.callsGoleakWithoutPrepare() {
-			lines = append(lines, strings.Replace(noPrepareFormat, "%s", dir, 1))
+			lines = append(lines, strings.Replace(noPrepareFormat, "%s", info.dir, 1))
 		}
 	}
 	return lines, nil
@@ -134,7 +146,7 @@ func (info *testMainInfo) callsGoleakWithoutPrepare() bool {
 		}
 		prepared := false
 		for _, stmt := range fn.Body.List[:verify] {
-			if containsCall(stmt, "dettest", "Prepare", info.mainPkgs[i]) {
+			if containsCall(stmt, "dettest", "Prepare", info.mainFiles[i].Name.Name) {
 				prepared = true
 			}
 		}
@@ -149,7 +161,7 @@ func (info *testMainInfo) callsGoleakWithoutPrepare() bool {
 // file is in package dettest.
 func (info *testMainInfo) hasCall(i int, name string) bool {
 	fn := info.mains[i]
-	return fn.Body != nil && containsCall(fn.Body, "dettest", name, info.mainPkgs[i])
+	return fn.Body != nil && containsCall(fn.Body, "dettest", name, info.mainFiles[i].Name.Name)
 }
 
 // containsCall reports whether n contains a call pkg.name(...), or name(...) when file is the
