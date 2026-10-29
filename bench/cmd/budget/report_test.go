@@ -200,7 +200,7 @@ func TestReportLayout(t *testing.T) {
 }
 
 // TestReportMedians checks that each cell is the median over all samples, printed with the
-// fewest digits that represent it.
+// fewest digits that show its rounded value.
 func TestReportMedians(t *testing.T) {
 	wantReport(t, []string{
 		"BenchmarkPingPong/lib=lockstep/pairs=1-4 100 300 ns/op 1 allocs/op",
@@ -214,6 +214,23 @@ func TestReportMedians(t *testing.T) {
 		wantSection("PingPong",
 			wantTable("ns/op", "pairs=1 | 200 | 0.2 | n/a | n/a"),
 			wantTable("allocs/op", "pairs=1 | 1 | 0 | n/a | n/a"),
+		),
+	)
+}
+
+// TestReportMedianNoise checks that the mean of two middle samples prints without float noise:
+// 231.6 and 232.7 (hollywood pairs=1 in the baseline) give 232.15 and 318.9 and 319.2 give 319.05,
+// which a float64 holds as 232.14999999999998 and 319.04999999999995 (BEN-180).
+func TestReportMedianNoise(t *testing.T) {
+	wantReport(t, []string{
+		"BenchmarkPingPong/lib=lockstep/pairs=1-4 100 318.9 ns/op 1 allocs/op",
+		"BenchmarkPingPong/lib=lockstep/pairs=1-4 100 319.2 ns/op 1 allocs/op",
+		"BenchmarkPingPong/lib=hollywood/pairs=1-4 100 232.7 ns/op 2 allocs/op",
+		"BenchmarkPingPong/lib=hollywood/pairs=1-4 100 231.6 ns/op 2 allocs/op",
+	}, "",
+		wantSection("PingPong",
+			wantTable("ns/op", "pairs=1 | 319.05 | n/a | 232.15 | n/a"),
+			wantTable("allocs/op", "pairs=1 | 1 | n/a | 2 | n/a"),
 		),
 	)
 }

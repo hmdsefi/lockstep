@@ -377,6 +377,16 @@ func TestDeriveErrors(t *testing.T) {
 			"BenchmarkA/lib=lockstep B/op has median -3, want a non-negative number",
 		},
 		{
+			"a negative reference of two samples",
+			[]string{"BenchmarkA/lib=lockstep 10 100 ns/op", "BenchmarkA/lib=hollywood 10 -0.1 ns/op", "BenchmarkA/lib=hollywood 10 -0.2 ns/op"},
+			"reference BenchmarkA/lib=hollywood ns/op has median -0.15, want a positive number",
+		},
+		{
+			"a negative median of two samples",
+			[]string{"BenchmarkA/lib=lockstep 10 -0.1 B/op", "BenchmarkA/lib=lockstep 10 -0.2 B/op"},
+			"BenchmarkA/lib=lockstep B/op has median -0.15, want a non-negative number",
+		},
+		{
 			"the first error wins",
 			[]string{
 				"BenchmarkB/lib=lockstep 10 100 ns/op",

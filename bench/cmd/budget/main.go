@@ -26,9 +26,11 @@
 //
 // An abs budget caps the median. A rel budget caps the median divided by the median of the
 // reference benchmark in the reference unit; the ratio is printed rounded to three significant
-// digits (0.0006964 shows as 0.000696) and compared unrounded. Budgets take only units where
-// lower is better: ns/op, p50-ns, p99-ns, allocs/op, B/op, B/actor and goroutines/actor. Lines
-// that start with # are comments, and blank lines are ignored.
+// digits (0.0006964 shows as 0.000696) and compared unrounded. Medians are printed rounded to 15
+// significant digits and compared unrounded, so the mean of two middle samples shows as 232.15 and
+// not as 232.14999999999998. Budgets take only units where lower is better: ns/op, p50-ns, p99-ns,
+// allocs/op, B/op, B/actor and goroutines/actor. Lines that start with # are comments, and blank
+// lines are ignored.
 //
 // check exits 0 when every budget holds or the budgets file does not exist, 1 when a budget is
 // exceeded, and 2 on malformed input or a missing result.
@@ -60,7 +62,7 @@
 // cpu lines and the # commit: and # date: lines of the baseline, then a section for each
 // benchmark family with a table for each unit. A table has a row for each parameter value and a
 // column for each library, in the order lockstep, protoactor, hollywood, goakt. Each cell is a
-// median, and n/a marks a library with no result.
+// median, printed as check prints it, and n/a marks a library with no result.
 //
 // derive and report exit 0 on success and 2 on a malformed baseline or a usage error.
 package main

@@ -89,7 +89,7 @@ func collectCells(res *results) (rows map[table][]string, cells map[cell]string)
 			rows[t] = append(rows[t], param)
 		}
 		median, _ := res.median(s)
-		cells[cell{t, param, lib}] = formatFloat(median)
+		cells[cell{t, param, lib}] = formatMedian(median)
 	}
 	return rows, cells
 }
