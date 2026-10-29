@@ -25,6 +25,11 @@ type series struct {
 type results struct {
 	// config holds the configuration lines, such as goos: linux, in input order.
 	config []config
+	// comments holds the comment lines of the form # key: value, such as # commit: 0f3a9c1, in
+	// input order.
+	comments []config
+	// order lists each series once, in the order its first sample appears.
+	order []series
 	// samples holds every value of each series, in input order.
 	samples map[series][]float64
 }
@@ -36,6 +41,15 @@ type config struct {
 
 // configLine matches the start of a configuration line, up to the value.
 var configLine = regexp.MustCompile(`^[a-z][^\s:]*: `)
+
+// commentLine matches the start of a comment line of the form # key: value, up to the value, and
+// captures the key.
+var commentLine = regexp.MustCompile(`^# ([a-z][^\s:]*): `)
+
+// libs lists the libraries in the order of Libs in package bench/libs: the order of the report's
+// columns, and the order that breaks a tie between references. This package cannot call Libs,
+// since the package that holds it imports every library, and it keeps to the standard library.
+var libs = []string{"lockstep", "protoactor", "hollywood", "goakt"}
 
 // lineError is malformed input at one line of a file. Its text is <file>:<line>: <reason>.
 type lineError struct {
@@ -64,6 +78,11 @@ func readResults(paths []string) (*results, error) {
 			case configLine.MatchString(line):
 				key, value, _ := strings.Cut(line, ": ")
 				r.config = append(r.config, config{key, strings.TrimRightFunc(value, unicode.IsSpace)})
+			default:
+				if m := commentLine.FindStringSubmatch(line); m != nil {
+					value := strings.TrimRightFunc(line[len(m[0]):], unicode.IsSpace)
+					r.comments = append(r.comments, config{m[1], value})
+				}
 			}
 		}
 	}
@@ -95,6 +114,9 @@ func (r *results) addResult(line string) error {
 			return fmt.Errorf("value %q has no unit", pairs[i])
 		}
 		s := series{name, pairs[i+1]}
+		if _, seen := r.samples[s]; !seen {
+			r.order = append(r.order, s)
+		}
 		r.samples[s] = append(r.samples[s], v)
 	}
 	return nil
