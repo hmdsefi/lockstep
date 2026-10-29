@@ -9,8 +9,8 @@
 //
 // check reads go test -bench output from the results files and, for each benchmark and unit,
 // takes the median of the samples in all files. It ignores the -N GOMAXPROCS suffix that go test
-// appends to benchmark names. Then it prints one line per budget, in budgets file order, and after
-// them each result a budget names but no results file reports:
+// appends to benchmark names. Then it prints one line per budget, in budgets file order, and one
+// missing-result line for each benchmark and unit that a budget names and no results file contains:
 //
 //	ok   BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op 1 <= 1
 //	FAIL BenchmarkPingPong/lib=lockstep/pairs=1 ns/op 100 / 55 = 1.82 > 1.80
