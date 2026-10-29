@@ -44,10 +44,8 @@ const (
 	credits  = 512
 	ackEvery = 256
 
-	// askTimeout is the timeout of every ask. closeTimeout bounds how long Close waits for the
-	// actors to stop.
-	askTimeout   = 5 * time.Second
-	closeTimeout = time.Minute
+	// askTimeout is the timeout of every ask.
+	askTimeout = 5 * time.Second
 )
 
 // The kinds of the actors the workloads spawn. hollywood registers an actor under its kind and its
@@ -90,9 +88,10 @@ type system struct {
 }
 
 // spawn spawns r as an actor of the given kind with an ID no other actor of the system has, and
-// remembers it for Close. hollywood spawns an actor whose ID is taken as a no-op, so every actor
-// needs its own. The producer given to hollywood returns r every time, so a restart would keep
-// the actor's state; these actors never fail, so none restarts.
+// remembers it for Close. hollywood does not spawn an actor whose ID is taken: it broadcasts an
+// event that its event stream logs at the error level, which would write to standard error. So
+// every actor needs its own ID. The producer given to hollywood returns r every time, so a restart
+// would keep the actor's state; these actors never fail, so none restarts.
 func (s *system) spawn(kind string, r actor.Receiver, opts ...actor.OptFunc) *actor.PID {
 	s.seq++
 	opts = append(opts, actor.WithID(strconv.Itoa(s.seq)))
@@ -101,21 +100,15 @@ func (s *system) spawn(kind string, r actor.Receiver, opts ...actor.OptFunc) *ac
 	return pid
 }
 
-// Close stops every actor the system spawned, gracefully, and waits until each has stopped. It
-// starts every stop before it waits for the first.
+// Close stops every actor the system spawned, gracefully, and waits until each has stopped, with
+// no deadline. It starts every stop before it waits for the first.
 func (s *system) Close() error {
 	stopped := make([]context.Context, len(s.pids))
 	for i, pid := range s.pids {
 		stopped[i] = s.engine.Poison(pid)
 	}
-	timeout := time.NewTimer(closeTimeout)
-	defer timeout.Stop()
-	for i, done := range stopped {
-		select {
-		case <-done.Done():
-		case <-timeout.C:
-			return fmt.Errorf("hollywood: actor %s still running %s after Close", s.pids[i].ID, closeTimeout)
-		}
+	for _, done := range stopped {
+		<-done.Done()
 	}
 	return nil
 }
