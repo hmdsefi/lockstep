@@ -120,7 +120,7 @@ func TestATBEN08Parsing(t *testing.T) {
 }
 
 // TestResultsMalformed checks that every result line that does not parse fails with the file,
-// the line and the reason (BEN-140, BEN §7).
+// the line and the reason, among them values that are not finite (BEN-140, BEN §7).
 func TestResultsMalformed(t *testing.T) {
 	for _, c := range []struct {
 		line, reason string
@@ -133,6 +133,11 @@ func TestResultsMalformed(t *testing.T) {
 		{"BenchmarkY 10 512", `value "512" has no unit`},
 		{"BenchmarkY 10 512 ns/op 3", `value "3" has no unit`},
 		{"BenchmarkY 10 512 ns/op abc B/op", `invalid value "abc"`},
+		{"BenchmarkY 10 NaN ns/op", `invalid value "NaN"`},
+		{"BenchmarkY 10 +Inf ns/op", `invalid value "+Inf"`},
+		{"BenchmarkY 10 512 ns/op -Inf B/op", `invalid value "-Inf"`},
+		{"BenchmarkY 10 inf ns/op", `invalid value "inf"`},
+		{"BenchmarkY 10 1e400 ns/op", `invalid value "1e400"`},
 	} {
 		t.Run(c.line, func(t *testing.T) {
 			budgets := writeFile(t, "budgets.txt", "BenchmarkY ns/op abs 1")
@@ -309,6 +314,33 @@ func TestCheckTolerance(t *testing.T) {
 		"ok   BenchmarkU ns/op 5.7 / 3 = 1.90 <= 1.9",
 		"FAIL BenchmarkT ns/op 0.15000000000000002 > 0.149999",
 	), "")
+}
+
+// TestCheckUnroundedRatio checks that a rel budget compares the unrounded ratio: 18249 / 10000
+// prints as 1.82 but exceeds a max-ratio of 1.82 (BEN-150).
+func TestCheckUnroundedRatio(t *testing.T) {
+	budgets := writeFile(t, "budgets.txt", "BenchmarkA ns/op rel BenchmarkR ns/op 1.82")
+	results := writeFile(t, "results.txt", "BenchmarkA-4 1 18249 ns/op", "BenchmarkR-4 1 10000 ns/op")
+	wantRun(t, []string{"check", "-budgets", budgets, results}, 1,
+		"FAIL BenchmarkA ns/op 18249 / 10000 = 1.82 > 1.82\n", "")
+}
+
+// TestTrimProcs checks that trimProcs removes only a suffix of a dash and digits, the one go test
+// appends to a benchmark name.
+func TestTrimProcs(t *testing.T) {
+	for _, c := range []struct{ name, want string }{
+		{"BenchmarkX-8", "BenchmarkX"},
+		{"BenchmarkX/lib=lockstep/n=10000-16", "BenchmarkX/lib=lockstep/n=10000"},
+		{"BenchmarkX", "BenchmarkX"},
+		{"BenchmarkX/a-b", "BenchmarkX/a-b"},
+		{"BenchmarkX-", "BenchmarkX-"},
+		{"BenchmarkX-4a", "BenchmarkX-4a"},
+		{"BenchmarkX/n=-1-4", "BenchmarkX/n=-1"},
+	} {
+		if got := trimProcs(c.name); got != c.want {
+			t.Errorf("trimProcs(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
 }
 
 // TestBudgetsMalformed checks that every budgets line outside the grammar fails with the file,
