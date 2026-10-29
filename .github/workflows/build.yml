@@ -284,8 +284,10 @@ jobs:
           done
       - name: simulation seeds per second
         run: LOCKSTEP_BENCH_OUT=$PWD/sim.txt go test -run '^TestSimSeeds$' -count 10 .
-      - name: benchmarks
-        run: go test -run '^$' -bench . -benchmem -count 10 -timeout 80m ./... | tee results.txt
+      - name: benchmarks without GoAkt
+        run: go test -run '^$' -bench . -skip '/lib=goakt' -benchmem -count 10 -timeout 80m ./... | tee results.txt
+      - name: GoAkt benchmarks, in a process of their own
+        run: go test -run '^$' -bench '/lib=goakt' -benchmem -count 10 -timeout 80m . | tee -a results.txt
       - name: budgets
         run: go run ./cmd/budget check -budgets budgets.txt results.txt sim.txt | tee budget.txt
       - uses: actions/upload-artifact@v7
