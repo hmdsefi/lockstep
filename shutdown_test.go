@@ -734,7 +734,7 @@ func TestShutdownChildStoppedBeforeBegin(t *testing.T) {
 	}
 }
 
-// ACT-050, SUP-060: stopping n children, in the shutdown's sweep or in their parent's own stop,
+// ACT-050, SUP-060, SUP-070: stopping n children, in the shutdown's sweep or in their parent's own stop,
 // allocates about as much per child for any n. Each step stops the parent's newest child; a step
 // that copied the parent's child list to find it would allocate more per child as n grows.
 func TestShutdownBytesPerChild(t *testing.T) {
