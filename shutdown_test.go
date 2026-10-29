@@ -6,6 +6,7 @@ package lockstep
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -730,5 +731,62 @@ func TestShutdownChildStoppedBeforeBegin(t *testing.T) {
 	}
 	if !eng.Stopped() || !sys.stopped.Load() {
 		t.Errorf("engine stopped %v, system stopped %v, want both", eng.Stopped(), sys.stopped.Load())
+	}
+}
+
+// ACT-050, SUP-060: stopping n children, in the shutdown's sweep or in their parent's own stop,
+// allocates about as much per child for any n. Each step stops the parent's newest child; a step
+// that copied the parent's child list to find it would allocate more per child as n grows.
+func TestShutdownBytesPerChild(t *testing.T) {
+	// perChild spawns n idle actors under the user guardian, or under one parent actor when nested,
+	// shuts the system down and returns the bytes the shutdown allocated per actor.
+	perChild := func(t *testing.T, n int, nested bool) float64 {
+		t.Helper()
+		sys, eng := newManualSystem(t)
+		spawn := func(parent Spawner) {
+			for range n {
+				if _, err := Spawn(parent, "", idle[any]()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if nested {
+			parent := &lifeActor[any]{started: func(ctx *Context[any]) { spawn(ctx) }}
+			if _, err := Spawn(sys, "parent", actorOf[any](parent)); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			spawn(sys)
+		}
+		eng.RunUntilIdle()
+		if got, want := sys.reg.Len(), n; got < want {
+			t.Fatalf("%d actors registered, want at least %d", got, want)
+		}
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		if err := sys.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		eng.RunUntilIdle()
+		runtime.ReadMemStats(&after)
+		if !eng.Stopped() {
+			t.Fatal("the shutdown did not complete")
+		}
+		return float64(after.TotalAlloc-before.TotalAlloc) / float64(n)
+	}
+	for _, nested := range []bool{false, true} {
+		name := "sweep"
+		if nested {
+			name = "parent stop"
+		}
+		t.Run(name, func(t *testing.T) {
+			small, large := perChild(t, 250, nested), perChild(t, 4000, nested)
+			if large > 2*small {
+				t.Errorf("the shutdown allocated %.0f B per child of 4000 and %.0f B per child of 250, want at most twice as much",
+					large, small)
+			}
+			t.Logf("%.0f B per child of 250, %.0f B per child of 4000", small, large)
+		})
 	}
 }

@@ -167,18 +167,17 @@ func (g *guardians) next() bool {
 		if g.phase == sweepSystem {
 			parent = s.system
 		}
-		kids := s.reg.Children(parent.path)
-		if len(kids) == 0 {
+		k, ok := s.reg.LastChild(parent.path)
+		if !ok {
 			if g.phase == sweepUser {
 				g.phase = sweepSystem
 				continue
 			}
 			return true
 		}
-		k := kids[len(kids)-1]
 		child, ok := s.lookupCell(k)
 		if !ok {
-			continue // it completed its stop after Children returned
+			continue // it completed its stop after LastChild returned
 		}
 		g.wait = Address{node: k.Node, path: k.Path, uid: k.UID}
 		child.requestStop(Shutdown, g)

@@ -226,6 +226,47 @@ func TestChildrenOrder(t *testing.T) {
 	}
 }
 
+// LastChild is the most recently spawned child that is still registered (ACT-050, SUP-060), and
+// reading it copies nothing.
+func TestLastChild(t *testing.T) {
+	r := newTestRegistry()
+	for _, parent := range []string{"/user", "/nowhere"} {
+		if got, ok := r.LastChild(parent); ok {
+			t.Fatalf("LastChild(%q) = %+v, want none", parent, got)
+		}
+	}
+	for i, n := range []string{"c", "a", "b"} {
+		mustAdd(t, r, "/user", n, uint64(i+1))
+	}
+	steps := []struct {
+		remove string
+		want   Addr
+	}{
+		{"", Addr{Node: "n1", Path: "/user/b", UID: 3}},
+		{"/user/a", Addr{Node: "n1", Path: "/user/b", UID: 3}}, // a middle child
+		{"/user/b", Addr{Node: "n1", Path: "/user/c", UID: 1}},
+	}
+	for _, s := range steps {
+		if s.remove != "" {
+			r.Remove(s.remove)
+		}
+		if got, ok := r.LastChild("/user"); !ok || got != s.want {
+			t.Fatalf("after Remove(%q): LastChild = %+v, %v, want %+v", s.remove, got, ok, s.want)
+		}
+	}
+	r.Remove("/user/c")
+	if got, ok := r.LastChild("/user"); ok {
+		t.Fatalf("LastChild after the last Remove = %+v, want none", got)
+	}
+
+	for i := range 1000 {
+		mustAdd(t, r, "/user", "", uint64(i+1))
+	}
+	if n := testing.AllocsPerRun(100, func() { r.LastChild("/user") }); n != 0 {
+		t.Errorf("LastChild of 1000 children allocates %v times, want 0", n)
+	}
+}
+
 func TestWatchAlive(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "t", 5)
