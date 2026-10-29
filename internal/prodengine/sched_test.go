@@ -139,12 +139,11 @@ func countStackWalks(t *testing.T) *atomic.Int32 {
 	return &n
 }
 
-// TestInTurnIdleSkipsStack covers InTurn (SCH-115) while no worker runs a turn or a callback: it
-// reports false without reading the caller's goroutine ID, which costs a walk of the caller's
-// stack.
+// TestInTurnIdleSkipsStack covers InTurn (SCH-115) while no worker runs a turn or a callback, as on
+// an engine that has had no work: it reports false without reading the caller's goroutine ID,
+// which costs a walk of the caller's stack.
 func TestInTurnIdleSkipsStack(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 2})
-	waitFor(t, time.Second, "2 parked workers", func() bool { return e.parked() == 2 })
 	walks := countStackWalks(t)
 	if e.s.InTurn() {
 		t.Error("InTurn() on the test goroutine = true, want false")
@@ -172,7 +171,12 @@ func TestInTurnWhileWorkerBusy(t *testing.T) {
 	}
 	a.add()
 	e.s.Ready(a)
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(release) // a turn that starts late does not block the engine's Stop
+		t.Fatal("the turn did not start within 5 s")
+	}
 	walks := countStackWalks(t)
 	outside := e.s.InTurn()
 	close(release)

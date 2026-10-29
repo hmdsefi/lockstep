@@ -415,10 +415,11 @@ func (s *inTurnCounter) InTurn() bool {
 	return s.Scheduler.InTurn()
 }
 
-// MBX-090: an outside Send asks Scheduler.InTurn only when the target's mailbox is BlockSender, the
-// one policy under which the sender may wait. The production engine's InTurn reads the caller's
-// goroutine ID from its stack, so a Send to a mailbox of any other policy must not pay for it.
-func TestOutsideSendAsksInTurnOnlyForBlockSender(t *testing.T) {
+// MBX-090, MBX-092: an outside Send or Ask asks Scheduler.InTurn only when the target's mailbox is
+// BlockSender, the one policy under which the sender may wait. The production engine's InTurn reads
+// the caller's goroutine ID from its stack, so a Send or Ask to a mailbox of any other policy must
+// not pay for it.
+func TestOutsideOfferAsksInTurnOnlyForBlockSender(t *testing.T) {
 	b := enginetest.New("local", 1).Engine()
 	b.Blocking = true // as on the production engine, where an outside sender may wait
 	sched := &inTurnCounter{Scheduler: b.Scheduler}
@@ -442,6 +443,13 @@ func TestOutsideSendAsksInTurnOnlyForBlockSender(t *testing.T) {
 		}
 		if asked := sched.inTurn > before; asked != tc.asks {
 			t.Errorf("Send to a %v mailbox asked InTurn: %v, want %v", tc.policy, asked, tc.asks)
+		}
+		before = sched.inTurn
+		if r := Ask(sys, pid, func(ReplyTo[int]) int { return 2 }); r.isResolved() {
+			t.Errorf("Ask to a %v mailbox resolved at once, want it pending", tc.policy)
+		}
+		if asked := sched.inTurn > before; asked != tc.asks {
+			t.Errorf("Ask to a %v mailbox asked InTurn: %v, want %v", tc.policy, asked, tc.asks)
 		}
 	}
 }
