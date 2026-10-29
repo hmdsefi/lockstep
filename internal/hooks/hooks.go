@@ -56,3 +56,24 @@ var InjectFail func(sys any, addr engine.Address, err error) error
 // It is nil until package lockstep is initialized. Called by sim (SIM-260); declared by SIM (§5.9)
 // and implemented by MSG (MSG-370).
 var PendingAsks func(sys any) []PendingAsk
+
+// The declarations below are OBS §4.1 (decision R53): late metric registration, for a package
+// enabled on a system after lockstep.New. Package lockstep sets both in its init function
+// (ENG-210); they are nil until package lockstep is initialized. Called by remote at
+// remote.Enable (REM) and later by cluster and persist when their series exist; implemented by
+// OBS (OBS-150). sys is the *lockstep.System, and both panic if it has another type. labels are
+// name, value pairs after the node label. Both panic if name is not a series of OBS §5.7's table
+// of their kind or labels has odd length, are safe for concurrent use and may be called inside a
+// turn.
+
+// MetricCounter registers one counter series of OBS §5.7 on sys's metrics backend and returns its
+// Add function. It returns nil when sys has metrics off or once Shutdown has started on it; callers
+// check for nil once and then call the function on their event paths (OBS-150). A second call
+// with the same name and labels returns the first call's function without calling the backend.
+var MetricCounter func(sys any, name, help string, labels ...string) func(n uint64)
+
+// MetricGauge registers fn as one gauge series of OBS §5.7 on sys's metrics backend. It does
+// nothing when sys has metrics off, once Shutdown has started on it, or for a name and labels
+// registered already. After Shutdown the registered gauge returns 0 and holds no reference to fn
+// (OBS-150).
+var MetricGauge func(sys any, name, help string, fn func() int64, labels ...string)

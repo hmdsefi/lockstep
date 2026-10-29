@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,7 +124,14 @@ type prodCounter struct {
 // and shuts the system down in t.Cleanup.
 func newProdCounter(t *testing.T, journal persist.Journal) *prodCounter {
 	t.Helper()
-	p := &prodCounter{sys: lockstep.New(), errs: &errLog{}, t: t}
+	return spawnProdCounter(t, lockstep.New(), journal)
+}
+
+// spawnProdCounter spawns the counter on sys, a production system, under a parent that restarts
+// it, and shuts sys down in t.Cleanup.
+func spawnProdCounter(t *testing.T, sys *lockstep.System, journal persist.Journal) *prodCounter {
+	t.Helper()
+	p := &prodCounter{sys: sys, errs: &errLog{}, t: t}
 	t.Cleanup(p.shutdown)
 	spawned := make(chan error, 1)
 	_, err := lockstep.Spawn(p.sys, "parent", func() lockstep.Actor[struct{}] {
@@ -229,4 +237,56 @@ func TestPersistProductionRecovery(t *testing.T) {
 	if errs := second.errs.snapshot(); len(errs) != 0 {
 		t.Errorf("errors in the second system: %v", errs)
 	}
+}
+
+// newOnlyMetrics is a lockstep.Metrics that counts the registrations made before armed is set and
+// fails the test on any registration after it: a test sets it once New has returned.
+type newOnlyMetrics struct {
+	t     *testing.T
+	armed atomic.Bool
+	atNew atomic.Int64
+}
+
+// nopCounter is a lockstep.Counter that discards what is added to it.
+type nopCounter struct{}
+
+func (nopCounter) Add(uint64) {}
+
+func (m *newOnlyMetrics) Counter(name, _ string, labels ...lockstep.MetricLabel) lockstep.Counter {
+	m.called("Counter", name, labels)
+	return nopCounter{}
+}
+
+func (m *newOnlyMetrics) GaugeFunc(name, _ string, _ func() int64, labels ...lockstep.MetricLabel) {
+	m.called("GaugeFunc", name, labels)
+}
+
+func (m *newOnlyMetrics) called(method, name string, labels []lockstep.MetricLabel) {
+	if m.armed.Load() {
+		m.t.Errorf("%s(%s, %v) after New returned", method, name, labels)
+		return
+	}
+	m.atNew.Add(1)
+}
+
+// AT-PER-50, PER-030: persist registers no metric series. lockstep.New registers its own before it
+// returns; spawning a persistent counter, three commands and the shutdown register nothing more.
+func TestATPER50NoMetrics(t *testing.T) {
+	store, err := filestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &newOnlyMetrics{t: t}
+	sys := lockstep.New(lockstep.WithMetrics(rec))
+	rec.armed.Store(true)
+	p := spawnProdCounter(t, sys, store)
+	if rec.atNew.Load() == 0 {
+		t.Error("New registered no series with WithMetrics: the backend is not in use")
+	}
+	for want := int64(1); want <= 3; want++ {
+		if got, err := p.ask(add(1)); err != nil || got != want {
+			t.Fatalf("Ask(Add{1}) #%d = %d, %v; want %d, nil", want, got, err, want)
+		}
+	}
+	p.shutdown()
 }
