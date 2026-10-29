@@ -27,7 +27,7 @@ func TestATBEN06Recorder(t *testing.T) {
 		for _, c := range []struct {
 			p    float64
 			want int64
-		}{{50, 50}, {99, 99}, {100, 100}} {
+		}{{7, 7}, {50, 50}, {99, 99}, {100, 100}} {
 			if got := r.Percentile(c.p); got != c.want {
 				t.Errorf("Percentile(%v) = %d, want %d", c.p, got, c.want)
 			}
