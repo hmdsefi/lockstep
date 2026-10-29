@@ -5,12 +5,14 @@ go 1.26.0
 replace github.com/hmdsefi/lockstep => ..
 
 require (
+	github.com/anthdm/hollywood v1.0.5
 	github.com/asynkron/protoactor-go v0.0.0-20260118094027-288962e52f3f
 	github.com/hmdsefi/lockstep v0.1.0
 	go.uber.org/goleak v1.3.0
 )
 
 require (
+	github.com/DataDog/gostackparse v0.7.0 // indirect
 	github.com/Workiva/go-datastructures v1.1.7 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -19,6 +21,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
 	github.com/lmittmann/tint v1.1.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -29,6 +32,7 @@ require (
 	github.com/prometheus/otlptranslator v0.0.2 // indirect
 	github.com/prometheus/procfs v0.17.0 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
+	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.38.0 // indirect
 	go.opentelemetry.io/otel/exporters/prometheus v0.60.0 // indirect
