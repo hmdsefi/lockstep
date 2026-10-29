@@ -21,7 +21,7 @@ func Lockstep(root string) Module {
 	}{
 		{ClassCore, []string{"internal/engine", "internal/engine/enginetest", "internal/hooks", "internal/supervise",
 			"internal/registry", "internal/overload", "internal/remoting", "internal/toys", "internal/viz", "sim",
-			"persist", "persist/filestore", "codec", "cluster"}},
+			"persist", "persist/filestore", "dedup", "codec", "cluster"}},
 		{ClassRuntime, []string{"", "internal/mailbox"}},
 		{ClassEngine, []string{"internal/engine/local", "internal/prodengine", "internal/shrink", "remote"}},
 		{ClassExempt, []string{"internal/dettest", "cmd/lockstep"}},
@@ -70,6 +70,7 @@ func Lockstep(root string) Module {
 		},
 		"persist":           std("", "internal/hooks"),
 		"persist/filestore": std("", "persist"),
+		"dedup":             std(),
 		"codec":             std(""),
 		"remote":            std("", "codec", "internal/engine", "internal/hooks", "internal/remoting"),
 		"cluster":           std("", "codec", "internal/hooks"),
