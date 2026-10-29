@@ -250,7 +250,9 @@ func (s *System) offer(r routeRequest) outcome {
 	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, size: r.size, kind: entrySent}
 	var out mailbox.Outcome
 	var evicted entry
-	if r.wait != nil && s.eng.Blocking && !s.eng.Scheduler.InTurn() && c.blocksSenders() {
+	// InTurn comes last: on the production engine it reads the caller's goroutine ID from its
+	// stack, which only a BlockSender mailbox needs.
+	if r.wait != nil && s.eng.Blocking && c.blocksSenders() && !s.eng.Scheduler.InTurn() {
 		var err error
 		if out, err = s.offerWaiting(c, owner, r, e, shed); err != nil {
 			// The context ended before the entry got a slot: a rejection, never reported to
