@@ -9,93 +9,107 @@ import (
 	"testing"
 )
 
-// dash is the cell of a library with no result, an em dash.
-const dash = "\u2014"
-
 // wantIntro is the sentence under the title of every report.
-const wantIntro = "Each number is the median of the runs in [`results/baseline.txt`](results/baseline.txt), " +
-	"which the `bench` CI job measured on the configuration below. " +
-	"A cell that holds `" + dash + "` has no result."
+const wantIntro = "Each number is the median of the benchmark runs in [`results/baseline.txt`](results/baseline.txt), " +
+	"and `n/a` marks a library with no result for that row."
 
-// reportRun runs budget report on a baseline made of lines and returns the exit code and outputs.
-func reportRun(t *testing.T, lines ...string) (code int, stdout, stderr string) {
-	t.Helper()
-	return budgetRun(t, "report", writeFile(t, "baseline.txt", lines...))
+// wantHeaderIntro is the sentence before the header lines of the baseline.
+const wantHeaderIntro = "The header lines of that file give the platform, the commit and the date:"
+
+// wantFamilyIntro is the sentence under the heading of each family.
+var wantFamilyIntro = map[string]string{
+	"PingPong":    "Pairs of actors exchange `Ping` and `Pong` messages; one op is one message, and `pairs=procs` runs `GOMAXPROCS` pairs.",
+	"FanOut":      "One producer sends items to many consumers under credit flow control; one op is one item.",
+	"IdleActors":  "Each op spawns `n` idle actors and sends each one a `Hello` message; `B/actor` is the heap growth per actor.",
+	"SendLatency": "One outside goroutine sends to an echo actor; one op is one send, and latency runs from the send call to the start of the receive function.",
+	"AskLatency":  "Callers ask an echo actor and wait for the reply; one op is one ask, and `callers=procs` runs `GOMAXPROCS` callers in parallel.",
+	"AskPipe":     "Only lockstep runs this workload: one actor asks another with `Ask` and routes the reply to its own mailbox with `Pipe`; one op is one round trip.",
+	"SimSeeds":    "Only lockstep runs this workload: `sim.Simulate` runs one simulated world per seed, and one op is one seed.",
 }
 
-// wantTable returns the expected heading and table of one family and unit. Each row is written
-// without its outer bars, and NONE stands for the cell of a library with no result.
-func wantTable(family, unit string, rows ...string) string {
-	text := "### " + family + " (" + unit + ")\n\n" +
+// wantTable returns the expected lead-in and table of one unit, as one paragraph. Each row is
+// written without its outer bars.
+func wantTable(unit string, rows ...string) string {
+	text := "Median `" + unit + "`:\n\n" +
 		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
 		"|---|---:|---:|---:|---:|"
 	for _, row := range rows {
-		text += "\n| " + strings.ReplaceAll(row, "NONE", dash) + " |"
+		text += "\n| " + row + " |"
 	}
 	return text
 }
 
-// wantReport checks that report succeeded and printed the title, the sentence, the header block
-// (omitted when empty) and the tables, as paragraphs separated by one blank line.
-func wantReport(t *testing.T, code int, stdout, stderr, header string, tables ...string) {
+// wantSection returns the expected heading, sentence and tables of one family, as paragraphs.
+func wantSection(family string, tables ...string) string {
+	return strings.Join(append([]string{"## " + family, wantFamilyIntro[family]}, tables...), "\n\n")
+}
+
+// wantCodeBlock returns the expected header lines of the baseline in a code block.
+func wantCodeBlock(lines ...string) string {
+	return wantHeaderIntro + "\n\n```text\n" + strings.Join(lines, "\n") + "\n```"
+}
+
+// wantReport checks that budget report succeeds on a baseline made of results and prints the
+// title, the sentence under it, the header block (omitted when empty) and the sections, as
+// paragraphs separated by one blank line.
+func wantReport(t *testing.T, results []string, header string, sections ...string) {
 	t.Helper()
 	blocks := []string{"# Benchmark results", wantIntro}
 	if header != "" {
 		blocks = append(blocks, header)
 	}
-	want := strings.Join(append(blocks, tables...), "\n\n") + "\n"
-	if code != 0 || stdout != want || stderr != "" {
-		t.Errorf("exit code %d, stdout:\n%s\nstderr %q; want 0, stdout:\n%s\nand no stderr", code, stdout, stderr, want)
-	}
+	want := strings.Join(append(blocks, sections...), "\n\n") + "\n"
+	wantRun(t, []string{"report", writeFile(t, "baseline.txt", results...)}, 0, want, "")
 }
 
-// codeBlock returns the expected header block with lines, one per line.
-func codeBlock(lines ...string) string {
-	return "```text\n" + strings.Join(lines, "\n") + "\n```"
-}
-
-// TestATBEN11Report covers the report half of AT-BEN-11: the PingPong table of the fixture
-// baseline has the columns lockstep, protoactor, hollywood and goakt and a row pairs=1 with
-// 100, 80, 60 and 90, and the header holds goos, goarch, cpu, commit and date (BEN-180).
+// TestATBEN11Report covers the report half of AT-BEN-11: the PingPong ns/op table of the fixture
+// baseline has the columns lockstep, protoactor, hollywood and goakt and a row pairs=1 with 100,
+// 80, 60 and 90, and the header holds goos, goarch, cpu, commit and date (BEN-180). It compares
+// the whole document.
 func TestATBEN11Report(t *testing.T) {
-	// NONE stands for the cell of a library with no result.
-	want := "# Benchmark results\n" + `
-Each number is the median of the runs in [` + "`results/baseline.txt`" + `](results/baseline.txt), which the ` + "`bench`" + ` CI job measured on the configuration below. A cell that holds ` + "`" + dash + "`" + ` has no result.
-
-` + "```text" + `
-goos: linux
-goarch: amd64
-cpu: AMD EPYC 7763 64-Core Processor
-# commit: 0f3a9c1d5b7e2a4c6d8e0f1a2b3c4d5e6f708192
-# date: 2026-11-03
-` + "```" + `
-
-### PingPong (ns/op)
-
-| parameter | lockstep | protoactor | hollywood | goakt |
-|---|---:|---:|---:|---:|
-| pairs=1 | 100 | 80 | 60 | 90 |
-
-### PingPong (allocs/op)
-
-| parameter | lockstep | protoactor | hollywood | goakt |
-|---|---:|---:|---:|---:|
-| pairs=1 | 1 | 2 | 2 | 3 |
-
-### SendLatency (p99-ns)
-
-| parameter | lockstep | protoactor | hollywood | goakt |
-|---|---:|---:|---:|---:|
-| - | 900 | 700 | 600 | NONE |
-
-### SimSeeds (ns/op)
-
-| parameter | lockstep | protoactor | hollywood | goakt |
-|---|---:|---:|---:|---:|
-| workload=pingpong | 20000 | NONE | NONE | NONE |
-`
-	want = strings.ReplaceAll(want, "NONE", dash)
+	want := strings.Join([]string{
+		"# Benchmark results",
+		"Each number is the median of the benchmark runs in [`results/baseline.txt`](results/baseline.txt), " +
+			"and `n/a` marks a library with no result for that row.",
+		"The header lines of that file give the platform, the commit and the date:",
+		"```text\n" +
+			"goos: linux\n" +
+			"goarch: amd64\n" +
+			"cpu: AMD EPYC 7763 64-Core Processor\n" +
+			"# commit: 0f3a9c1d5b7e2a4c6d8e0f1a2b3c4d5e6f708192\n" +
+			"# date: 2026-11-03\n" +
+			"```",
+		"## PingPong",
+		"Pairs of actors exchange `Ping` and `Pong` messages; one op is one message, and `pairs=procs` runs `GOMAXPROCS` pairs.",
+		"Median `ns/op`:",
+		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
+			"|---|---:|---:|---:|---:|\n" +
+			"| pairs=1 | 100 | 80 | 60 | 90 |",
+		"Median `allocs/op`:",
+		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
+			"|---|---:|---:|---:|---:|\n" +
+			"| pairs=1 | 1 | 2 | 2 | 3 |",
+		"## IdleActors",
+		"Each op spawns `n` idle actors and sends each one a `Hello` message; `B/actor` is the heap growth per actor.",
+		"Median `B/actor`:",
+		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
+			"|---|---:|---:|---:|---:|\n" +
+			"| n=10000 | 100 | n/a | n/a | n/a |",
+		"## SendLatency",
+		"One outside goroutine sends to an echo actor; one op is one send, and latency runs from the send call to the start of the receive function.",
+		"Median `p99-ns`:",
+		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
+			"|---|---:|---:|---:|---:|\n" +
+			"| - | 900 | 700 | 600 | n/a |",
+		"## SimSeeds",
+		"Only lockstep runs this workload: `sim.Simulate` runs one simulated world per seed, and one op is one seed.",
+		"Median `ns/op`:",
+		"| parameter | lockstep | protoactor | hollywood | goakt |\n" +
+			"|---|---:|---:|---:|---:|\n" +
+			"| workload=pingpong | 20000 | n/a | n/a | n/a |",
+	}, "\n\n") + "\n"
 	wantRun(t, []string{"report", baseline}, 0, want, "")
+	wantStable(t, "report", baseline)
 
 	// AT-BEN-11 names the columns and the row; they are in the document as written.
 	for _, text := range []string{
@@ -112,7 +126,7 @@ cpu: AMD EPYC 7763 64-Core Processor
 // leaves out (BEN-180). The baseline lists the families in reverse, a larger parameter before a
 // smaller one and the libraries out of order, and holds results the report does not show.
 func TestReportLayout(t *testing.T) {
-	code, stdout, stderr := reportRun(t,
+	wantReport(t, []string{
 		"goos: linux",
 		"BenchmarkSimSeeds/workload=crash3-4 50 30000 ns/op 33.33 seeds/s",
 		"BenchmarkSimSeeds/workload=pingpong-4 50 20000 ns/op 50.00 seeds/s",
@@ -129,51 +143,62 @@ func TestReportLayout(t *testing.T) {
 		"BenchmarkCalibrate-4 10 1000 ns/op",
 		"BenchmarkOther/lib=lockstep 10 1 ns/op",
 		"BenchmarkPingPong/lib=lockstep/pairs=procs-4 100 25 ns/op 40000000 msgs/s 8 B/op 0 allocs/op",
-	)
-	wantReport(t, code, stdout, stderr, codeBlock("goos: linux"),
-		wantTable("PingPong", "ns/op", "pairs=procs | 25 | NONE | NONE | NONE"),
-		wantTable("PingPong", "allocs/op", "pairs=procs | 0 | NONE | NONE | NONE"),
-		wantTable("FanOut", "ns/op",
-			"consumers=1024 | 70 | NONE | 50 | NONE",
-			"consumers=16 | 60 | NONE | NONE | NONE"),
-		wantTable("FanOut", "allocs/op",
-			"consumers=1024 | 1 | NONE | 2 | NONE",
-			"consumers=16 | 1 | NONE | NONE | NONE"),
-		wantTable("IdleActors", "ns/op",
-			"n=100000 | NONE | NONE | NONE | 900",
-			"n=10000 | 120 | NONE | NONE | 100"),
-		wantTable("IdleActors", "B/actor",
-			"n=100000 | NONE | NONE | NONE | 310",
-			"n=10000 | 200 | NONE | NONE | 300"),
-		wantTable("IdleActors", "allocs/op",
-			"n=100000 | NONE | NONE | NONE | 4",
-			"n=10000 | 3 | NONE | NONE | 4"),
-		wantTable("AskLatency", "ns/op",
-			"callers=1 | 300 | 500 | NONE | NONE",
-			"callers=procs | 350 | NONE | NONE | NONE"),
-		wantTable("AskLatency", "p50-ns",
-			"callers=1 | 200 | 400 | NONE | NONE",
-			"callers=procs | 250 | NONE | NONE | NONE"),
-		wantTable("AskLatency", "p99-ns",
-			"callers=1 | 600 | 700 | NONE | NONE",
-			"callers=procs | 650 | NONE | NONE | NONE"),
-		wantTable("AskLatency", "allocs/op",
-			"callers=1 | 1 | 3 | NONE | NONE",
-			"callers=procs | 1 | NONE | NONE | NONE"),
-		wantTable("AskPipe", "ns/op", "- | 4000 | NONE | NONE | NONE"),
-		wantTable("AskPipe", "p50-ns", "- | 3000 | NONE | NONE | NONE"),
-		wantTable("AskPipe", "p99-ns", "- | 9000 | NONE | NONE | NONE"),
-		wantTable("AskPipe", "allocs/op", "- | 5 | NONE | NONE | NONE"),
-		wantTable("SimSeeds", "ns/op",
-			"workload=crash3 | 30000 | NONE | NONE | NONE",
-			"workload=pingpong | 20000 | NONE | NONE | NONE"),
+	}, wantCodeBlock("goos: linux"),
+		wantSection("PingPong",
+			wantTable("ns/op", "pairs=procs | 25 | n/a | n/a | n/a"),
+			wantTable("allocs/op", "pairs=procs | 0 | n/a | n/a | n/a"),
+		),
+		wantSection("FanOut",
+			wantTable("ns/op",
+				"consumers=1024 | 70 | n/a | 50 | n/a",
+				"consumers=16 | 60 | n/a | n/a | n/a"),
+			wantTable("allocs/op",
+				"consumers=1024 | 1 | n/a | 2 | n/a",
+				"consumers=16 | 1 | n/a | n/a | n/a"),
+		),
+		wantSection("IdleActors",
+			wantTable("ns/op",
+				"n=100000 | n/a | n/a | n/a | 900",
+				"n=10000 | 120 | n/a | n/a | 100"),
+			wantTable("B/actor",
+				"n=100000 | n/a | n/a | n/a | 310",
+				"n=10000 | 200 | n/a | n/a | 300"),
+			wantTable("allocs/op",
+				"n=100000 | n/a | n/a | n/a | 4",
+				"n=10000 | 3 | n/a | n/a | 4"),
+		),
+		wantSection("AskLatency",
+			wantTable("ns/op",
+				"callers=1 | 300 | 500 | n/a | n/a",
+				"callers=procs | 350 | n/a | n/a | n/a"),
+			wantTable("p50-ns",
+				"callers=1 | 200 | 400 | n/a | n/a",
+				"callers=procs | 250 | n/a | n/a | n/a"),
+			wantTable("p99-ns",
+				"callers=1 | 600 | 700 | n/a | n/a",
+				"callers=procs | 650 | n/a | n/a | n/a"),
+			wantTable("allocs/op",
+				"callers=1 | 1 | 3 | n/a | n/a",
+				"callers=procs | 1 | n/a | n/a | n/a"),
+		),
+		wantSection("AskPipe",
+			wantTable("ns/op", "- | 4000 | n/a | n/a | n/a"),
+			wantTable("p50-ns", "- | 3000 | n/a | n/a | n/a"),
+			wantTable("p99-ns", "- | 9000 | n/a | n/a | n/a"),
+			wantTable("allocs/op", "- | 5 | n/a | n/a | n/a"),
+		),
+		wantSection("SimSeeds",
+			wantTable("ns/op",
+				"workload=crash3 | 30000 | n/a | n/a | n/a",
+				"workload=pingpong | 20000 | n/a | n/a | n/a"),
+		),
 	)
 }
 
 // TestReportMedians checks that each cell is the median over all samples, printed with the
 // fewest digits that represent it.
 func TestReportMedians(t *testing.T) {
-	code, stdout, stderr := reportRun(t,
+	wantReport(t, []string{
 		"BenchmarkPingPong/lib=lockstep/pairs=1-4 100 300 ns/op 1 allocs/op",
 		"BenchmarkPingPong/lib=lockstep/pairs=1-4 100 100 ns/op 1 allocs/op",
 		"BenchmarkPingPong/lib=lockstep/pairs=1-4 100 150 ns/op 1 allocs/op",
@@ -181,21 +206,23 @@ func TestReportMedians(t *testing.T) {
 		"BenchmarkPingPong/lib=protoactor/pairs=1-4 100 0.1 ns/op 0 allocs/op",
 		"BenchmarkPingPong/lib=protoactor/pairs=1-4 100 0.2 ns/op 0 allocs/op",
 		"BenchmarkPingPong/lib=protoactor/pairs=1-4 100 12345.678 ns/op 0 allocs/op",
-	)
-	wantReport(t, code, stdout, stderr, "",
-		wantTable("PingPong", "ns/op", "pairs=1 | 200 | 0.2 | NONE | NONE"),
-		wantTable("PingPong", "allocs/op", "pairs=1 | 1 | 0 | NONE | NONE"),
+	}, "",
+		wantSection("PingPong",
+			wantTable("ns/op", "pairs=1 | 200 | 0.2 | n/a | n/a"),
+			wantTable("allocs/op", "pairs=1 | 1 | 0 | n/a | n/a"),
+		),
 	)
 }
 
 // TestReportHeader checks the header: the first value of each configuration line and comment,
-// in the order goos, goarch, cpu, commit, date, and no code block when the baseline has none.
+// in the order goos, goarch, cpu, commit, date, and no sentence or code block when the baseline
+// has none.
 func TestReportHeader(t *testing.T) {
 	result := "BenchmarkSimSeeds/workload=w 50 20000 ns/op"
-	simSeeds := wantTable("SimSeeds", "ns/op", "workload=w | 20000 | NONE | NONE | NONE")
+	simSeeds := wantSection("SimSeeds", wantTable("ns/op", "workload=w | 20000 | n/a | n/a | n/a"))
 
 	t.Run("first values, fixed order", func(t *testing.T) {
-		code, stdout, stderr := reportRun(t,
+		wantReport(t, []string{
 			"# runner: ubuntu-latest",
 			"# date: 2026-11-04",
 			"cpu: first cpu  ",
@@ -206,25 +233,21 @@ func TestReportHeader(t *testing.T) {
 			"cpu: second cpu",
 			"# commit: 1234567",
 			result,
-		)
-		wantReport(t, code, stdout, stderr,
-			codeBlock("goos: darwin", "goarch: arm64", "cpu: first cpu", "# commit: abcdef0", "# date: 2026-11-04"),
+		}, wantCodeBlock("goos: darwin", "goarch: arm64", "cpu: first cpu", "# commit: abcdef0", "# date: 2026-11-04"),
 			simSeeds)
 	})
 
 	t.Run("lines the baseline lacks", func(t *testing.T) {
-		code, stdout, stderr := reportRun(t, "goarch: arm64", "# date: 2026-11-04", result)
-		wantReport(t, code, stdout, stderr, codeBlock("goarch: arm64", "# date: 2026-11-04"), simSeeds)
+		wantReport(t, []string{"goarch: arm64", "# date: 2026-11-04", result},
+			wantCodeBlock("goarch: arm64", "# date: 2026-11-04"), simSeeds)
 	})
 
 	t.Run("no header at all", func(t *testing.T) {
-		code, stdout, stderr := reportRun(t, "pkg: x", "# note: nothing", "# commit:abc", result)
-		wantReport(t, code, stdout, stderr, "", simSeeds)
+		wantReport(t, []string{"pkg: x", "# note: nothing", "# commit:abc", result}, "", simSeeds)
 	})
 
 	t.Run("no results", func(t *testing.T) {
-		code, stdout, stderr := reportRun(t, "goos: linux")
-		wantReport(t, code, stdout, stderr, codeBlock("goos: linux"))
+		wantReport(t, []string{"goos: linux"}, wantCodeBlock("goos: linux"))
 	})
 }
 

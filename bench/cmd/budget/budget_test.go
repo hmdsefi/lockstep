@@ -48,6 +48,21 @@ func wantRun(t *testing.T, args []string, wantCode int, wantStdout, wantStderr s
 	}
 }
 
+// wantStable checks that the command prints the same bytes on every run, which a committed file
+// regenerated from its input depends on.
+func wantStable(t *testing.T, args ...string) {
+	t.Helper()
+	_, first, _ := budgetRun(t, args...)
+	if first == "" {
+		t.Fatalf("budget %s printed nothing", strings.Join(args, " "))
+	}
+	for range 10 {
+		if _, again, _ := budgetRun(t, args...); again != first {
+			t.Fatalf("budget %s printed different output on another run:\n%s\nthen:\n%s", strings.Join(args, " "), first, again)
+		}
+	}
+}
+
 // lines joins lines, each ending in a newline.
 func lines(l ...string) string {
 	if len(l) == 0 {

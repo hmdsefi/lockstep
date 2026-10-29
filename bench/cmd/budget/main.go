@@ -33,10 +33,11 @@
 // check exits 0 when every budget holds or the budgets file does not exist, 1 when a budget is
 // exceeded, and 2 on malformed input or a missing result.
 //
-// derive reads a baseline, a results file with the comment lines # commit: <sha>, # date:
-// <YYYY-MM-DD> and # runner: <label> in front, and writes the budgets file for it to stdout. It
-// writes a budget for every lockstep result, and for every BenchmarkSimSeeds result, in the
-// units below. It writes no budget for msgs/s, seeds/s and ns/actor, which restate ns/op.
+// derive reads a baseline and writes the budgets file for it to stdout. A baseline is a results
+// file with the comment lines # commit: <sha>, # date: <YYYY-MM-DD> and # runner: <label> in
+// front. derive writes a budget for every lockstep result and every BenchmarkSimSeeds result, in
+// the units below, and none for msgs/s, seeds/s and ns/actor, which restate ns/op. A result in a
+// rel unit that has no reference makes the baseline malformed.
 //
 //	allocs/op          abs   the median, rounded up to an integer
 //	B/op, B/actor      abs   the median plus 10 percent, rounded up to an integer
@@ -47,13 +48,13 @@
 // The reference of a rel budget is the same benchmark in another library, the one with the lowest
 // median in that unit; protoactor wins a tie over hollywood, and hollywood over goakt. The
 // reference of BenchmarkAskPipe and BenchmarkSimSeeds, which no other library runs, is
-// BenchmarkCalibrate ns/op. A result that has no reference is a malformed baseline. The budgets
-// come out sorted by name, then by unit.
+// BenchmarkCalibrate ns/op. The budgets come out sorted by name, then by unit.
 //
-// report reads a baseline and writes a Markdown document to stdout. It holds the goos, goarch and
-// cpu lines and the # commit: and # date: lines of the baseline, then one table for each
-// benchmark family and unit, with a row for each parameter value and a column for each library.
-// Each cell is a median.
+// report reads a baseline and writes a Markdown document to stdout: a title, the goos, goarch and
+// cpu lines and the # commit: and # date: lines of the baseline, then a section for each
+// benchmark family with a table for each unit. A table has a row for each parameter value and a
+// column for each library, in the order lockstep, protoactor, hollywood, goakt. Each cell is a
+// median, and n/a marks a library with no result.
 //
 // derive and report exit 0 on success and 2 on a malformed baseline or a usage error.
 package main
