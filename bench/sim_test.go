@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -307,14 +306,14 @@ func TestATBEN07SeedsOut(t *testing.T) {
 // LOCKSTEP_BENCH_OUT=out and the variables env, which are NAME=value pairs, and fails t unless the
 // child passes and runs the test. The child gets the parent's environment without
 // LOCKSTEP_BENCH_OUT and without the variables simRunChanging names, so a variable set around the
-// parent cannot change what a case measures. The child is built without -race (TestSimSeeds skips
-// under it), even if GOFLAGS asks for it, and gets an explicit timeout.
+// parent cannot change what a case measures. goTestCommand builds it without -race (TestSimSeeds
+// skips under it) and without -v, whatever GOFLAGS says, with a timeout that ends before the
+// parent's; every case sets -count in flags.
 func goTestSimSeeds(t *testing.T, out string, flags []string, env ...string) {
 	t.Helper()
-	args := slices.Concat([]string{"test", "-race=false", "-run", "^TestSimSeeds$"}, flags, []string{"-timeout", "10m", "."})
-	cmd := exec.Command("go", args...)
+	cmd := goTestCommand(t, slices.Concat([]string{"-run", "^TestSimSeeds$"}, flags), ".")
 	cmd.Env = slices.Concat(simWithoutRunChanging(os.Environ()), []string{seedsOutEnv + "=" + out}, env)
-	desc := "go " + strings.Join(args, " ")
+	desc := strings.Join(cmd.Args, " ")
 	if len(env) > 0 {
 		desc += " with " + strings.Join(env, " ")
 	}
