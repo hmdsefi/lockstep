@@ -125,6 +125,69 @@ func TestInTurn(t *testing.T) {
 	}
 }
 
+// countStackWalks makes goroutineID count its runtime.Stack calls until the test ends, and
+// returns the count.
+func countStackWalks(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	walk := func(buf []byte) int {
+		n.Add(1)
+		return runtime.Stack(buf, false)
+	}
+	prev := stackHook.Swap(&walk)
+	t.Cleanup(func() { stackHook.Store(prev) })
+	return &n
+}
+
+// TestInTurnIdleSkipsStack covers InTurn (SCH-115) while no worker runs a turn or a callback: it
+// reports false without reading the caller's goroutine ID, which costs a walk of the caller's
+// stack.
+func TestInTurnIdleSkipsStack(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 2})
+	waitFor(t, time.Second, "2 parked workers", func() bool { return e.parked() == 2 })
+	walks := countStackWalks(t)
+	if e.s.InTurn() {
+		t.Error("InTurn() on the test goroutine = true, want false")
+	}
+	if n := walks.Load(); n != 0 {
+		t.Errorf("InTurn() with every worker idle walked the stack %d times, want 0", n)
+	}
+}
+
+// TestInTurnWhileWorkerBusy covers InTurn (SCH-115) while a worker runs a turn: false on the test
+// goroutine, which the busy worker makes InTurn check by goroutine ID, and true on the worker.
+func TestInTurnWhileWorkerBusy(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 2})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var inside atomic.Int32 // 0 not run, 1 false, 2 true
+	a := newFake(t, 0)
+	a.onTurn = func(*fakeActor, int) {
+		close(entered)
+		<-release
+		if e.s.InTurn() {
+			inside.Store(2)
+		} else {
+			inside.Store(1)
+		}
+	}
+	a.add()
+	e.s.Ready(a)
+	<-entered
+	walks := countStackWalks(t)
+	outside := e.s.InTurn()
+	close(release)
+	if outside {
+		t.Error("InTurn() on the test goroutine while a worker is busy = true, want false")
+	}
+	if n := walks.Load(); n == 0 {
+		t.Error("InTurn() while a worker is busy did not check the goroutine ID")
+	}
+	waitFor(t, time.Second, "the turn", func() bool { return a.processed.Load() == 1 })
+	if got := inside.Load(); got != 2 {
+		t.Errorf("InTurn() inside RunTurn: state %d, want 2 (true)", got)
+	}
+}
+
 // TestYieldRunsAgain covers the yield path of SCH-080: a turn that uses up its budget is queued
 // again until the actor has no work left.
 func TestYieldRunsAgain(t *testing.T) {
