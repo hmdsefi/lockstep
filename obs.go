@@ -23,9 +23,10 @@ func WithLogger(l *slog.Logger) Option {
 // systemLogger returns the system logger of a system built on eng with cfg (OBS-010): WithLogger's
 // value if non-nil; otherwise slog.Default() at the time of the call on a blocking engine (New's
 // production engine, the local engine), and a logger that discards on any other (the simulation
-// and manual engines), so an actor there writes nothing outside the simulation (ACT-130,
-// OBS-155). newSystem calls it once, so a later slog.SetDefault does not change a running
-// system's logger.
+// and manual engines), so an actor there writes nothing outside the simulation (ACT-130). sim
+// passes WithLogger with its kernel-log handler, so in simulation the actor loggers write to the
+// node's kernel log (OBS-155, OBS-160). newSystem calls it once, so a later slog.SetDefault does
+// not change a running system's logger.
 func systemLogger(cfg *systemConfig, eng engine.Engine) *slog.Logger {
 	switch {
 	case cfg.log != nil:

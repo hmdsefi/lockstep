@@ -50,6 +50,10 @@ lockstep includes:
   the reference journal and snapshot store. The same actor code runs on the operating system's files
   in production and on a simulated disk in tests, where crashes, torn writes, and failed syncs
   exercise the real recovery code.
+- **Delivery helpers.** `lockstep/dedup` holds the state that handling duplicate and stale messages
+  needs: a `Window` of idempotency keys and tombstones, a `Replies` cache of first replies, and a
+  `Versions` gate per entity. Each value is bounded by age and count, and a persistent actor keeps
+  it in its snapshots.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
@@ -688,8 +692,10 @@ Three planted bugs show what a failing seed looks like.
 lockstep delivers each message at most once, in send order between one sender and one receiver,
 and never retries. [Message delivery](docs/delivery.md) explains what your actors must handle
 themselves: a retried request that arrives twice, and a Cancel that arrives before its Create.
-[`examples/orders`](examples/orders/README.md) is an order service whose simulation tests find
-both bugs from a seed and pin the fixes.
+Package [`dedup`](dedup) holds the state for that: a `Window` of keys and tombstones, a `Replies`
+cache of first replies, and a `Versions` gate per entity.
+[`examples/orders`](examples/orders/README.md) is an order service that keeps its delivery state
+in `dedup` types, and whose simulation tests find both bugs from a seed and pin the fixes.
 
 ## Why the name "lockstep"
 
@@ -729,11 +735,12 @@ github.com/hmdsefi/lockstep          actor runtime
 ├── lockstep.New()                   production engine for your program
 ├── lockstep/persist                 event-sourced actors
 │   └── persist/filestore            their journal and snapshot store, in files
+├── lockstep/dedup                   state for duplicate and stale messages
 └── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
 ```
 
-`persist` and `persist/filestore` do not import faultline either. `sim` gives them a simulated disk
-through `(*Sim).Volume`.
+`persist`, `persist/filestore` and `dedup` do not import faultline either. `sim` gives the first two
+a simulated disk through `(*Sim).Volume`.
 
 ## Limitations
 
