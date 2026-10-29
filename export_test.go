@@ -3,6 +3,8 @@
 
 package lockstep
 
+import "slices"
+
 // UserGuardianUID returns the uid of sys's user guardian, for the external tests.
 func UserGuardianUID(sys *System) uint64 { return sys.user.UID() }
 
@@ -52,3 +54,7 @@ func ActorLoggerBuilt[M any](sys *System, pid PID[M]) bool {
 // SetLogOff removes (true) or restores (false) the logging calls of sys's runtime log events, so
 // AT-OBS-06 can measure what they cost.
 func SetLogOff(sys *System, off bool) { sys.logOff.Store(off) }
+
+// DeadLetterReasons returns the dead-letter reasons in the order the code lists them, the order of
+// the reason label values of the dead-letter counter, for the spelling test of AT-OBS-16.
+func DeadLetterReasons() []string { return slices.Clone(deadReasons[:]) }

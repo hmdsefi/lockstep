@@ -15,20 +15,15 @@ import (
 )
 
 // The runtime log events of OBS-060. Each event has one helper, which its owner calls once per
-// occurrence at its decision point, holding no lockstep lock (a handler is user code). Only a
-// system New built logs them: on any other system, simulation's included, events is nil and
-// every helper returns after one nil check (OBS-155). A helper asks Enabled before it builds an
-// attribute, so a disabled level allocates nothing (OBS-070). Actor events carry node, path and
-// uid first, system events node first (OBS-020); the actor attributes are passed explicitly
-// rather than through the actor's logger, which Spawn never builds (OBS-030).
-
-// The reason attribute of message dropped (OBS-145).
-const (
-	dropNewest          = "drop-newest"
-	dropOldest          = "drop-oldest"
-	dropLateReply       = "late-reply"
-	dropCancelledEffect = "cancelled-effect"
-)
+// occurrence at its decision point, holding no lockstep lock (a handler and a Counter are user
+// code). A helper of an event that has a counter (OBS-120) adds 1 to it first, so a level that is
+// not enabled never skips counting; a system without metrics pays one nil check (OBS-110). Only a
+// system New built logs them: on any other system, simulation's included, events is nil and every
+// helper returns after one nil check (OBS-155), as it never counts (obs is nil). A helper asks
+// Enabled before it builds an attribute, so a disabled level allocates nothing (OBS-070). Actor
+// events carry node, path and uid first, system events node first (OBS-020); the actor attributes
+// are passed explicitly rather than through the actor's logger, which Spawn never builds
+// (OBS-030).
 
 // eventLog returns the logger for an event at level, or nil when the event is not logged: the
 // system was not built by New, a test removed the logging calls (logOff, AT-OBS-06), or the
@@ -89,9 +84,10 @@ func (s *System) logRestartIntensity(a Address, limits supervise.Limits) {
 	)
 }
 
-// logActorRestarted logs actor restarted for the actor a, whose incarnation ended for a restart
-// caused by err (SUP-190), where lockstep.restart is recorded.
+// logActorRestarted counts the restart and logs actor restarted for the actor a, whose incarnation
+// ended for a restart caused by err (SUP-190), where lockstep.restart is recorded.
 func (s *System) logActorRestarted(a Address, err error) {
+	s.countRestart()
 	l := s.eventLog(slog.LevelInfo)
 	if l == nil {
 		return
@@ -141,9 +137,10 @@ func (s *System) logEffectPanicked(a Address, err error) {
 	)
 }
 
-// logMailboxFull logs mailbox full for a send that found the mailbox of c, the actor at owner,
-// full (MBX-090): once per send, a BlockSender send when it starts to wait.
+// logMailboxFull counts and logs mailbox full for a send that found the mailbox of c, the actor at
+// owner, full (MBX-090): once per send, a BlockSender send when it starts to wait.
 func (s *System) logMailboxFull(c actorCell, owner Address) {
+	s.countMailboxFull(c)
 	l := s.eventLog(slog.LevelDebug)
 	if l == nil {
 		return
@@ -151,9 +148,11 @@ func (s *System) logMailboxFull(c actorCell, owner Address) {
 	logActorEvent(l, slog.LevelDebug, "mailbox full", owner, slog.String("policy", c.policy().String()))
 }
 
-// logMessageShed logs message shed for a message to c, the actor at owner, that its mailbox
-// treated as full because admission refused it with err, or c is stuck (OVL-120, OVL-520).
+// logMessageShed counts and logs message shed for a message to c, the actor at owner, that its
+// mailbox treated as full because admission refused it with err, or c is stuck (OVL-120, OVL-520).
+// A shed message is counted as shed only, never as a full mailbox or a drop.
 func (s *System) logMessageShed(c actorCell, owner Address, err error) {
+	s.countShed(c)
 	l := s.eventLog(slog.LevelDebug)
 	if l == nil {
 		return
@@ -164,27 +163,29 @@ func (s *System) logMessageShed(c actorCell, owner Address, err error) {
 	)
 }
 
-// logMessageDropped logs message dropped with reason for a message or result discarded on its
-// way to a: a mailbox's drop policy, a reply to an ask that resolved already (a is the ask
+// logMessageDropped counts and logs message dropped with reason for a message or result discarded
+// on its way to a: a mailbox's drop policy, a reply to an ask that resolved already (a is the ask
 // address), or the result of an effect a stop or restart cancelled.
-func (s *System) logMessageDropped(a Address, reason string) {
+func (s *System) logMessageDropped(a Address, reason dropReason) {
+	s.countDrop(reason)
 	l := s.eventLog(slog.LevelDebug)
 	if l == nil {
 		return
 	}
-	logActorEvent(l, slog.LevelDebug, "message dropped", a, slog.String("reason", reason))
+	logActorEvent(l, slog.LevelDebug, "message dropped", a, slog.String("reason", reason.String()))
 }
 
-// logDeadLetter logs dead letter for msg, sent to to, which went to dead letters with reason
-// (MBX-150).
-func (s *System) logDeadLetter(to Address, reason string, msg any) {
+// logDeadLetter counts and logs dead letter for msg, sent to to, which went to dead letters with
+// reason (MBX-150).
+func (s *System) logDeadLetter(to Address, reason deadReason, msg any) {
+	s.countDeadLetter(reason)
 	l := s.eventLog(slog.LevelDebug)
 	if l == nil {
 		return
 	}
 	s.logSystemEvent(l, slog.LevelDebug, "dead letter",
 		slog.String("to", to.String()),
-		slog.String("reason", reason),
+		slog.String("reason", reason.String()),
 		slog.String("type", fmt.Sprintf("%T", msg)),
 	)
 }

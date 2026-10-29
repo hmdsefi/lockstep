@@ -31,6 +31,8 @@ type systemConfig struct {
 
 	log *slog.Logger // WithLogger's logger; nil means slog.Default() when the system is built (OBS-010)
 
+	metrics Metrics // WithMetrics's backend; nil means metrics are off (OBS-110)
+
 	// The overload options (OVL §4.1). The cap and the estimates act on every engine; the admission
 	// thresholds, the watchdog timeout and the goroutine bound act only in a system New builds,
 	// whose sampler, watchdog and goroutine monitor read them (OVL-300, OVL-500, OVL-600, OVL-230).

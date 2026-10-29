@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -508,4 +510,118 @@ func spawnStartedManual(t *testing.T, sys *lockstep.System, eng *enginetest.Engi
 	if !ran {
 		t.Fatal("Started did not run")
 	}
+}
+
+// recSeries is one series a recMetrics registered. A counter is its own Counter, so Add counts in
+// n; a gauge keeps its function.
+type recSeries struct {
+	gauge  bool
+	name   string
+	help   string
+	labels []lockstep.MetricLabel
+	n      atomic.Uint64
+	fn     func() int64
+}
+
+// Add makes a recSeries the Counter its recMetrics hands out.
+func (s *recSeries) Add(n uint64) { s.n.Add(n) }
+
+// String returns the series as name{label="value",...}, the labels in registration order.
+func (s *recSeries) String() string {
+	var b strings.Builder
+	b.WriteString(s.name)
+	b.WriteByte('{')
+	for i, l := range s.labels {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%s=%q", l.Name, l.Value)
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// rest returns the labels after the first, node, as name and value strings in turn.
+func (s *recSeries) rest() []string {
+	var kv []string
+	for _, l := range s.labels[min(1, len(s.labels)):] {
+		kv = append(kv, l.Name, l.Value)
+	}
+	return kv
+}
+
+// recMetrics is the recording backend of OBS §10: it stores every registration in order and keeps
+// an atomic counter per counter series. It is safe for concurrent use.
+type recMetrics struct {
+	mu     sync.Mutex
+	series []*recSeries
+	late   *testing.T // set by failOnCall: a registration after that point fails it
+}
+
+var _ lockstep.Metrics = (*recMetrics)(nil)
+
+// Counter records the registration of a counter series and returns its Counter.
+func (m *recMetrics) Counter(name, help string, labels ...lockstep.MetricLabel) lockstep.Counter {
+	s := &recSeries{name: name, help: help, labels: slices.Clone(labels)}
+	m.register(s)
+	return s
+}
+
+// GaugeFunc records the registration of a gauge series.
+func (m *recMetrics) GaugeFunc(name, help string, fn func() int64, labels ...lockstep.MetricLabel) {
+	m.register(&recSeries{gauge: true, name: name, help: help, labels: slices.Clone(labels), fn: fn})
+}
+
+func (m *recMetrics) register(s *recSeries) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.series = append(m.series, s)
+	if m.late != nil {
+		m.late.Errorf("late registration of %s: lockstep called the backend after New", s)
+	}
+}
+
+// failOnCall makes every registration from now on fail t (OBS-080: after New returns, lockstep
+// calls the backend only through late registration).
+func (m *recMetrics) failOnCall(t *testing.T) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.late = t
+}
+
+// registered returns the series registered so far, counters and gauges, in registration order.
+func (m *recMetrics) registered() []*recSeries {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.series)
+}
+
+// counters returns the counter series registered so far, in registration order.
+func (m *recMetrics) counters() []*recSeries {
+	return slices.DeleteFunc(m.registered(), func(s *recSeries) bool { return s.gauge })
+}
+
+// find returns the one series called name whose labels after node are the name and value pairs kv,
+// or fails the test.
+func (m *recMetrics) find(t *testing.T, name string, kv ...string) *recSeries {
+	t.Helper()
+	var found *recSeries
+	for _, s := range m.registered() {
+		if s.name == name && slices.Equal(s.rest(), kv) {
+			if found != nil {
+				t.Fatalf("series %s registered twice", s)
+			}
+			found = s
+		}
+	}
+	if found == nil {
+		t.Fatalf("series %s %v not registered", name, kv)
+	}
+	return found
+}
+
+// count returns the value of the counter series name with the labels kv after node.
+func (m *recMetrics) count(t *testing.T, name string, kv ...string) uint64 {
+	t.Helper()
+	return m.find(t, name, kv...).n.Load()
 }
