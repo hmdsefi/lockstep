@@ -39,6 +39,17 @@ type askPiper interface {
 	AskPipe(rec *harness.Recorder) (harness.Workload, error)
 }
 
+// asAskPiper returns sys, a system of lib, as an askPiper, and fails tb if it has no AskPipe
+// method.
+func asAskPiper(tb testing.TB, lib string, sys harness.System) askPiper {
+	tb.Helper()
+	p, ok := sys.(askPiper)
+	if !ok {
+		tb.Fatalf("%s: %T has no AskPipe method", lib, sys)
+	}
+	return p
+}
+
 // workloads are BEN-130's workloads and sizes, plus two runs with fewer messages than actors. The
 // sizes exercise the edges: two pairs share an odd n unevenly, so one pair's quota ends on a Ping
 // that gets no Pong; with 3 consumers and n = 1,537 one consumer gets 513 items, more than its 512
@@ -62,14 +73,14 @@ var workloads = []struct {
 }
 
 // findLib returns the library of Libs named name.
-func findLib(t *testing.T, name string) harness.Lib {
-	t.Helper()
+func findLib(tb testing.TB, name string) harness.Lib {
+	tb.Helper()
 	for _, lib := range libs.Libs() {
 		if lib.Name() == name {
 			return lib
 		}
 	}
-	t.Fatalf("libs.Libs() has no library %q", name)
+	tb.Fatalf("libs.Libs() has no library %q", name)
 	return nil
 }
 
@@ -189,12 +200,8 @@ func askLatency(callers, n int) func(*testing.T, string, harness.System) {
 // askPipe runs n round trips of BEN-090; the asking actor records one sample per round trip.
 func askPipe(n int) func(*testing.T, string, harness.System) {
 	return func(t *testing.T, lib string, sys harness.System) {
-		p, ok := sys.(askPiper)
-		if !ok {
-			t.Fatalf("%s: %T has no AskPipe method", lib, sys)
-		}
 		rec := harness.NewRecorder(time.Now(), n)
-		w, err := p.AskPipe(rec)
+		w, err := asAskPiper(t, lib, sys).AskPipe(rec)
 		if err != nil {
 			t.Fatal(err)
 		}
