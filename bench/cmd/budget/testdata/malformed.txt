@@ -1,0 +1,4 @@
+goos: linux
+BenchmarkZ-8 	      10	         5.000 ns/op
+BenchmarkY 10 abc ns/op
+PASS

@@ -1,0 +1,14 @@
+=== RUN   TestWorkloads
+--- PASS: TestWorkloads (0.01s)
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+cpu: AMD EPYC 7763 64-Core Processor                
+BenchmarkX/lib=lockstep-8 	    1000	       512 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/hmdsefi/lockstep/bench	1.234s
+?   	github.com/hmdsefi/lockstep/bench/harness	[no test files]
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+BenchmarkSimSeeds/workload=crash3 50 20000 ns/op 50.00 seeds/s
