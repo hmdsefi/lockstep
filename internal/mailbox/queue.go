@@ -11,6 +11,7 @@ package mailbox
 import (
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 // DefaultCapacity is the user mailbox capacity when neither WithMailbox nor WithDefaultMailbox
@@ -86,8 +87,8 @@ type slot[T any] struct {
 }
 
 // Queue is a user mailbox: FIFO, many producers, one consumer. Offer, OfferWait, OfferWaitNotify,
-// Recheck, Waiting, Len, SentLen and Close are safe for concurrent use; Pop is called only by the
-// owning actor's turn.
+// Recheck, Waiting, Len, SentLen, SentLenAtomic and Close are safe for concurrent use; Pop is
+// called only by the owning actor's turn.
 type Queue[T any] struct {
 	mu       sync.Mutex
 	capacity int
@@ -102,6 +103,10 @@ type Queue[T any] struct {
 	removed int // removed slots among the used ones
 	sent    int // live Sent entries
 	closed  bool
+
+	// sentMirror holds the value of sent, stored under mu at every change, for readers that must
+	// not take mu (SentLenAtomic).
+	sentMirror atomic.Int64
 }
 
 // New returns an open, empty queue. It panics if capacity < 1 or policy is unknown.
@@ -143,7 +148,7 @@ func (q *Queue[T]) offer(v T, kind Kind, forceFull bool) (out Outcome, dropped T
 	}
 	if !forceFull && q.sent < q.capacity {
 		q.push(v, Sent)
-		q.sent++
+		q.addSent(1)
 		return Enqueued, dropped
 	}
 	switch q.policy {
@@ -155,7 +160,7 @@ func (q *Queue[T]) offer(v T, kind Kind, forceFull bool) (out Outcome, dropped T
 		}
 		dropped = q.dropOldest()
 		q.push(v, Sent)
-		q.sent++
+		q.addSent(1)
 		return DroppedOldest, dropped
 	}
 	return Rejected, dropped
@@ -178,7 +183,7 @@ func (q *Queue[T]) Pop() (v T, kind Kind, ok bool) {
 	q.used--
 	q.skipRemoved()
 	if kind == Sent {
-		q.sent--
+		q.addSent(-1)
 		q.handOff()
 	}
 	return v, kind, true
@@ -198,6 +203,18 @@ func (q *Queue[T]) SentLen() int {
 	return q.sent
 }
 
+// SentLenAtomic returns the number of Sent entries, as SentLen does, without taking the queue's
+// lock, so a caller that must not wait for a producer or the consumer can read it. It is the value
+// SentLen would return at some moment during the call.
+func (q *Queue[T]) SentLenAtomic() int { return int(q.sentMirror.Load()) }
+
+// addSent changes the number of Sent entries by n and stores the new value in the mirror. The
+// caller holds q.mu.
+func (q *Queue[T]) addSent(n int) {
+	q.sent += n
+	q.sentMirror.Store(int64(q.sent))
+}
+
 // Close closes the queue and returns the remaining entries in queue order with their kinds.
 // Waiting senders return Closed. Later offers return Closed. Close on a closed queue returns nil.
 func (q *Queue[T]) Close() []Entry[T] {
@@ -215,6 +232,7 @@ func (q *Queue[T]) Close() []Entry[T] {
 		}
 	}
 	q.ring, q.head, q.used, q.removed, q.sent = nil, 0, 0, 0, 0
+	q.sentMirror.Store(0)
 	q.closeWaiters()
 	return rest
 }
@@ -253,7 +271,7 @@ func (q *Queue[T]) dropOldest() T {
 		v := s.v
 		*s = slot[T]{removed: true}
 		q.removed++
-		q.sent--
+		q.sent-- // not mirrored: the caller's addSent stores the count once the new entry is in
 		q.skipRemoved()
 		if q.removed*2 > q.used {
 			q.compact()

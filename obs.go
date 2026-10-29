@@ -5,8 +5,12 @@ package lockstep
 
 import (
 	"log/slog"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/mailbox"
 )
 
 // WithLogger sets the logger the system writes its log events to and that Context.Logger and
@@ -53,7 +57,9 @@ type Metrics interface {
 	Counter(name, help string, labels ...MetricLabel) Counter
 
 	// GaugeFunc registers fn for one series. The backend calls fn whenever it collects, from any
-	// goroutine. fn returns quickly and never blocks a Send.
+	// goroutine. fn returns quickly and never blocks a Send. Once the system has shut down, fn
+	// returns 0 and no longer refers to the system, except the goroutine count's, which keeps
+	// reporting.
 	GaugeFunc(name, help string, fn func() int64, labels ...MetricLabel)
 }
 
@@ -132,11 +138,12 @@ var transitionNames = [...]string{toRefusing: "refusing", toAdmitting: "admittin
 // String returns the transition's spelling.
 func (t transition) String() string { return transitionNames[t] }
 
-// registerMetrics registers the counters of OBS-120 with m, in the order of the table and, within
-// a labeled series, of its label values, each with the node label first (OBS-080), and keeps them
-// in s.obs. New calls it once, after newSystem and before startOverload: the sampler's first
-// sample, taken in New, can already change admission, and the change must be counted. A panic in
-// m propagates, and s.obs stays nil.
+// registerMetrics registers the counters of OBS-120 and then the gauge functions of OBS-130 with m,
+// in the order of the tables and, within a labeled series, of its label values, each with the node
+// label first (OBS-080), and keeps the counters in s.obs. New calls it once, after newSystem and
+// before startOverload: the sampler's first sample, taken in New, can already change admission, and
+// the change must be counted. The gauge functions return 0 until New has armed them (armGauges). A
+// panic in m propagates, and s.obs, s.live and s.gauges stay nil.
 func (s *System) registerMetrics(m Metrics) {
 	node := MetricLabel{Name: "node", Value: s.node}
 	o := new(obsCounters)
@@ -155,7 +162,139 @@ func (s *System) registerMetrics(m Metrics) {
 	registerLabeled(m, node, o.transitions[:], "lockstep_admission_transitions_total",
 		"Admission control state changes.", "to", toRefusing, transition.String)
 	o.stuck = m.Counter("lockstep_stuck_turns_total", "Turns reported by the watchdog.", node)
-	s.obs = o
+
+	g := new(gaugeState)
+	m.GaugeFunc("lockstep_actors", "Live actors.", g.actors, node)
+	m.GaugeFunc("lockstep_mailbox_depth_total", "User messages queued in all mailboxes.", g.depthTotal, node)
+	m.GaugeFunc("lockstep_mailbox_depth_max", "User messages queued in the fullest mailbox.", g.depthMax, node)
+	m.GaugeFunc("lockstep_admission_enabled", "1 if memory admission control is on.", g.admissionEnabled, node)
+	m.GaugeFunc("lockstep_admission_refusing", "1 while admission control refuses work.", g.admissionRefusing, node)
+	m.GaugeFunc("lockstep_goroutines", "Goroutines in the process.", goroutines, node)
+	s.obs, s.gauges, s.live = o, g, new(liveIndex)
+}
+
+// armGauges lets the gauge functions read s. New calls it once, after startOverload, which sets the
+// sampler the admission gauge reads: a backend may call a gauge function on another goroutine as
+// soon as it holds it, even while New is still running, and until now the functions return 0.
+func (s *System) armGauges() {
+	if s.gauges != nil {
+		s.gauges.sys.Store(s)
+	}
+}
+
+// gaugeState is what the gauge functions read the system through (OBS-100): the functions capture
+// the state and never the system, and Shutdown clears the pointer when the system is stopped, so a
+// backend that keeps the functions neither keeps the system alive nor reads a stopped system, and
+// each function then returns 0. lockstep_goroutines needs no system and does not use it.
+type gaugeState struct{ sys atomic.Pointer[System] }
+
+// actors is lockstep_actors: the live actors as the actor cap counts them.
+func (g *gaugeState) actors() int64 {
+	if s := g.sys.Load(); s != nil {
+		return int64(s.liveActors())
+	}
+	return 0
+}
+
+// depthTotal is lockstep_mailbox_depth_total: the user messages queued in the mailboxes of all live
+// actors. It takes the live index's read lock, which only Spawn and a final stop take for writing.
+func (g *gaugeState) depthTotal() int64 {
+	if s := g.sys.Load(); s != nil {
+		total, _ := s.live.depth()
+		return total
+	}
+	return 0
+}
+
+// depthMax is lockstep_mailbox_depth_max: the user messages queued in the fullest mailbox of a live
+// actor, 0 with no actor.
+func (g *gaugeState) depthMax() int64 {
+	if s := g.sys.Load(); s != nil {
+		_, fullest := s.live.depth()
+		return fullest
+	}
+	return 0
+}
+
+// admissionEnabled is lockstep_admission_enabled: 1 when memory admission has thresholds in force.
+func (g *gaugeState) admissionEnabled() int64 {
+	if s := g.sys.Load(); s != nil {
+		if sp := s.prodOvl.sampler; sp != nil && sp.Enabled() {
+			return 1
+		}
+	}
+	return 0
+}
+
+// admissionRefusing is lockstep_admission_refusing: 1 while admission control sheds, from any
+// source.
+func (g *gaugeState) admissionRefusing() int64 {
+	if s := g.sys.Load(); s != nil && s.shedding() {
+		return 1
+	}
+	return 0
+}
+
+// goroutines is lockstep_goroutines, the one gauge that keeps reporting after Shutdown.
+func goroutines() int64 { return int64(runtime.NumGoroutine()) }
+
+// liveIndex lists the user mailboxes of a system's live actors for the depth gauges (OBS-130). The
+// registry cannot serve them: it has one lock, which every Send takes, and no iteration. The index
+// has a lock of its own, taken for writing only by Spawn and by an actor's final stop, which OBS-100
+// lets a gauge delay, and for reading by the gauges: never by a Send or a turn. Only a system with
+// metrics has one (System.live).
+type liveIndex struct {
+	mu    sync.RWMutex
+	boxes []liveBox // in no particular order
+}
+
+// liveBox is the entry of one live actor in a liveIndex.
+type liveBox struct {
+	q    *mailbox.Queue[entry]
+	slot *liveSlot
+}
+
+// liveSlot is a cell's place in a liveIndex: one more than its position in boxes, or 0 while the
+// cell is not listed. liveIndex.mu guards it.
+type liveSlot struct{ at int }
+
+// add lists the user mailbox q of a cell whose place is slot.
+func (x *liveIndex) add(q *mailbox.Queue[entry], slot *liveSlot) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.boxes = append(x.boxes, liveBox{q: q, slot: slot})
+	slot.at = len(x.boxes)
+}
+
+// remove takes the cell whose place is slot out of the list, if it is in it: the last entry moves
+// into its position, so the cost of a removal does not depend on the number of actors.
+func (x *liveIndex) remove(slot *liveSlot) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if slot.at == 0 {
+		return
+	}
+	i, last := slot.at-1, len(x.boxes)-1
+	moved := x.boxes[last]
+	x.boxes[i] = moved
+	moved.slot.at = i + 1
+	x.boxes[last] = liveBox{} // no reference to the queue stays in the spare capacity
+	x.boxes = x.boxes[:last]
+	slot.at = 0
+}
+
+// depth returns the number of user messages queued in all listed mailboxes and the number queued in
+// the fullest one. It reads each mailbox's count without the mailbox's lock, so its cost is linear
+// in the number of live actors and no Send or turn waits for it.
+func (x *liveIndex) depth() (total, fullest int64) {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	for i := range x.boxes {
+		n := int64(x.boxes[i].q.SentLenAtomic())
+		total += n
+		fullest = max(fullest, n)
+	}
+	return total, fullest
 }
 
 // registerLabeled registers one counter series of name for each element of dst, in order: element i

@@ -58,3 +58,26 @@ func SetLogOff(sys *System, off bool) { sys.logOff.Store(off) }
 // DeadLetterReasons returns the dead-letter reasons in the order the code lists them, the order of
 // the reason label values of the dead-letter counter, for the spelling test of AT-OBS-16.
 func DeadLetterReasons() []string { return slices.Clone(deadReasons[:]) }
+
+// LiveActors returns the number of live actors the actor cap counts on sys, the value of
+// lockstep_actors (OBS-130).
+func LiveActors(sys *System) int { return sys.liveActors() }
+
+// LiveIndexLen returns the number of mailboxes the depth gauges of sys iterate, or -1 when sys has
+// metrics off and keeps no such list.
+func LiveIndexLen(sys *System) int {
+	if sys.live == nil {
+		return -1
+	}
+	sys.live.mu.RLock()
+	defer sys.live.mu.RUnlock()
+	return len(sys.live.boxes)
+}
+
+// LockLiveIndex write-locks the list the depth gauges of sys iterate, as a Spawn or a final stop
+// does while it changes the list, until unlock is called. A gauge call waits meanwhile, a Send and
+// a turn never do (OBS-100). It panics if sys has metrics off.
+func LockLiveIndex(sys *System) (unlock func()) {
+	sys.live.mu.Lock()
+	return sys.live.mu.Unlock
+}

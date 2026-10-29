@@ -603,7 +603,7 @@ func (m *recMetrics) counters() []*recSeries {
 
 // find returns the one series called name whose labels after node are the name and value pairs kv,
 // or fails the test.
-func (m *recMetrics) find(t *testing.T, name string, kv ...string) *recSeries {
+func (m *recMetrics) find(t testing.TB, name string, kv ...string) *recSeries {
 	t.Helper()
 	var found *recSeries
 	for _, s := range m.registered() {
@@ -618,6 +618,17 @@ func (m *recMetrics) find(t *testing.T, name string, kv ...string) *recSeries {
 		t.Fatalf("series %s %v not registered", name, kv)
 	}
 	return found
+}
+
+// gauge returns the value of the gauge series name, which it reads by calling the function the
+// system registered, or fails the test if name is a counter.
+func (m *recMetrics) gauge(t testing.TB, name string) int64 {
+	t.Helper()
+	s := m.find(t, name)
+	if !s.gauge {
+		t.Fatalf("series %s is a counter, want a gauge", s)
+	}
+	return s.fn()
 }
 
 // count returns the value of the counter series name with the labels kv after node.

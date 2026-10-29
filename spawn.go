@@ -211,12 +211,22 @@ func register[M any](sys *System, c *cell[M], parent Address, stopping, reserve 
 	// addr (see cell). Add allocates the uid only when it registers c (ACT-040).
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if sys.live != nil {
+		// Listed before Add makes c reachable, so that nothing can wait for c.mu while this waits
+		// for a gauge call that is iterating the list (OBS-100): a Send to c's path address finds
+		// no actor until Add has returned. No stop of c can finish before the list has it, for
+		// every request to c takes c.mu first, and the final stop removes the entry.
+		sys.live.add(c.user, &c.live)
+	}
 	var uid uint64
 	path, ok := sys.reg.Add(parent.path, name, func() uint64 {
 		uid = sys.allocUID()
 		return uid
 	}, actorCell(c))
 	if !ok {
+		if sys.live != nil {
+			sys.live.remove(&c.live)
+		}
 		sys.actors.Release()
 		return nameTaken() // a concurrent Spawn took the name after Taken
 	}
