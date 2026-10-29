@@ -117,37 +117,64 @@ func TestATBEN13LeakCaught(t *testing.T) {
 	})
 }
 
-// TestPrepareIdleActorCap checks BEN-030's actor cap: PrepareIdle keeps the started system, built
-// with lockstep's default cap, for up to 900,000 actors, and above that replaces it with a system
-// whose cap is 2,000,000, shutting the started one down. It spawns no actor of that size.
+// TestPrepareIdleActorCap checks BEN-030's actor cap. Start sets the limit to 900,000 idle actors
+// and the cap to 2,000,000; the rest runs on a limit of 10 and a cap of 200, so that it checks the
+// cap lockstep enforces while spawning a few hundred actors. PrepareIdle(10) keeps the started
+// system, which accepts more than 200 actors; PrepareIdle(11) shuts it down and replaces it with a
+// system that refuses a spawn before it holds 200 actors.
 func TestPrepareIdleActorCap(t *testing.T) {
-	t.Run("n=900000", func(t *testing.T) {
+	const limit, idleCap = 10, 200
+	if s := start(t); s.idleLimit != 900_000 || s.idleCap != 2_000_000 {
+		t.Errorf("Start: limit %d and cap %d, want 900000 and 2000000", s.idleLimit, s.idleCap)
+	}
+	t.Run("n=limit", func(t *testing.T) {
 		s := start(t)
+		s.idleLimit, s.idleCap = limit, idleCap
 		started := s.sys
-		s.PrepareIdle(900_000)
+		s.PrepareIdle(limit)
 		if s.sys != started {
-			t.Error("PrepareIdle(900000) replaced the system")
+			t.Fatal("PrepareIdle(limit) replaced the system")
 		}
-		if s.maxActors != 0 {
-			t.Errorf("maxActors = %d, want 0 (lockstep's default)", s.maxActors)
+		if n := spawnUntilCap(t, s.sys, idleCap+1); n <= idleCap {
+			t.Errorf("the started system refused a spawn after %d actors, want more than %d", n, idleCap)
 		}
 	})
-	t.Run("n=900001", func(t *testing.T) {
+	t.Run("n=limit+1", func(t *testing.T) {
 		s := start(t)
+		s.idleLimit, s.idleCap = limit, idleCap
 		started := s.sys
-		s.PrepareIdle(900_001)
+		s.PrepareIdle(limit + 1)
 		if s.sys == started {
-			t.Fatal("PrepareIdle(900001) kept the started system")
-		}
-		if s.maxActors != 2_000_000 {
-			t.Errorf("maxActors = %d, want 2000000", s.maxActors)
+			t.Fatal("PrepareIdle(limit+1) kept the started system")
 		}
 		_, err := lockstep.Spawn(started, "", func() lockstep.Actor[harness.Hello] { return &idler{} })
 		if !errors.Is(err, lockstep.ErrStopped) {
 			t.Errorf("Spawn on the replaced system: %v, want ErrStopped", err)
 		}
+		if err := s.SpawnIdle(); err != nil {
+			t.Fatal(err)
+		}
+		if n := limit + 1 + spawnUntilCap(t, s.sys, idleCap); n >= idleCap {
+			t.Errorf("the new system accepted %d actors, want its cap of %d to refuse a spawn first", n, idleCap)
+		}
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	})
+}
+
+// spawnUntilCap spawns up to most actors on sys and returns how many it spawned before a spawn
+// failed with ErrActorCap.
+func spawnUntilCap(t *testing.T, sys *lockstep.System, most int) int {
+	t.Helper()
+	for i := range most {
+		_, err := lockstep.Spawn(sys, "", func() lockstep.Actor[harness.Hello] { return &idler{} })
+		if errors.Is(err, lockstep.ErrActorCap) {
+			return i
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return most
 }

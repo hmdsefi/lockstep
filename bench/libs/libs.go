@@ -11,9 +11,10 @@ import (
 	_ "github.com/hmdsefi/lockstep/bench/internal/protoreg"
 	"github.com/hmdsefi/lockstep/bench/libs/hollywood"
 	"github.com/hmdsefi/lockstep/bench/libs/lockstep"
+	"github.com/hmdsefi/lockstep/bench/libs/protoactor"
 )
 
 // Libs returns the four libraries in the order lockstep, protoactor, hollywood, goakt.
 func Libs() []harness.Lib {
-	return []harness.Lib{lockstep.Lib{}, hollywood.Lib{}}
+	return []harness.Lib{lockstep.Lib{}, protoactor.Lib{}, hollywood.Lib{}}
 }
