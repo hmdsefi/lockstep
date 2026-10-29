@@ -1,0 +1,8 @@
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+BenchmarkA 50 100 ns/op 10000000.00 seeds/s
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+BenchmarkR 50 70 ns/op 14285714.29 seeds/s

@@ -1,0 +1,12 @@
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+cpu: AMD EPYC 7763 64-Core Processor
+BenchmarkA-4 	     100	        90.00 ns/op
+BenchmarkA-4 	     100	       110.0 ns/op
+BenchmarkR-4 	     100	        40.00 ns/op
+BenchmarkR-4 	     100	        50.00 ns/op
+BenchmarkR-4 	     100	        60.00 ns/op
+BenchmarkC-4 	     100	         7.000 ns/op	       0 B/op	       2 allocs/op
+PASS
+ok  	github.com/hmdsefi/lockstep/bench	1.234s
