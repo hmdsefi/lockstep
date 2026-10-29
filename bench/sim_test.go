@@ -33,18 +33,20 @@ const (
 	simSeeds = 50
 )
 
-// runChanging lists the variables that change the work done per seed (BEN-100). TestSimSeeds
-// appends nothing while any of them is set, since seeds per second would no longer compare
-// identical work.
-var runChanging = []string{
-	"FAULTLINE_SEED",
-	"FAULTLINE_SEEDS",
-	"FAULTLINE_SEED_LIST",
-	"FAULTLINE_BASE_SEED",
-	"FAULTLINE_EXPLORE",
-	"FAULTLINE_TRACE",
-	"FAULTLINE_CHECK_DETERMINISM",
-	"LOCKSTEP_CHECK_DETERMINISM",
+// runChanging reports whether the environment variable name changes the work done per seed
+// (BEN-100): LOCKSTEP_CHECK_DETERMINISM, and every FAULTLINE_ variable but the two that only say
+// where faultline writes. That includes FAULTLINE_SEED, FAULTLINE_SEEDS, FAULTLINE_SEED_LIST,
+// FAULTLINE_BASE_SEED, FAULTLINE_EXPLORE, FAULTLINE_TRACE and FAULTLINE_CHECK_DETERMINISM, and
+// also FAULTLINE_SCHEDULE, which replays a schedule. TestSimSeeds appends nothing while one is
+// set, since seeds per second would no longer compare identical work.
+func runChanging(name string) bool {
+	switch name {
+	case "LOCKSTEP_CHECK_DETERMINISM":
+		return true
+	case "FAULTLINE_ARTIFACTS", "FAULTLINE_RESULTS":
+		return false
+	}
+	return strings.HasPrefix(name, "FAULTLINE_")
 }
 
 // seedsResult matches the result line of one TestSimSeeds subtest (BEN-100).
@@ -58,7 +60,13 @@ var seedsResult = regexp.MustCompile(`^BenchmarkSimSeeds/workload=(pingpong|cras
 // The actors follow lockstep's actor rules and BaseSeed is 1, so every run executes the same 50
 // seeds and seeds per second compares identical work. The wall clock is read around the call to
 // sim.Simulate, never inside the simulation.
+//
+// The race detector slows crash3 about fourteen-fold, and its numbers would be wrong anyway, so
+// the test skips under -race; TestATBEN07SeedsOut runs it in a child process without.
 func TestSimSeeds(t *testing.T) {
+	if raceEnabled {
+		t.Skip("seeds per second is measured without -race; TestATBEN07SeedsOut runs it")
+	}
 	for _, w := range []struct {
 		name     string
 		duration time.Duration // the virtual length of each run
@@ -85,8 +93,10 @@ func TestSimSeeds(t *testing.T) {
 // unless a variable that changes the work per seed is set. Like faultline, it takes a variable
 // whose value is empty after trimming as not set.
 func TestSeedsOutPath(t *testing.T) {
-	for _, name := range runChanging {
-		t.Setenv(name, "")
+	for _, kv := range os.Environ() { // the test must not depend on its caller's variables
+		if name, _, _ := strings.Cut(kv, "="); runChanging(name) {
+			t.Setenv(name, "")
+		}
 	}
 	t.Setenv(seedsOutEnv, "")
 	if got := seedsOutPath(); got != "" {
@@ -96,7 +106,14 @@ func TestSeedsOutPath(t *testing.T) {
 	if got := seedsOutPath(); got != "sim.txt" {
 		t.Errorf("seedsOutPath() = %q, want sim.txt", got)
 	}
-	for _, name := range runChanging {
+
+	changing := []string{
+		"FAULTLINE_SEED", "FAULTLINE_SEEDS", "FAULTLINE_SEED_LIST", "FAULTLINE_BASE_SEED",
+		"FAULTLINE_EXPLORE", "FAULTLINE_TRACE", "FAULTLINE_CHECK_DETERMINISM", "LOCKSTEP_CHECK_DETERMINISM",
+		"FAULTLINE_SCHEDULE", "FAULTLINE_MINIMIZE", "FAULTLINE_SWARM", "FAULTLINE_SWARM_CONFIG",
+		"FAULTLINE_EXACT", "FAULTLINE_FUTURE_SETTING",
+	}
+	for _, name := range changing {
 		t.Setenv(name, " \t")
 		if got := seedsOutPath(); got != "sim.txt" {
 			t.Errorf("seedsOutPath() = %q with %s blank, want sim.txt", got, name)
@@ -107,17 +124,41 @@ func TestSeedsOutPath(t *testing.T) {
 		}
 		t.Setenv(name, "")
 	}
+	for _, name := range []string{"FAULTLINE_ARTIFACTS", "FAULTLINE_RESULTS", "LOCKSTEP_BENCH_LARGE"} {
+		t.Setenv(name, "1")
+		if got := seedsOutPath(); got != "sim.txt" {
+			t.Errorf("seedsOutPath() = %q with %s=1, want sim.txt", got, name)
+		}
+		t.Setenv(name, "")
+	}
+
+	got := withoutRunChanging([]string{
+		"PATH=/bin", "FAULTLINE_SEED=1", "LOCKSTEP_BENCH_OUT=x", "FAULTLINE_ARTIFACTS=/a",
+		"FAULTLINE_SCHEDULE=", "LOCKSTEP_BENCH_LARGE=1", "LOCKSTEP_CHECK_DETERMINISM=0",
+	})
+	if want := []string{"PATH=/bin", "FAULTLINE_ARTIFACTS=/a", "LOCKSTEP_BENCH_LARGE=1"}; !slices.Equal(got, want) {
+		t.Errorf("withoutRunChanging = %q, want %q", got, want)
+	}
 }
 
 // seedsOutPath returns the file TestSimSeeds appends to, or "" when it appends nothing: no
-// LOCKSTEP_BENCH_OUT, or a variable of runChanging is set.
+// LOCKSTEP_BENCH_OUT, or a variable that runChanging names is set.
 func seedsOutPath() string {
-	for _, name := range runChanging {
-		if strings.TrimSpace(os.Getenv(name)) != "" {
+	for _, kv := range os.Environ() {
+		if name, value, _ := strings.Cut(kv, "="); runChanging(name) && strings.TrimSpace(value) != "" {
 			return ""
 		}
 	}
 	return os.Getenv(seedsOutEnv)
+}
+
+// withoutRunChanging returns the environment environ without LOCKSTEP_BENCH_OUT and without the
+// variables that runChanging names, whatever their values.
+func withoutRunChanging(environ []string) []string {
+	return slices.DeleteFunc(slices.Clone(environ), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return name == seedsOutEnv || runChanging(name)
+	})
 }
 
 // appendSeedsResult appends the block of one finished subtest to the file out, creating it if it
@@ -215,7 +256,8 @@ func (p *ponger) Receive(ctx *lockstep.Context[harness.Ping], msg harness.Ping) 
 // AT-BEN-07, BEN-100: with LOCKSTEP_BENCH_OUT set, go test -run '^TestSimSeeds$' -count 2 appends
 // four result blocks, the pingpong and crash3 lines twice each, each after the goos, goarch and
 // pkg lines. With FAULTLINE_CHECK_DETERMINISM=1 or LOCKSTEP_CHECK_DETERMINISM=1 also set, the test
-// passes and appends nothing.
+// passes and appends nothing; those two cases run with -count 1, since the variables make every
+// seed run twice.
 func TestATBEN07SeedsOut(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go test in a child process")
@@ -223,7 +265,7 @@ func TestATBEN07SeedsOut(t *testing.T) {
 
 	t.Run("appends", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "sim.txt") // absent: the test creates it
-		goTestSimSeeds(t, out)
+		goTestSimSeeds(t, out, 2)
 		checkSeedBlocks(t, readFile(t, out))
 	})
 
@@ -235,7 +277,7 @@ func TestATBEN07SeedsOut(t *testing.T) {
 			if err := os.WriteFile(out, []byte(existing), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			goTestSimSeeds(t, out, env)
+			goTestSimSeeds(t, out, 1, env)
 			if got := readFile(t, out); got != existing {
 				t.Errorf("%s: file is %q after the run, want %q", env, got, existing)
 			}
@@ -243,24 +285,23 @@ func TestATBEN07SeedsOut(t *testing.T) {
 	}
 }
 
-// goTestSimSeeds runs TestSimSeeds twice in a child go test with LOCKSTEP_BENCH_OUT=out and the
-// variables extra, which are NAME=value pairs, and fails t unless the child passes and runs the
-// test. The child gets the parent's environment without LOCKSTEP_BENCH_OUT and without the
-// variables of runChanging, so a variable set around the parent cannot change what a case measures.
-func goTestSimSeeds(t *testing.T, out string, extra ...string) {
+// goTestSimSeeds runs TestSimSeeds count times in a child go test with LOCKSTEP_BENCH_OUT=out and
+// the variables extra, which are NAME=value pairs, and fails t unless the child passes and runs
+// the test. The child gets the parent's environment without LOCKSTEP_BENCH_OUT and without the
+// variables runChanging names, so a variable set around the parent cannot change what a case
+// measures. The child is built without -race (TestSimSeeds skips under it), even if GOFLAGS asks
+// for it.
+func goTestSimSeeds(t *testing.T, out string, count int, extra ...string) {
 	t.Helper()
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		name, _, _ := strings.Cut(kv, "=")
-		return name == seedsOutEnv || slices.Contains(runChanging, name)
-	})
-	cmd := exec.Command("go", "test", "-run", "^TestSimSeeds$", "-count", "2", ".")
-	cmd.Env = slices.Concat(env, []string{seedsOutEnv + "=" + out}, extra)
+	args := []string{"test", "-race=false", "-run", "^TestSimSeeds$", "-count", strconv.Itoa(count), "-timeout", "10m", "."}
+	cmd := exec.Command("go", args...)
+	cmd.Env = slices.Concat(withoutRunChanging(os.Environ()), []string{seedsOutEnv + "=" + out}, extra)
 	got, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("go test -run '^TestSimSeeds$' -count 2 . (%v): %v\n%s", extra, err, got)
+		t.Fatalf("go %s (%v): %v\n%s", strings.Join(args, " "), extra, err, got)
 	}
 	if bytes.Contains(got, []byte("no tests to run")) {
-		t.Fatalf("go test -run '^TestSimSeeds$' -count 2 . ran no test:\n%s", got)
+		t.Fatalf("go %s ran no TestSimSeeds:\n%s", strings.Join(args, " "), got)
 	}
 }
 
