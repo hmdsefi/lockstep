@@ -1,0 +1,36 @@
+# commit: 0f3a9c1d5b7e2a4c6d8e0f1a2b3c4d5e6f708192
+# date: 2026-11-03
+# runner: ubuntu-latest
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+cpu: AMD EPYC 7763 64-Core Processor                
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	     100	       130 ns/op	     7692308 msgs/s	      33 B/op	     1.0 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4 	     100	        80 ns/op	    12500000 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4 	     100	        70 ns/op	    14285714 msgs/s	      40 B/op	       2 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	     100	        85 ns/op	    11764706 msgs/s	      64 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=lockstep-4 	     100	       900 p99-ns
+BenchmarkSendLatency/lib=protoactor-4 	     100	       700 p99-ns
+BenchmarkSendLatency/lib=hollywood-4 	     100	       600 p99-ns
+BenchmarkCalibrate-4 	     100	      1000 ns/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	     100	       100 ns/op	    10000000 msgs/s	      33 B/op	     1.0 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4 	     100	        80 ns/op	    12500000 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4 	     100	        60 ns/op	    16666667 msgs/s	      40 B/op	       2 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	     100	        95 ns/op	    10526316 msgs/s	      64 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=lockstep-4 	     100	       900 p99-ns
+BenchmarkSendLatency/lib=protoactor-4 	     100	       700 p99-ns
+BenchmarkSendLatency/lib=hollywood-4 	     100	       600 p99-ns
+BenchmarkCalibrate-4 	     100	      1000 ns/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	     100	        90 ns/op	    11111111 msgs/s	      33 B/op	     1.0 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4 	     100	        80 ns/op	    12500000 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4 	     100	        50 ns/op	    20000000 msgs/s	      40 B/op	       2 allocs/op
+BenchmarkSendLatency/lib=lockstep-4 	     100	       900 p99-ns
+BenchmarkSendLatency/lib=protoactor-4 	     100	       700 p99-ns
+BenchmarkSendLatency/lib=hollywood-4 	     100	       600 p99-ns
+BenchmarkCalibrate-4 	     100	      1000 ns/op
+PASS
+ok  	github.com/hmdsefi/lockstep/bench	41.272s
+goos: linux
+goarch: amd64
+pkg: github.com/hmdsefi/lockstep/bench
+BenchmarkSimSeeds/workload=pingpong 50 20000 ns/op 50000.00 seeds/s

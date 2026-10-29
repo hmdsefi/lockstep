@@ -137,6 +137,39 @@ func TestResultsMalformed(t *testing.T) {
 	})
 }
 
+// TestResultsMetadata checks that readResults keeps the comment lines of the form # key: value,
+// ignores other comments, and lists each series once, in the order its first sample appears
+// (BEN-140, BEN-180).
+func TestResultsMetadata(t *testing.T) {
+	path := writeFile(t, "baseline.txt",
+		"# commit: 0f3a9c1  ",
+		"# date: 2026-11-03",
+		"# runner: ubuntu-latest",
+		"# a note",
+		"#commit: no space",
+		"# Commit: capital",
+		"goos: linux",
+		"BenchmarkB-4 1 5 ns/op",
+		"BenchmarkA 1 1 ns/op",
+		"BenchmarkB-4 1 6 ns/op 7 B/op",
+	)
+	res, err := readResults([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantComments := []config{{"commit", "0f3a9c1"}, {"date", "2026-11-03"}, {"runner", "ubuntu-latest"}}
+	if !slices.Equal(res.comments, wantComments) {
+		t.Errorf("comments = %q, want %q", res.comments, wantComments)
+	}
+	if want := []config{{"goos", "linux"}}; !slices.Equal(res.config, want) {
+		t.Errorf("config = %q, want %q", res.config, want)
+	}
+	wantOrder := []series{{"BenchmarkB", "ns/op"}, {"BenchmarkA", "ns/op"}, {"BenchmarkB", "B/op"}}
+	if !slices.Equal(res.order, wantOrder) {
+		t.Errorf("order = %q, want %q", res.order, wantOrder)
+	}
+}
+
 // TestATBEN09Check covers AT-BEN-09: medians over all results files, the ok and FAIL lines of abs
 // and rel budgets, a missing result, and a missing budgets file (BEN-150, BEN-160).
 func TestATBEN09Check(t *testing.T) {
@@ -317,12 +350,20 @@ func TestUsage(t *testing.T) {
 		wantStderr string
 	}{
 		{"no command", nil, 2, usage},
-		{"unknown command", []string{"derive", "baseline.txt"}, 2, `budget: unknown command "derive"` + "\n" + usage},
+		{"unknown command", []string{"frobnicate", "baseline.txt"}, 2, `budget: unknown command "frobnicate"` + "\n" + usage},
 		{"help", []string{"-h"}, 0, usage},
 		{"check help", []string{"check", "-h"}, 0, usage},
 		{"check without budgets", []string{"check", "results.txt"}, 2, "budget: missing -budgets flag\n" + usage},
 		{"check without results", []string{"check", "-budgets", budgets}, 2, "budget: missing results files\n" + usage},
 		{"check with an unknown flag", []string{"check", "-x"}, 2, "budget: flag provided but not defined: -x\n" + usage},
+		{"derive help", []string{"derive", "-h"}, 0, usage},
+		{"derive without a baseline", []string{"derive"}, 2, "budget: missing baseline file\n" + usage},
+		{"derive with two baselines", []string{"derive", "a.txt", "b.txt"}, 2, "budget: too many baseline files\n" + usage},
+		{"derive with an unknown flag", []string{"derive", "-x"}, 2, "budget: flag provided but not defined: -x\n" + usage},
+		{"report help", []string{"report", "-h"}, 0, usage},
+		{"report without a baseline", []string{"report"}, 2, "budget: missing baseline file\n" + usage},
+		{"report with two baselines", []string{"report", "a.txt", "b.txt"}, 2, "budget: too many baseline files\n" + usage},
+		{"report with an unknown flag", []string{"report", "-x"}, 2, "budget: flag provided but not defined: -x\n" + usage},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			wantRun(t, c.args, c.wantCode, "", c.wantStderr)

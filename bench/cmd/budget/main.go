@@ -1,11 +1,14 @@
 // Copyright 2026 Hamed Yousefi
 // SPDX-License-Identifier: MPL-2.0
 
-// Command budget checks Go benchmark results against performance budgets.
+// Command budget checks Go benchmark results against performance budgets, derives the budgets
+// from a baseline, and writes the results report.
 //
 // Usage:
 //
 //	budget check -budgets <budgets.txt> <results>...
+//	budget derive <baseline.txt>
+//	budget report <baseline.txt>
 //
 // check reads go test -bench output from the results files and, for each benchmark and unit,
 // takes the median of the samples in all files. It ignores the -N GOMAXPROCS suffix that go test
@@ -29,16 +32,44 @@
 //
 // check exits 0 when every budget holds or the budgets file does not exist, 1 when a budget is
 // exceeded, and 2 on malformed input or a missing result.
+//
+// derive reads a baseline, a results file with the comment lines # commit: <sha>, # date:
+// <YYYY-MM-DD> and # runner: <label> in front, and writes the budgets file for it to stdout. It
+// writes a budget for every lockstep result, and for every BenchmarkSimSeeds result, in the
+// units below. It writes no budget for msgs/s, seeds/s and ns/actor, which restate ns/op.
+//
+//	allocs/op          abs   the median, rounded up to an integer
+//	B/op, B/actor      abs   the median plus 10 percent, rounded up to an integer
+//	goroutines/actor   abs   the median, rounded up to hundredths
+//	ns/op, p50-ns      rel   the ratio to the reference plus 25 percent, rounded up to hundredths
+//	p99-ns             rel   the ratio to the reference plus 50 percent, rounded up to hundredths
+//
+// The reference of a rel budget is the same benchmark in another library, the one with the lowest
+// median in that unit; protoactor wins a tie over hollywood, and hollywood over goakt. The
+// reference of BenchmarkAskPipe and BenchmarkSimSeeds, which no other library runs, is
+// BenchmarkCalibrate ns/op. A result that has no reference is a malformed baseline. The budgets
+// come out sorted by name, then by unit.
+//
+// report reads a baseline and writes a Markdown document to stdout. It holds the goos, goarch and
+// cpu lines and the # commit: and # date: lines of the baseline, then one table for each
+// benchmark family and unit, with a row for each parameter value and a column for each library.
+// Each cell is a median.
+//
+// derive and report exit 0 on success and 2 on a malformed baseline or a usage error.
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 )
 
 // usage is the command line summary printed with every usage error.
-const usage = "usage: budget check -budgets <budgets.txt> <results>...\n"
+const usage = "usage: budget check -budgets <budgets.txt> <results>...\n" +
+	"       budget derive <baseline.txt>\n" +
+	"       budget report <baseline.txt>\n"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -54,12 +85,59 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "check":
 		return check(args[1:], stdout, stderr)
+	case "derive":
+		return baselineCommand("derive", args[1:], stdout, stderr, derive)
+	case "report":
+		return baselineCommand("report", args[1:], stdout, stderr,
+			func(_ string, res *results) (string, error) { return report(res), nil })
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stderr, usage)
 		return 0
 	default:
 		return usageError(stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}
+}
+
+// baselineCommand runs budget derive or budget report. It reads the baseline named by args, and
+// writes the text that render builds from it to stdout, or nothing when render fails. render
+// receives the baseline's file name for its error messages.
+func baselineCommand(name string, args []string, stdout, stderr io.Writer, render func(file string, res *results) (string, error)) int {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	if code, done := parseFlags(flags, args, stderr); done {
+		return code
+	}
+	switch flags.NArg() {
+	case 0:
+		return usageError(stderr, "missing baseline file")
+	case 1:
+	default:
+		return usageError(stderr, "too many baseline files")
+	}
+	file := flags.Arg(0)
+	res, err := readResults([]string{file})
+	if err != nil {
+		return inputError(stderr, err)
+	}
+	text, err := render(file, res)
+	if err != nil {
+		return inputError(stderr, err)
+	}
+	fmt.Fprint(stdout, text)
+	return 0
+}
+
+// parseFlags parses the arguments of a subcommand. It reports done and the exit code when the
+// command is over: a help request prints the usage and exits 0, and a bad flag is a usage error.
+func parseFlags(flags *flag.FlagSet, args []string, stderr io.Writer) (code int, done bool) {
+	flags.SetOutput(io.Discard)
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stderr, usage)
+			return 0, true
+		}
+		return usageError(stderr, err.Error()), true
+	}
+	return 0, false
 }
 
 // usageError prints msg and the usage summary to stderr and returns exit code 2.
