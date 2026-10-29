@@ -14,8 +14,8 @@ import (
 
 // Logger returns the actor logger: the system logger with the attributes node, path and uid of
 // this actor. It returns the same *slog.Logger for the actor's lifetime, across restarts. In
-// simulation the system logger discards every record unless the system's options include
-// WithLogger.
+// simulation it writes to the node's kernel log instead: each record at slog.LevelInfo or above
+// becomes a kernel.log record of the node, and records below Info are dropped.
 func (c *Context[M]) Logger() *slog.Logger {
 	c.mustInTurn()
 	return c.cell.logger()

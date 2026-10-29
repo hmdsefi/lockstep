@@ -81,7 +81,8 @@ func (b Budget) resumed(u engine.Usage) bool {
 
 // systemOptions returns the options of a node system at boot: Options.System, followed by
 // lockstep.WithMemoryEstimates() when a byte budget is set, so that the usage has the system's
-// estimate (SIM-070, SFT-140, OVL-400).
+// estimate (SIM-070, SFT-140, OVL-400). Appending to the result never writes into
+// Options.System, so boot adds the logger option to it.
 func (s *Sim) systemOptions() []lockstep.Option {
 	opts := slices.Clip(s.system)
 	if s.budget.Bytes > 0 {
