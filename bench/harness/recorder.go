@@ -41,7 +41,8 @@ func (r *Recorder) Len() int {
 }
 
 // Percentile returns the nearest-rank percentile p (0 < p <= 100): the sorted sample at
-// index ceil(p/100*n)-1. It returns 0 with no samples.
+// index ceil(p/100*n)-1. It returns 0 with no samples. It sorts the samples in place, so it must
+// not run alongside Add or Merge.
 func (r *Recorder) Percentile(p float64) int64 {
 	n := len(r.samples)
 	if n == 0 {
