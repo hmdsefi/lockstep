@@ -71,7 +71,8 @@ func readResults(paths []string) (*results, error) {
 }
 
 // addResult parses a result line, Benchmark<name> <iterations> <value> <unit>..., and adds its
-// values to the samples.
+// values to the samples. Each value must be a finite float64: a NaN would sort first and shift a
+// median without notice.
 func (r *results) addResult(line string) error {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
@@ -87,7 +88,7 @@ func (r *results) addResult(line string) error {
 	name := trimProcs(fields[0])
 	for i := 0; i < len(pairs); i += 2 {
 		v, err := strconv.ParseFloat(pairs[i], 64)
-		if err != nil {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 			return fmt.Errorf("invalid value %q", pairs[i])
 		}
 		if i+1 == len(pairs) {
