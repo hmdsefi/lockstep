@@ -61,8 +61,8 @@ var seedsResult = regexp.MustCompile(`^BenchmarkSimSeeds/workload=(pingpong|cras
 // seeds and seeds per second compares identical work. The wall clock is read around the call to
 // sim.Simulate, never inside the simulation.
 //
-// The race detector slows crash3 about fourteen-fold, and its numbers would be wrong anyway, so
-// the test skips under -race; TestATBEN07SeedsOut runs it in a child process without.
+// The race detector makes the crash3 world much slower, and the numbers would not be comparable,
+// so the test skips under -race; TestATBEN07SeedsOut runs it in a child process without.
 func TestSimSeeds(t *testing.T) {
 	if raceEnabled {
 		t.Skip("seeds per second is measured without -race; TestATBEN07SeedsOut runs it")
