@@ -19,8 +19,14 @@ var calibration = series{"BenchmarkCalibrate", "ns/op"}
 type rule struct {
 	// kind is kindAbs, or kindRel for a ratio against the reference.
 	kind string
-	// factor is the headroom the budget leaves above the baseline.
+	// factor is the headroom the budget leaves above the baseline: a rel budget is the ratio to the
+	// reference, which is another library, times factor.
 	factor float64
+	// calibrationFactor is the factor of a rel budget whose reference is BenchmarkCalibrate. It is
+	// larger than factor because the CPU-bound loop of BenchmarkCalibrate moves more against
+	// lockstep from one runner CPU model to another than another library does. An abs rule has no
+	// reference and leaves it zero.
+	calibrationFactor float64
 	// ceil rounds a value up to the precision of the budget.
 	ceil func(float64) float64
 }
@@ -28,13 +34,13 @@ type rule struct {
 // rules holds the rule of every unit that gets a budget. The units msgs/s, seeds/s and ns/actor
 // restate ns/op and have none.
 var rules = map[string]rule{
-	"allocs/op":        {kindAbs, 1, ceilAllocs},
-	"B/op":             {kindAbs, 1.10, ceilInt},
-	"B/actor":          {kindAbs, 1.10, ceilInt},
-	"goroutines/actor": {kindAbs, 1, ceilHundredths},
-	"ns/op":            {kindRel, 1.25, ceilHundredths},
-	"p50-ns":           {kindRel, 1.25, ceilHundredths},
-	"p99-ns":           {kindRel, 1.50, ceilHundredths},
+	"allocs/op":        {kind: kindAbs, factor: 1, ceil: ceilAllocs},
+	"B/op":             {kind: kindAbs, factor: 1.10, ceil: ceilInt},
+	"B/actor":          {kind: kindAbs, factor: 1.10, ceil: ceilInt},
+	"goroutines/actor": {kind: kindAbs, factor: 1, ceil: ceilHundredths},
+	"ns/op":            {kind: kindRel, factor: 1.5, calibrationFactor: 2, ceil: ceil3},
+	"p50-ns":           {kind: kindRel, factor: 1.5, calibrationFactor: 2, ceil: ceil3},
+	"p99-ns":           {kind: kindRel, factor: 2, calibrationFactor: 3, ceil: ceil3},
 }
 
 // ceilInt returns the smallest integer that is at least x, within the tolerance of floating-point
@@ -51,8 +57,34 @@ func ceilAllocs(x float64) float64 {
 }
 
 // ceilHundredths returns the smallest multiple of 0.01 that is at least x, within the same
-// tolerance, so that 0.44 * 1.25 gives 0.55 and not 0.56.
+// tolerance, so that a median of 0.07, which times 100 is 7.000000000000001, gives 0.07 and not
+// 0.08. Only the goroutines/actor budget uses it.
 func ceilHundredths(x float64) float64 { return noNegativeZero(math.Ceil(x*100-tolerance) / 100) }
+
+// ceil3 returns the smallest number with three significant digits that is at least x, within the
+// same tolerance: 0 for 0, and otherwise ceil(x * 10^(2-e)) / 10^(2-e), where e is the exponent of
+// x's leading digit (BEN-170). 160/100 * 1.5 is 2.4000000000000004 and gives 2.4 and not 2.41, and
+// a small ratio keeps its precision: 0.0013928 gives 0.0014, not the 0.01 that hundredths would.
+func ceil3(x float64) float64 {
+	if x == 0 {
+		return 0
+	}
+	return atThreeDigits(x, func(v float64) float64 { return math.Ceil(v - tolerance) })
+}
+
+// atThreeDigits scales x so that three significant digits lie before the decimal point, applies
+// round to the scaled value, and scales the result back. When x has more than three digits before
+// the decimal point it divides by the power of ten instead of multiplying by its inverse, because
+// 10^n is exact for the n that matter here and 10^-n is not. x must be finite and not zero.
+func atThreeDigits(x float64, round func(float64) float64) float64 {
+	e := int(math.Floor(math.Log10(math.Abs(x))))
+	if e > 2 {
+		unit := math.Pow10(e - 2)
+		return round(x/unit) * unit
+	}
+	scale := math.Pow10(2 - e)
+	return round(x*scale) / scale
+}
 
 // noNegativeZero returns 0 for -0, which formats as "-0", and v otherwise.
 func noNegativeZero(v float64) float64 {
@@ -115,7 +147,11 @@ func deriveBudget(res *results, s series) (budget, error) {
 			ref.name, ref.unit, formatFloat(refMedian))
 	}
 	b.ref = ref
-	b.max = r.ceil(median / refMedian * r.factor)
+	factor := r.factor
+	if ref == calibration {
+		factor = r.calibrationFactor
+	}
+	b.max = r.ceil(median / refMedian * factor)
 	return b, nil
 }
 

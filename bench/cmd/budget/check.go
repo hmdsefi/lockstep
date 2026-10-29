@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"strconv"
 )
@@ -95,7 +96,7 @@ func evaluate(b budget, res *results) (ok bool, line string, absent []series) {
 			absent = append(absent, b.ref)
 		}
 		value = median / ref
-		shown += " / " + formatFloat(ref) + " = " + strconv.FormatFloat(value, 'f', 2, 64)
+		shown += " / " + formatFloat(ref) + " = " + formatFloat(round3(value))
 	}
 	if len(absent) > 0 {
 		return false, "", absent
@@ -109,6 +110,16 @@ func evaluate(b budget, res *results) (ok bool, line string, absent []series) {
 
 // formatFloat formats a median with the fewest digits that represent it exactly.
 func formatFloat(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// round3 rounds v half away from zero to three significant digits, so a ratio of 0.0006964 shows
+// as 0.000696 and not as 0 (BEN-160). It returns 0, NaN and the infinities unchanged. The
+// comparison with a budget uses the unrounded ratio.
+func round3(v float64) float64 {
+	if v == 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return v
+	}
+	return atThreeDigits(v, math.Round)
+}
 
 // inputError prints err, an unreadable or malformed file, to stderr and returns exit code 2.
 func inputError(stderr io.Writer, err error) int {

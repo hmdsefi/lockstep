@@ -25,10 +25,10 @@
 //	<name> <unit> rel <reference-name> <reference-unit> <max-ratio>
 //
 // An abs budget caps the median. A rel budget caps the median divided by the median of the
-// reference benchmark in the reference unit; the ratio is printed rounded to two decimals and
-// compared unrounded. Budgets take only units where lower is better: ns/op, p50-ns, p99-ns,
-// allocs/op, B/op, B/actor and goroutines/actor. Lines that start with # are comments, and blank
-// lines are ignored.
+// reference benchmark in the reference unit; the ratio is printed rounded to three significant
+// digits (0.0006964 shows as 0.000696) and compared unrounded. Budgets take only units where
+// lower is better: ns/op, p50-ns, p99-ns, allocs/op, B/op, B/actor and goroutines/actor. Lines
+// that start with # are comments, and blank lines are ignored.
 //
 // check exits 0 when every budget holds or the budgets file does not exist, 1 when a budget is
 // exceeded, and 2 on malformed input or a missing result.
@@ -43,13 +43,18 @@
 //	allocs/op          abs   c + floor(c/100), where c is the median rounded up to an integer
 //	B/op, B/actor      abs   the median plus 10 percent, rounded up to an integer
 //	goroutines/actor   abs   the median, rounded up to hundredths
-//	ns/op, p50-ns      rel   the ratio to the reference plus 25 percent, rounded up to hundredths
-//	p99-ns             rel   the ratio to the reference plus 50 percent, rounded up to hundredths
+//	ns/op, p50-ns      rel   the ratio to the reference times 1.5, or times 2 against BenchmarkCalibrate
+//	p99-ns             rel   the ratio to the reference times 2, or times 3 against BenchmarkCalibrate
+//
+// A rel budget is rounded up to three significant digits, so a small ratio keeps its precision:
+// 0.0013928 gives 0.0014, where hundredths would give 0.01.
 //
 // The reference of a rel budget is the same benchmark in another library, the one with the lowest
 // median in that unit; protoactor wins a tie over hollywood, and hollywood over goakt. The
 // reference of BenchmarkAskPipe and BenchmarkSimSeeds, which no other library runs, is
-// BenchmarkCalibrate ns/op. The budgets come out sorted by name, then by unit.
+// BenchmarkCalibrate ns/op. A ratio to BenchmarkCalibrate gets the larger factor, because its
+// CPU-bound loop moves more against lockstep than another library does when the runner's CPU
+// model changes. The budgets come out sorted by name, then by unit.
 //
 // report reads a baseline and writes a Markdown document to stdout: a title, the goos, goarch and
 // cpu lines and the # commit: and # date: lines of the baseline, then a section for each

@@ -32,9 +32,9 @@ func TestATBEN10Derive(t *testing.T) {
 		"BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op abs 111122",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 B/op abs 37",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 1",
-		"BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 2.09",
-		"BenchmarkSendLatency/lib=lockstep p99-ns rel BenchmarkSendLatency/lib=hollywood p99-ns 2.25",
-		"BenchmarkSimSeeds/workload=pingpong ns/op rel BenchmarkCalibrate ns/op 25",
+		"BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 2.5",
+		"BenchmarkSendLatency/lib=lockstep p99-ns rel BenchmarkSendLatency/lib=hollywood p99-ns 3",
+		"BenchmarkSimSeeds/workload=pingpong ns/op rel BenchmarkCalibrate ns/op 40",
 	), "")
 	wantStable(t, "derive", baseline)
 }
@@ -52,16 +52,17 @@ func TestDeriveHoldOnTheirBaseline(t *testing.T) {
 		"ok   BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op 110021.5 <= 111122",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 B/op 33 <= 37",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op 1 <= 1",
-		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 ns/op 100 / 60 = 1.67 <= 2.09",
-		"ok   BenchmarkSendLatency/lib=lockstep p99-ns 900 / 600 = 1.50 <= 2.25",
-		"ok   BenchmarkSimSeeds/workload=pingpong ns/op 20000 / 1000 = 20.00 <= 25",
+		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 ns/op 100 / 60 = 1.67 <= 2.5",
+		"ok   BenchmarkSendLatency/lib=lockstep p99-ns 900 / 600 = 1.5 <= 3",
+		"ok   BenchmarkSimSeeds/workload=pingpong ns/op 20000 / 1000 = 20 <= 40",
 	), "")
 }
 
 // TestDeriveRules checks BEN-170's rule for each unit, with values at the exact boundaries where
-// the product of two floats lands a hair above a limit: ceil(x - 1e-9) for integer budgets and
-// ceil(x*100 - 1e-9) / 100 for two-decimal ones (BEN §11). Without the tolerance, the median
-// 100 B/op gives 111, not 110.
+// the product of two floats lands a hair above a limit: ceil(x - 1e-9) for integer budgets, and
+// the same ceiling on the scaled value for hundredths and for three significant digits (BEN §11).
+// Without the tolerance, the median 100 B/op gives 111, not 110, and a ratio of 160/100 times 1.5
+// gives 2.41, not 2.4.
 func TestDeriveRules(t *testing.T) {
 	// For a rel budget the counterpart is BenchmarkA/lib=hollywood, with the median in ref.
 	for _, c := range []struct {
@@ -95,19 +96,25 @@ func TestDeriveRules(t *testing.T) {
 		{"goroutines/actor", "0.07", "", "abs 0.07"},
 		{"goroutines/actor", "1.005", "", "abs 1.01"},
 		{"goroutines/actor", "1.15", "", "abs 1.15"},
-		{"ns/op", "100", "60", "rel BenchmarkA/lib=hollywood ns/op 2.09"},
-		{"ns/op", "160", "100", "rel BenchmarkA/lib=hollywood ns/op 2"},
-		{"ns/op", "80", "100", "rel BenchmarkA/lib=hollywood ns/op 1"},
-		{"ns/op", "1", "3", "rel BenchmarkA/lib=hollywood ns/op 0.42"},
+		{"ns/op", "100", "60", "rel BenchmarkA/lib=hollywood ns/op 2.5"},
+		{"ns/op", "160", "100", "rel BenchmarkA/lib=hollywood ns/op 2.4"},
+		{"ns/op", "80", "100", "rel BenchmarkA/lib=hollywood ns/op 1.2"},
+		{"ns/op", "37", "100", "rel BenchmarkA/lib=hollywood ns/op 0.555"},
+		{"ns/op", "2469", "2", "rel BenchmarkA/lib=hollywood ns/op 1860"},
+		{"ns/op", "1", "3", "rel BenchmarkA/lib=hollywood ns/op 0.5"},
 		{"ns/op", "0", "3", "rel BenchmarkA/lib=hollywood ns/op 0"},
-		{"ns/op", "11", "25", "rel BenchmarkA/lib=hollywood ns/op 0.55"},
-		{"p50-ns", "100", "60", "rel BenchmarkA/lib=hollywood p50-ns 2.09"},
-		{"p50-ns", "100", "100", "rel BenchmarkA/lib=hollywood p50-ns 1.25"},
-		{"p99-ns", "900", "600", "rel BenchmarkA/lib=hollywood p99-ns 2.25"},
-		{"p99-ns", "100", "100", "rel BenchmarkA/lib=hollywood p99-ns 1.5"},
-		{"p99-ns", "400", "500", "rel BenchmarkA/lib=hollywood p99-ns 1.2"},
-		{"p99-ns", "8", "5", "rel BenchmarkA/lib=hollywood p99-ns 2.4"},
-		{"p99-ns", "1", "5", "rel BenchmarkA/lib=hollywood p99-ns 0.3"},
+		{"ns/op", "11", "25", "rel BenchmarkA/lib=hollywood ns/op 0.66"},
+		{"ns/op", "1", "1000", "rel BenchmarkA/lib=hollywood ns/op 0.0015"},
+		{"ns/op", "300", "1", "rel BenchmarkA/lib=hollywood ns/op 450"},
+		{"ns/op", "4000", "2", "rel BenchmarkA/lib=hollywood ns/op 3000"},
+		{"ns/op", "4001", "2", "rel BenchmarkA/lib=hollywood ns/op 3010"},
+		{"p50-ns", "100", "60", "rel BenchmarkA/lib=hollywood p50-ns 2.5"},
+		{"p50-ns", "100", "100", "rel BenchmarkA/lib=hollywood p50-ns 1.5"},
+		{"p99-ns", "900", "600", "rel BenchmarkA/lib=hollywood p99-ns 3"},
+		{"p99-ns", "100", "100", "rel BenchmarkA/lib=hollywood p99-ns 2"},
+		{"p99-ns", "400", "500", "rel BenchmarkA/lib=hollywood p99-ns 1.6"},
+		{"p99-ns", "8", "5", "rel BenchmarkA/lib=hollywood p99-ns 3.2"},
+		{"p99-ns", "1", "5", "rel BenchmarkA/lib=hollywood p99-ns 0.4"},
 	} {
 		t.Run(c.unit+" "+c.median+" "+c.ref, func(t *testing.T) {
 			results := []string{"BenchmarkA/lib=lockstep-8 10 " + c.median + " " + c.unit}
@@ -135,7 +142,7 @@ func TestDeriveSelection(t *testing.T) {
 	const want = `BenchmarkA/lib=lockstep/n=1 allocs/op abs 5
 BenchmarkB/lib=lockstep allocs/op abs 3
 BenchmarkSimSeeds/workload=w allocs/op abs 12
-BenchmarkSimSeeds/workload=w ns/op rel BenchmarkCalibrate ns/op 25
+BenchmarkSimSeeds/workload=w ns/op rel BenchmarkCalibrate ns/op 40
 `
 	wantDerive(t, want,
 		"goos: linux",
@@ -160,10 +167,10 @@ BenchmarkIdleActors/lib=lockstep/n=10000 B/actor abs 4
 BenchmarkIdleActors/lib=lockstep/n=100000 B/actor abs 4
 BenchmarkPingPong/lib=lockstep/pairs=1 B/op abs 8
 BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 1
-BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 1.25
+BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 1.5
 BenchmarkPingPong/lib=lockstep/pairs=procs B/op abs 8
 BenchmarkPingPong/lib=lockstep/pairs=procs allocs/op abs 1
-BenchmarkPingPong/lib=lockstep/pairs=procs ns/op rel BenchmarkPingPong/lib=hollywood/pairs=procs ns/op 1.25
+BenchmarkPingPong/lib=lockstep/pairs=procs ns/op rel BenchmarkPingPong/lib=hollywood/pairs=procs ns/op 1.5
 `
 	wantDerive(t, want,
 		"BenchmarkPingPong/lib=lockstep/pairs=procs 10 5 ns/op 7 B/op 1 allocs/op",
@@ -183,8 +190,8 @@ BenchmarkPingPong/lib=lockstep/pairs=procs ns/op rel BenchmarkPingPong/lib=holly
 // BenchmarkAskPipe and BenchmarkSimSeeds (BEN-170).
 func TestDeriveReference(t *testing.T) {
 	t.Run("lowest median per unit", func(t *testing.T) {
-		const want = `BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=hollywood ns/op 2.09
-BenchmarkA/lib=lockstep p99-ns rel BenchmarkA/lib=protoactor p99-ns 0.43
+		const want = `BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=hollywood ns/op 2.5
+BenchmarkA/lib=lockstep p99-ns rel BenchmarkA/lib=protoactor p99-ns 0.572
 `
 		wantDerive(t, want,
 			"BenchmarkA/lib=lockstep 10 100 ns/op 200 p99-ns",
@@ -195,8 +202,8 @@ BenchmarkA/lib=lockstep p99-ns rel BenchmarkA/lib=protoactor p99-ns 0.43
 	})
 
 	t.Run("a tie goes to the earliest library, not the first line", func(t *testing.T) {
-		const want = `BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=protoactor ns/op 2.09
-BenchmarkB/lib=lockstep ns/op rel BenchmarkB/lib=hollywood ns/op 2.09
+		const want = `BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=protoactor ns/op 2.5
+BenchmarkB/lib=lockstep ns/op rel BenchmarkB/lib=hollywood ns/op 2.5
 `
 		wantDerive(t, want,
 			"BenchmarkA/lib=goakt 10 60 ns/op",
@@ -211,7 +218,7 @@ BenchmarkB/lib=lockstep ns/op rel BenchmarkB/lib=hollywood ns/op 2.09
 
 	t.Run("the median of several samples decides", func(t *testing.T) {
 		// hollywood has the lowest median, 70; protoactor has the lowest mean and minimum.
-		const want = "BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=hollywood ns/op 1.79\n"
+		const want = "BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=hollywood ns/op 2.15\n"
 		wantDerive(t, want,
 			"BenchmarkA/lib=lockstep 10 100 ns/op",
 			"BenchmarkA/lib=protoactor 10 10 ns/op",
@@ -224,7 +231,7 @@ BenchmarkB/lib=lockstep ns/op rel BenchmarkB/lib=hollywood ns/op 2.09
 	})
 
 	t.Run("lockstep is not a counterpart of itself", func(t *testing.T) {
-		const want = "BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=protoactor ns/op 0.63\n"
+		const want = "BenchmarkA/lib=lockstep ns/op rel BenchmarkA/lib=protoactor ns/op 0.75\n"
 		wantDerive(t, want,
 			"BenchmarkA/lib=lockstep 10 100 ns/op",
 			"BenchmarkA/lib=protoactor 10 200 ns/op",
@@ -233,10 +240,10 @@ BenchmarkB/lib=lockstep ns/op rel BenchmarkB/lib=hollywood ns/op 2.09
 
 	t.Run("AskPipe and SimSeeds use the calibration", func(t *testing.T) {
 		const want = `BenchmarkAskPipe/lib=lockstep allocs/op abs 5
-BenchmarkAskPipe/lib=lockstep ns/op rel BenchmarkCalibrate ns/op 5
-BenchmarkAskPipe/lib=lockstep p50-ns rel BenchmarkCalibrate ns/op 3.75
-BenchmarkAskPipe/lib=lockstep p99-ns rel BenchmarkCalibrate ns/op 13.5
-BenchmarkSimSeeds/workload=crash3 ns/op rel BenchmarkCalibrate ns/op 50
+BenchmarkAskPipe/lib=lockstep ns/op rel BenchmarkCalibrate ns/op 8
+BenchmarkAskPipe/lib=lockstep p50-ns rel BenchmarkCalibrate ns/op 6
+BenchmarkAskPipe/lib=lockstep p99-ns rel BenchmarkCalibrate ns/op 27
+BenchmarkSimSeeds/workload=crash3 ns/op rel BenchmarkCalibrate ns/op 80
 `
 		wantDerive(t, want,
 			"BenchmarkAskPipe/lib=lockstep 10 4000 ns/op 3000 p50-ns 9000 p99-ns 5 allocs/op",
@@ -245,6 +252,82 @@ BenchmarkSimSeeds/workload=crash3 ns/op rel BenchmarkCalibrate ns/op 50
 			"BenchmarkCalibrate-8 10 1000 p50-ns",
 		)
 	})
+}
+
+// TestDeriveCalibrationRules checks BEN-170's factors for a ratio to BenchmarkCalibrate: 2 for
+// ns/op and p50-ns, 3 for p99-ns, one more than against another library, and three significant
+// digits, so that the ratios of about 0.0007 of BenchmarkAskPipe do not round up to 0.01 (AT-BEN-10).
+func TestDeriveCalibrationRules(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		unit   string
+		median string // with BenchmarkCalibrate at 1000 ns/op
+		want   string // the rest of the budget line, after the unit
+	}{
+		{"BenchmarkAskPipe/lib=lockstep", "ns/op", "0.6964", "rel BenchmarkCalibrate ns/op 0.0014"},
+		{"BenchmarkAskPipe/lib=lockstep", "p99-ns", "1.712", "rel BenchmarkCalibrate ns/op 0.00514"},
+		{"BenchmarkAskPipe/lib=lockstep", "p50-ns", "1234", "rel BenchmarkCalibrate ns/op 2.47"},
+		{"BenchmarkAskPipe/lib=lockstep", "p99-ns", "1234", "rel BenchmarkCalibrate ns/op 3.71"},
+		{"BenchmarkAskPipe/lib=lockstep", "p50-ns", "1000", "rel BenchmarkCalibrate ns/op 2"},
+		{"BenchmarkAskPipe/lib=lockstep", "p99-ns", "1000", "rel BenchmarkCalibrate ns/op 3"},
+		{"BenchmarkSimSeeds/workload=pingpong", "ns/op", "20000", "rel BenchmarkCalibrate ns/op 40"},
+		{"BenchmarkSimSeeds/workload=crash3", "ns/op", "1e9", "rel BenchmarkCalibrate ns/op 2000000"},
+	} {
+		t.Run(c.name+" "+c.unit+" "+c.median, func(t *testing.T) {
+			wantDerive(t, c.name+" "+c.unit+" "+c.want+"\n",
+				c.name+" 10 "+c.median+" "+c.unit,
+				"BenchmarkCalibrate-8 10 1000 ns/op",
+			)
+		})
+	}
+}
+
+// TestCeil3 checks ceil3 (BEN-170): zero stays zero, a value with three significant digits stays
+// as it is, anything above rounds up to the next number with three, within the tolerance of 1e-9
+// on the scaled value, and a value with more than three digits before the decimal point rounds
+// to an exact multiple of a power of ten.
+func TestCeil3(t *testing.T) {
+	for _, c := range []struct{ x, want float64 }{
+		{0, 0},
+		{1, 1},
+		{1.5, 1.5},
+		{2.5, 2.5},
+		{1.001, 1.01},
+		{9.99, 9.99},
+		{9.991, 10},
+		{99.9, 99.9},
+		{99.91, 100},
+		{0.1, 0.1},
+		{0.001, 0.001},
+		{0.555, 0.555},
+		{0.5551, 0.556},
+		{0.0013928, 0.0014},
+		{0.005136, 0.00514},
+		// Floating-point error and the tolerance.
+		{2.4000000000000004, 2.4}, // 160/100 * 1.5
+		{0.5550000000000001, 0.555},
+		{1 + 1e-12, 1},
+		{1 + 1e-10, 1.01},
+		// Three digits before the decimal point and more.
+		{100, 100},
+		{100.1, 101},
+		{999, 999},
+		{999.5, 1000},
+		{1000, 1000},
+		{1001, 1010},
+		{1851.75, 1860}, // 2469/2 * 1.5
+		{1860, 1860},
+		{1860.0000000001, 1860},
+		{1860.00001, 1870},
+		{123456, 124000},
+		{124000, 124000},
+		{1234567, 1240000},
+		{1e6, 1e6},
+	} {
+		if got := ceil3(c.x); got != c.want {
+			t.Errorf("ceil3(%v) = %v, want %v", c.x, got, c.want)
+		}
+	}
 }
 
 // TestDeriveErrors checks that a baseline that cannot give a budget fails with exit code 2, the
