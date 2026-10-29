@@ -309,8 +309,7 @@ func (p *pingPong) run(tb testing.TB, hops int) {
 
 // spawnIdleTree spawns parents actors under /user, each of which spawns children idle actors in
 // its Started hook, and returns once every one of them has started: parents + parents*children
-// actors in all. The actors are spread under parents because Shutdown's time grows with the
-// square of an actor's number of children.
+// actors in all.
 func spawnIdleTree(tb testing.TB, sys *lockstep.System, parents, children int) {
 	tb.Helper()
 	var started sync.WaitGroup // Started has returned for every actor that exists

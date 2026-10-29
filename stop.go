@@ -123,8 +123,8 @@ func (c *cell[M]) endIncarnationWork(cancelEffects bool) {
 // list, never a map.
 func (c *cell[M]) stopNextChild() {
 	for {
-		kids := c.sys.reg.Children(c.addr.path)
-		if len(kids) == 0 {
+		k, ok := c.sys.reg.LastChild(c.addr.path)
+		if !ok {
 			if c.state == supervise.Restarting {
 				c.finishEnd()
 			} else {
@@ -132,10 +132,9 @@ func (c *cell[M]) stopNextChild() {
 			}
 			return
 		}
-		k := kids[len(kids)-1]
 		child, ok := c.sys.lookupCell(k)
 		if !ok {
-			continue // it completed its stop after Children returned
+			continue // it completed its stop after LastChild returned
 		}
 		c.waitChild = Address{node: k.Node, path: k.Path, uid: k.UID}
 		child.requestStop(c.childStopReason(), c)

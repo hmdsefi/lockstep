@@ -11,6 +11,7 @@
 package registry
 
 import (
+	"slices"
 	"strconv"
 	"sync"
 )
@@ -142,6 +143,19 @@ func (r *Registry) Children(parent string) []Addr {
 	return append([]Addr(nil), p.children...)
 }
 
+// LastChild returns the most recently spawned registered child of parent, and false when parent
+// has none. It copies nothing: a stop of many children reads it once per child, newest first
+// (ACT-050, SUP-060, SUP-070).
+func (r *Registry) LastChild(parent string) (Addr, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.parentOf(parent)
+	if p == nil || len(p.children) == 0 {
+		return Addr{}, false
+	}
+	return p.children[len(p.children)-1], true
+}
+
 // Remove completes the final stop of the actor registered at path: it removes the entry, frees its
 // name, and returns the watchers listed on it in the order they were added (ACT-650), each with
 // the key it watched under. Remove of an unregistered path returns nil. It panics if the actor
@@ -166,10 +180,17 @@ func (r *Registry) Remove(path string) []Watch {
 	return e.watches
 }
 
+// removeAddr removes path's address from s and clears the slot it frees. It searches from both
+// ends, the newest first: a stop of many children removes the newest each time (ACT-050, SUP-060,
+// SUP-070), and actors that stop on their own tend to stop oldest first, so either takes a few
+// steps for any number of children.
 func removeAddr(s []Addr, path string) []Addr {
-	for i := range s {
-		if s[i].Path == path {
-			return append(s[:i], s[i+1:]...)
+	for lo, hi := 0, len(s)-1; lo <= hi; lo, hi = lo+1, hi-1 {
+		if s[hi].Path == path {
+			return slices.Delete(s, hi, hi+1)
+		}
+		if s[lo].Path == path {
+			return slices.Delete(s, lo, lo+1)
 		}
 	}
 	return s
