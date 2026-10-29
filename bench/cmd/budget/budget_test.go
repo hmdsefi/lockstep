@@ -4,6 +4,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -302,7 +303,8 @@ func TestATBEN09Check(t *testing.T) {
 
 // TestCheckTolerance checks that comparisons use the unrounded median and ratio with a tolerance
 // of 1e-9 (BEN-150, BEN §11): 0.15000000000000002 holds for 0.15 and 5.7 / 3 =
-// 1.9000000000000001 holds for 1.9, while a budget 1e-6 below the median fails.
+// 1.9000000000000001 holds for 1.9, which prints as 1.9, while a budget 1e-6 below the median
+// fails.
 func TestCheckTolerance(t *testing.T) {
 	budgets := writeFile(t, "budgets.txt",
 		"BenchmarkT ns/op abs 0.15",
@@ -311,7 +313,7 @@ func TestCheckTolerance(t *testing.T) {
 	)
 	wantRun(t, []string{"check", "-budgets", budgets, filepath.Join("testdata", "boundary.txt")}, 1, lines(
 		"ok   BenchmarkT ns/op 0.15000000000000002 <= 0.15",
-		"ok   BenchmarkU ns/op 5.7 / 3 = 1.90 <= 1.9",
+		"ok   BenchmarkU ns/op 5.7 / 3 = 1.9 <= 1.9",
 		"FAIL BenchmarkT ns/op 0.15000000000000002 > 0.149999",
 	), "")
 }
@@ -323,6 +325,58 @@ func TestCheckUnroundedRatio(t *testing.T) {
 	results := writeFile(t, "results.txt", "BenchmarkA-4 1 18249 ns/op", "BenchmarkR-4 1 10000 ns/op")
 	wantRun(t, []string{"check", "-budgets", budgets, results}, 1,
 		"FAIL BenchmarkA ns/op 18249 / 10000 = 1.82 > 1.82\n", "")
+}
+
+// TestCheckSmallRatio checks that a small ratio prints with three significant digits, where two
+// decimals would show 0.00, and that the comparison still uses the unrounded ratio: 0.6964 / 1000
+// prints as 0.000696 and exceeds a max-ratio of 0.000696 (BEN-160).
+func TestCheckSmallRatio(t *testing.T) {
+	results := writeFile(t, "results.txt", "BenchmarkAskPipe-4 1 0.6964 ns/op", "BenchmarkCalibrate-4 1 1000 ns/op")
+	budgets := writeFile(t, "budgets.txt",
+		"BenchmarkAskPipe ns/op rel BenchmarkCalibrate ns/op 0.0014",
+		"BenchmarkAskPipe ns/op rel BenchmarkCalibrate ns/op 0.000696",
+	)
+	wantRun(t, []string{"check", "-budgets", budgets, results}, 1, lines(
+		"ok   BenchmarkAskPipe ns/op 0.6964 / 1000 = 0.000696 <= 0.0014",
+		"FAIL BenchmarkAskPipe ns/op 0.6964 / 1000 = 0.000696 > 0.000696",
+	), "")
+}
+
+// TestRound3 checks the ratio of a rel line (BEN-160): three significant digits, rounded half away
+// from zero, printed with the fewest digits; zero, NaN and the infinities print unchanged.
+func TestRound3(t *testing.T) {
+	for _, c := range []struct {
+		v    float64
+		want string
+	}{
+		{100.0 / 55, "1.82"},
+		{100.0 / 60, "1.67"},
+		{900.0 / 600, "1.5"},
+		{1.5, "1.5"},
+		{20, "20"},
+		{9.996, "10"},
+		{0.0006964, "0.000696"},
+		{0.0010045, "0.001"},
+		{0.0014, "0.0014"},
+		{2.125, "2.13"}, // exactly halfway: rounds away from zero
+		{-2.125, "-2.13"},
+		{-1234.5, "-1230"},
+		{-0.0006964, "-0.000696"},
+		{999.5, "1000"},
+		{1234.5, "1230"}, // 123.45 rounds to 123
+		{1235, "1240"},   // 123.5 is exactly halfway
+		{12345, "12300"},
+		{12350000, "12400000"},
+		{1e9, "1000000000"},
+		{0, "0"},
+		{math.NaN(), "NaN"},
+		{math.Inf(1), "+Inf"},
+		{math.Inf(-1), "-Inf"},
+	} {
+		if got := formatFloat(round3(c.v)); got != c.want {
+			t.Errorf("ratio %v prints as %s, want %s", c.v, got, c.want)
+		}
+	}
 }
 
 // TestTrimProcs checks that trimProcs removes only a suffix of a dash and digits, the one go test
