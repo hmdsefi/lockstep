@@ -68,6 +68,7 @@ pkg github.com/hmdsefi/lockstep, func WithLogger(*slog.Logger) Option
 pkg github.com/hmdsefi/lockstep, func WithMailbox(int, MailboxPolicy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithMaxActors(int) Option
 pkg github.com/hmdsefi/lockstep, func WithMemoryEstimates() Option
+pkg github.com/hmdsefi/lockstep, func WithMetrics(Metrics) Option
 pkg github.com/hmdsefi/lockstep, func WithNodeName(string) Option
 pkg github.com/hmdsefi/lockstep, func WithStrategy(Strategy) SpawnOption
 pkg github.com/hmdsefi/lockstep, func WithThroughput(int) Option
@@ -125,6 +126,8 @@ pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Cleanup bool
 pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Directive Directive
 pkg github.com/hmdsefi/lockstep, type ChildFailed struct, Err error
 pkg github.com/hmdsefi/lockstep, type Context[M any] struct
+pkg github.com/hmdsefi/lockstep, type Counter interface { Add }
+pkg github.com/hmdsefi/lockstep, type Counter interface, Add(uint64)
 pkg github.com/hmdsefi/lockstep, type Directive uint8
 pkg github.com/hmdsefi/lockstep, type EffectID uint64
 pkg github.com/hmdsefi/lockstep, type EffectOption func(*effectConfig)
@@ -134,6 +137,12 @@ pkg github.com/hmdsefi/lockstep, type Effect[T any] interface, Run(context.Conte
 pkg github.com/hmdsefi/lockstep, type MailboxPolicy uint8
 pkg github.com/hmdsefi/lockstep, type MemSizer interface { MemSize }
 pkg github.com/hmdsefi/lockstep, type MemSizer interface, MemSize() int
+pkg github.com/hmdsefi/lockstep, type MetricLabel struct
+pkg github.com/hmdsefi/lockstep, type MetricLabel struct, Name string
+pkg github.com/hmdsefi/lockstep, type MetricLabel struct, Value string
+pkg github.com/hmdsefi/lockstep, type Metrics interface { Counter, GaugeFunc }
+pkg github.com/hmdsefi/lockstep, type Metrics interface, Counter(string, string, ...MetricLabel) Counter
+pkg github.com/hmdsefi/lockstep, type Metrics interface, GaugeFunc(string, string, func() int64, ...MetricLabel)
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type OverloadReason uint8
 pkg github.com/hmdsefi/lockstep, type Overloaded struct
@@ -193,6 +202,39 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/dedup, func NewReplies[K comparable, R any](Config) *Replies[K, R]
+pkg github.com/hmdsefi/lockstep/dedup, func NewVersions[K comparable](Config) *Versions[K]
+pkg github.com/hmdsefi/lockstep/dedup, func NewWindow[K comparable](Config) *Window[K]
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) Config() Config
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) Forget(K)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) Get(time.Time, K) (R, bool)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) Len(time.Time) int
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) MarshalJSON() ([]byte, error)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) Put(time.Time, K, R) bool
+pkg github.com/hmdsefi/lockstep/dedup, method (*Replies[K, R]) UnmarshalJSON([]byte) error
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) Accept(time.Time, K, uint64) bool
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) Config() Config
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) Forget(K)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) Get(time.Time, K) (uint64, bool)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) Len(time.Time) int
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) MarshalJSON() ([]byte, error)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Versions[K]) UnmarshalJSON([]byte) error
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Add(time.Time, K) bool
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Config() Config
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Contains(time.Time, K) bool
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Forget(K)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) Len(time.Time) int
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) MarshalJSON() ([]byte, error)
+pkg github.com/hmdsefi/lockstep/dedup, method (*Window[K]) UnmarshalJSON([]byte) error
+pkg github.com/hmdsefi/lockstep/dedup, method (Config) Validate() error
+pkg github.com/hmdsefi/lockstep/dedup, type Config struct
+pkg github.com/hmdsefi/lockstep/dedup, type Config struct, Capacity int
+pkg github.com/hmdsefi/lockstep/dedup, type Config struct, TTL time.Duration
+pkg github.com/hmdsefi/lockstep/dedup, type Replies[K comparable, R any] struct
+pkg github.com/hmdsefi/lockstep/dedup, type Versions[K comparable] struct
+pkg github.com/hmdsefi/lockstep/dedup, type Window[K comparable] struct
+pkg github.com/hmdsefi/lockstep/dedup, var ErrInvalidConfig error
+pkg github.com/hmdsefi/lockstep/dedup, var ErrInvalidEncoding error
 pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch = 256
 pkg github.com/hmdsefi/lockstep/persist, const DefaultReplayBatch ideal-int
 pkg github.com/hmdsefi/lockstep/persist, const MaxIDLen = 80

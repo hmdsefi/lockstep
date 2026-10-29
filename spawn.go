@@ -170,6 +170,7 @@ func spawn[M any](sys *System, parent Address, from engine.ActorRef, stopping, r
 		return refuse(err)
 	}
 	sys.recordSpawn(parent, c.addr, typ)
+	sys.countSpawned()
 	if sys.afterRegister != nil {
 		sys.afterRegister(c)
 	}

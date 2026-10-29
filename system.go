@@ -37,6 +37,10 @@ type System struct {
 	// logging calls; only AT-OBS-06 sets it.
 	events *slog.Logger
 	logOff atomic.Bool
+	// obs holds the counters New registered with WithMetrics's backend (OBS-120); nil when the
+	// system has metrics off and for one built on a given bundle, which never counts (OBS-110,
+	// OBS-155). Set before New returns and never changed.
+	obs *obsCounters
 
 	reg          *registry.Registry
 	user, system Address // the guardians; neither is registered (ACT-030)
@@ -142,7 +146,21 @@ func New(opts ...Option) *System {
 		panic(err) // unreachable: the options passed newConfig above
 	}
 	sys.events = sys.log
+	// A panic in the backend, while it registers or in the Counter.Add of the first heap sample,
+	// leaves the engine's workers and the overload machinery behind unless New stops them.
+	started := false
+	defer func() {
+		if !started {
+			sys.stopEngine()
+		}
+	}()
+	if cfg.metrics != nil {
+		// Counters register before the overload machinery starts, which can change admission and
+		// count that change (OBS-080).
+		sys.registerMetrics(cfg.metrics)
+	}
 	sys.startOverload(pe, gate, cfg)
+	started = true
 	return sys
 }
 

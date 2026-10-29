@@ -223,6 +223,7 @@ func (c *cell[M]) finishStop() {
 	// Steps 6 and 7.
 	c.setState(supervise.Stopped)
 	sys.recordStop(c.addr, c.inc, c.stopReason)
+	sys.countStopped(c.stopReason.Kind)
 	for _, w := range watchers {
 		sys.pushTerminated(w, c.stopReason, c)
 	}
