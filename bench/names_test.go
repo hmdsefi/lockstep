@@ -10,7 +10,6 @@ import (
 	"maps"
 	"math"
 	"os"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
@@ -47,8 +46,9 @@ var familyUnits = map[string][]string{
 var procsSuffix = regexp.MustCompile(`-[0-9]+$`)
 
 // goTestLine matches the lines other than result lines that go test -bench writes for a passing
-// package: configuration lines such as goos: linux, PASS, and the ok and no-test-files lines.
-var goTestLine = regexp.MustCompile(`^(?:[a-z][^\s:]*: |PASS$|ok  \t|\?   \t)`)
+// package: the configuration lines goos, goarch, pkg and cpu, PASS, and the ok and no-test-files
+// lines. A line a library writes, such as "warning: ...", matches none of them.
+var goTestLine = regexp.MustCompile(`^(?:(?:goos|goarch|pkg|cpu): |PASS$|ok  \t|\?   \t)`)
 
 // TestLibsOrder checks that libs.Libs returns the libraries in the order lockstep, protoactor,
 // hollywood, goakt, the order of benchLibs and of the budget tool's copy.
@@ -95,21 +95,21 @@ func wantBenchNames() []string {
 // one that go test writes itself (BEN-030).
 //
 // The child go test gets the parent's environment without LOCKSTEP_BENCH_LARGE, so it runs the 38
-// benchmarks however the parent was started. It is built without -race, even if GOFLAGS asks for it,
-// and gets an explicit timeout.
+// benchmarks however the parent was started. goTestCommand builds it without -race and runs each
+// benchmark once without -v, whatever GOFLAGS says, with a timeout that ends before the parent's.
 func TestATBEN05Names(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs every benchmark once in a child go test")
 	}
-	args := []string{"test", "-race=false", "-run", "^$", "-bench", ".", "-benchtime", "1x", "-timeout", "10m", "./..."}
-	cmd := exec.Command("go", args...)
+	cmd := goTestCommand(t, []string{"-run", "^$", "-bench", ".", "-benchtime", "1x"}, "./...")
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		return strings.HasPrefix(kv, largeEnv+"=")
 	})
+	desc := strings.Join(cmd.Args, " ")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("go %s: %v\n%s%s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes())
+		t.Fatalf("%s: %v\n%s%s", desc, err, stdout.Bytes(), stderr.Bytes())
 	}
 
 	count := map[string]int{} // result lines per name
@@ -145,7 +145,7 @@ func TestATBEN05Names(t *testing.T) {
 		}
 	}
 	if t.Failed() {
-		t.Logf("go %s printed:\n%s", strings.Join(args, " "), stdout.Bytes())
+		t.Logf("%s printed:\n%s", desc, stdout.Bytes())
 	}
 }
 
@@ -188,6 +188,36 @@ func checkUnits(t *testing.T, name string, units []string) {
 	}
 	if !slices.Equal(slices.Sorted(slices.Values(units)), slices.Sorted(slices.Values(want))) {
 		t.Errorf("%s reports %q, want %q", name, units, want)
+	}
+}
+
+// TestGoTestLine checks goTestLine on the lines go test -bench writes for a passing package and on
+// lines a library might write, which a longer run would put inside a result line.
+func TestGoTestLine(t *testing.T) {
+	for _, c := range []struct {
+		line string
+		want bool
+	}{
+		{"goos: linux", true},
+		{"goarch: amd64", true},
+		{"pkg: github.com/hmdsefi/lockstep/bench", true},
+		{"cpu: AMD EPYC 7763 64-Core Processor", true},
+		{"PASS", true},
+		{"ok  \tgithub.com/hmdsefi/lockstep/bench\t25.699s", true},
+		{"?   \tgithub.com/hmdsefi/lockstep/bench/libs\t[no test files]", true},
+		{"warning: queue is full", false},
+		{"error: actor stopped", false},
+		{"goos:linux", false},
+		{"os: linux", false},
+		{"PASS: 3 tests", false},
+		{"FAIL", false},
+		{"2026/10/29 05:03:50 INFO shutdown started", false},
+		{"time=2026-10-29T05:03:50Z level=INFO msg=stopped", false},
+		{"", false},
+	} {
+		if got := goTestLine.MatchString(c.line); got != c.want {
+			t.Errorf("goTestLine.MatchString(%q) = %v, want %v", c.line, got, c.want)
+		}
 	}
 }
 
