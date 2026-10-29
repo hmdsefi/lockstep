@@ -8,8 +8,8 @@
 // producer's mailbox holds 4 messages per consumer and refuses a send when full (FailSend); and an
 // idle workload of more than 900,000 actors runs on a system whose actor cap is 2,000,000.
 //
-// An actor that takes one message type has that type as its type parameter M; one that takes
-// several has M = any and a type switch. The messages are the harness values, wrapped where
+// An actor that receives several message types takes M = any and switches on the type; an actor
+// that receives one type takes that type as M. The messages are the harness values, wrapped where
 // lockstep needs more in the message itself: a fan-out ack names its consumer, since lockstep does
 // not tell an actor who sent a message, and the echo request carries the handle its answer goes
 // to. The ask-with-pipe workload, which only lockstep runs, has messages of its own.
@@ -37,9 +37,6 @@ const (
 	// largeCap is the cap of a system built for more.
 	largeIdle = 900_000
 	largeCap  = 2_000_000
-
-	// closeTimeout bounds how long Close waits for the system to stop.
-	closeTimeout = time.Minute
 )
 
 // askTimeout is the timeout of every ask, built once so an ask allocates no option.
@@ -55,7 +52,7 @@ func (Lib) Name() string { return "lockstep" }
 // discards its log: lockstep logs to slog's default logger, which writes to standard error, and
 // a line written while a benchmark runs would break its result line.
 func (Lib) Start() (harness.System, error) {
-	return &system{sys: newSystem(0)}, nil
+	return &system{sys: newSystem(0), idleLimit: largeIdle, idleCap: largeCap}, nil
 }
 
 // newSystem builds a system whose actor cap is maxActors, or lockstep's default when maxActors is
@@ -70,9 +67,13 @@ func newSystem(maxActors int) *lockstep.System {
 
 // system is a running lockstep system.
 type system struct {
-	sys       *lockstep.System
-	maxActors int   // the actor cap newSystem got; 0 for lockstep's default
-	err       error // from shutting down the system PrepareIdle replaced
+	sys *lockstep.System
+	// idleLimit is the most idle actors PrepareIdle runs on the started system; for more, it
+	// replaces the system, once, with one whose actor cap is idleCap. Start sets largeIdle and
+	// largeCap; TestPrepareIdleActorCap sets small values.
+	idleLimit, idleCap int
+	capped             bool  // PrepareIdle replaced the system
+	err                error // from shutting down the system PrepareIdle replaced
 
 	// The idle workload, from PrepareIdle.
 	idle     []lockstep.PID[harness.Hello]
@@ -86,14 +87,12 @@ type system struct {
 	skipShutdown bool
 }
 
-// Close shuts the system down and waits until every actor has stopped.
+// Close shuts the system down and waits until every actor has stopped, however long that takes.
 func (s *system) Close() error {
 	if s.skipShutdown {
 		return s.err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-	defer cancel()
-	return errors.Join(s.err, s.sys.Shutdown(ctx))
+	return errors.Join(s.err, s.sys.Shutdown(context.Background()))
 }
 
 // latch is the completion signal of a run: done closes when the count reaches zero, or at the
@@ -431,15 +430,13 @@ func (a *idler) Receive(_ *lockstep.Context[harness.Hello], _ harness.Hello) {
 }
 
 // PrepareIdle allocates the PID slice and the completion signal of n actors. With n above
-// largeIdle it first replaces the started system, which must have no actors yet, with one whose
-// actor cap holds n.
+// idleLimit it first replaces the started system, which must have no actors yet, with one whose
+// actor cap is idleCap.
 func (s *system) PrepareIdle(n int) {
-	if n > largeIdle && s.maxActors == 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-		s.err = s.sys.Shutdown(ctx)
-		cancel()
-		s.maxActors = largeCap
-		s.sys = newSystem(largeCap)
+	if n > s.idleLimit && !s.capped {
+		s.err = s.sys.Shutdown(context.Background())
+		s.sys = newSystem(s.idleCap)
+		s.capped = true
 	}
 	s.idle = make([]lockstep.PID[harness.Hello], n)
 	done := &latch{}
@@ -479,7 +476,10 @@ type echoAsk struct {
 }
 
 // newEchoAsk builds the request of an ask to the echo actor.
-func newEchoAsk(rt lockstep.ReplyTo[int64]) any { return echoAsk{reply: rt} }
+func newEchoAsk(rt lockstep.ReplyTo[int64]) any { return newAsk(rt) }
+
+// newAsk builds the request of an ask to the answerer.
+func newAsk(rt lockstep.ReplyTo[int64]) echoAsk { return echoAsk{reply: rt} }
 
 // echo records the latency of each harness.Stamp in rec and then signals the sender; it answers
 // each echoAsk with 1.
@@ -554,11 +554,16 @@ type piped struct {
 // toPiped turns the resolution of an ask into A's message.
 func toPiped(v int64, err error) any { return piped{v: v, err: err} }
 
-// asker is the asking actor A: it receives askStart and piped. It asks the echo actor B, pipes the
+// answerer is the actor B that A asks: it answers each ask with 1.
+type answerer struct{}
+
+func (answerer) Receive(ctx *lockstep.Context[echoAsk], m echoAsk) { m.reply.Send(ctx, 1) }
+
+// asker is the asking actor A: it receives askStart and piped. It asks the answerer B, pipes the
 // answer into its own mailbox, and asks again until its run is done, recording each round trip in
 // rec.
 type asker struct {
-	echo  lockstep.PID[any]
+	b     lockstep.PID[echoAsk]
 	rec   *harness.Recorder
 	done  *latch
 	left  int   // round trips left in this run
@@ -588,7 +593,7 @@ func (a *asker) Receive(ctx *lockstep.Context[any], msg any) {
 		return
 	}
 	a.sent = a.rec.Now()
-	lockstep.Pipe(ctx, lockstep.Ask(ctx, a.echo, newEchoAsk, askTimeout), toPiped)
+	lockstep.Pipe(ctx, lockstep.Ask(ctx, a.b, newAsk, askTimeout), toPiped)
 }
 
 // askPipe is a spawned ask-with-pipe workload.
@@ -599,15 +604,15 @@ type askPipe struct {
 	done  *latch
 }
 
-// AskPipe spawns the asking actor A and the echo actor B it asks; A records each round trip in
+// AskPipe spawns the asking actor A and the answerer B it asks; A records each round trip in
 // rec. As in PingPong, A's factory returns an actor the workload keeps.
 func (s *system) AskPipe(rec *harness.Recorder) (harness.Workload, error) {
-	pb, err := lockstep.Spawn(s.sys, "", func() lockstep.Actor[any] { return &echo{} })
+	pb, err := lockstep.Spawn(s.sys, "", func() lockstep.Actor[echoAsk] { return answerer{} })
 	if err != nil {
 		return nil, err
 	}
 	w := &askPipe{sys: s.sys, done: &latch{}}
-	a := &asker{echo: pb, rec: rec, done: w.done}
+	a := &asker{b: pb, rec: rec, done: w.done}
 	pa, err := lockstep.Spawn(s.sys, "", func() lockstep.Actor[any] { return a })
 	if err != nil {
 		return nil, err
