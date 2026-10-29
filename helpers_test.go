@@ -55,8 +55,7 @@ func newLocalSystem(t *testing.T, opts ...Option) *System {
 
 // shutdownAtEnd shuts sys down when the test ends, waiting up to 30 s, so goleak finds no
 // goroutine of its engine. A system the test shut down already returns at once. The bound is 30 s,
-// not the usual 10 s, because Shutdown's time grows with the square of the number of top-level
-// actors, and a test with thousands of them runs close to 10 s under -race with coverage on a
+// not the usual 10 s, because some tests stop thousands of actors, under -race with coverage on a
 // busy machine.
 func shutdownAtEnd(t *testing.T, sys *System) {
 	t.Helper()

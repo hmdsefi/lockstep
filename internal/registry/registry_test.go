@@ -6,6 +6,7 @@ package registry
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -226,8 +227,8 @@ func TestChildrenOrder(t *testing.T) {
 	}
 }
 
-// LastChild is the most recently spawned child that is still registered (ACT-050, SUP-060), and
-// reading it copies nothing.
+// LastChild is the most recently spawned child that is still registered (ACT-050, SUP-060,
+// SUP-070), and reading it copies nothing.
 func TestLastChild(t *testing.T) {
 	r := newTestRegistry()
 	for _, parent := range []string{"/user", "/nowhere"} {
@@ -264,6 +265,48 @@ func TestLastChild(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(100, func() { r.LastChild("/user") }); n != 0 {
 		t.Errorf("LastChild of 1000 children allocates %v times, want 0", n)
+	}
+}
+
+// removeAddr searches the child list from both ends: a stop of many children removes the newest
+// first (SUP-070), and actors that stop on their own tend to stop oldest first. A child list never
+// holds a path twice; the duplicates here only show which end the search reaches first. The slot
+// the removal frees is cleared, so the list does not keep a removed address reachable.
+func TestRemoveAddrSearchesBothEnds(t *testing.T) {
+	a := func(path string, uid uint64) Addr { return Addr{Node: "n1", Path: path, UID: uid} }
+	for _, tc := range []struct {
+		name     string
+		in, want []Addr
+	}{
+		{
+			"newest end first",
+			[]Addr{a("/x", 1), a("/b", 2), a("/c", 3), a("/d", 4), a("/x", 5)},
+			[]Addr{a("/x", 1), a("/b", 2), a("/c", 3), a("/d", 4)},
+		},
+		{
+			"oldest end before deeper",
+			[]Addr{a("/x", 1), a("/b", 2), a("/c", 3), a("/x", 4), a("/e", 5)},
+			[]Addr{a("/b", 2), a("/c", 3), a("/x", 4), a("/e", 5)},
+		},
+		{
+			"middle",
+			[]Addr{a("/a", 1), a("/b", 2), a("/x", 3), a("/d", 4), a("/e", 5)},
+			[]Addr{a("/a", 1), a("/b", 2), a("/d", 4), a("/e", 5)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			if got := removeAddr(tc.in, "/x"); !slices.Equal(got, tc.want) {
+				t.Errorf("removeAddr = %+v, want %+v", got, tc.want)
+			}
+			if last := backing[len(backing)-1]; last != (Addr{}) {
+				t.Errorf("the freed slot holds %+v, want the zero Addr", last)
+			}
+		})
+	}
+	in := []Addr{a("/a", 1), a("/b", 2)}
+	if got := removeAddr(in, "/x"); !slices.Equal(got, []Addr{a("/a", 1), a("/b", 2)}) {
+		t.Errorf("removeAddr of an absent path = %+v, want the list unchanged", got)
 	}
 }
 
