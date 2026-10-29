@@ -73,15 +73,16 @@ func watchdogRunning() bool {
 	return false
 }
 
-// AT-OVL-37: OVL-500, OVL-510. With WithWatchdog(100ms), a turn blocked for 300 ms is logged
-// once through the system's logger at Error, with the actor's node, path and uid, its running
-// time rounded down to milliseconds, the timeout, and the stack of the worker running it. That
-// internal/prodengine does not import internal/overload (R38) is TestImportBoundaries' DET-080
-// row for internal/prodengine.
+// AT-OVL-37: OVL-500, OVL-510. With WithWatchdog(100ms), a turn blocked for 300 ms is logged once
+// through the system's logger at Error, with the actor's node, path and uid, its running time
+// rounded down to milliseconds, the timeout, and the stack of the worker running it, and adds one
+// to lockstep_stuck_turns_total (OBS-120). That internal/prodengine does not import
+// internal/overload (R38) is TestImportBoundaries' DET-080 row for internal/prodengine.
 func TestATOVL37StuckTurnReported(t *testing.T) {
 	verifyNoneAtEnd(t)
 	records := captureDefaultLogger(t)
-	sys := newLocalSystem(t, WithNodeName("n1"), WithWatchdog(100*time.Millisecond))
+	counts := &countMetrics{}
+	sys := newLocalSystem(t, WithNodeName("n1"), WithWatchdog(100*time.Millisecond), WithMetrics(counts))
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	t.Cleanup(func() { close(release) }) // before the shutdown, which waits for the turn
 	pid, err := Spawn(sys, "stuck", actorOf[int](&fnActor[int]{receive: func(*Context[int], int) {
@@ -126,6 +127,9 @@ func TestATOVL37StuckTurnReported(t *testing.T) {
 	if s := stack.String(); stack.Kind() != slog.KindString || !strings.HasPrefix(s, "goroutine ") ||
 		!strings.Contains(s, "TestATOVL37StuckTurnReported") {
 		t.Errorf("stack is not the worker's, running this test's actor:\n%s", s)
+	}
+	if n := counts.count("lockstep_stuck_turns_total"); n != 1 {
+		t.Errorf("lockstep_stuck_turns_total = %d, want 1", n)
 	}
 }
 

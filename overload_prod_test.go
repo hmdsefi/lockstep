@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"runtime/metrics"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -244,6 +245,51 @@ func captureDefaultLogger(t *testing.T) func() []slogRecord {
 	}
 }
 
+// countMetrics is a Metrics that keeps the total of each counter series, by name and by its labels
+// after node, and ignores the gauges.
+type countMetrics struct {
+	mu     sync.Mutex
+	series map[string]*countSeries
+}
+
+// countSeries is one counter series of a countMetrics.
+type countSeries struct{ n atomic.Uint64 }
+
+func (c *countSeries) Add(n uint64) { c.n.Add(n) }
+
+// ovlSeriesKey returns the key of the series name with the labels kv, name and value pairs after node.
+func ovlSeriesKey(name string, kv ...string) string {
+	return name + "|" + strings.Join(kv, ",")
+}
+
+func (m *countMetrics) Counter(name, _ string, labels ...MetricLabel) Counter {
+	var kv []string
+	for _, l := range labels[1:] { // node comes first
+		kv = append(kv, l.Name, l.Value)
+	}
+	c := &countSeries{}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.series == nil {
+		m.series = make(map[string]*countSeries)
+	}
+	m.series[ovlSeriesKey(name, kv...)] = c
+	return c
+}
+
+func (*countMetrics) GaugeFunc(string, string, func() int64, ...MetricLabel) {}
+
+// count returns the total of the counter series name with the labels kv after node, or 0 if there
+// is no such series.
+func (m *countMetrics) count(name string, kv ...string) uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c := m.series[ovlSeriesKey(name, kv...)]; c != nil {
+		return c.n.Load()
+	}
+	return 0
+}
+
 // AT-OVL-27: OVL-300. New takes the first sample before it returns, so a spawn right after New
 // is refused when the live heap is above the high mark of the memory limit.
 func TestATOVL27FirstSampleBeforeNew(t *testing.T) {
@@ -300,7 +346,8 @@ func TestATOVL30AdmissionOff(t *testing.T) {
 // AT-OVL-32: OVL-340. A memory change is logged through the system's logger, slog's default when
 // New runs, with the node: one Warn "admission refusing" when the source turns on and one Info
 // "admission resumed" when it turns off, with OBS-060's attributes and no others. The system's
-// other events, such as the shutdown's, are left out.
+// other events, such as the shutdown's, are left out. Each change adds one to
+// lockstep_admission_transitions_total with the label to of its new state (OBS-120).
 func TestATOVL32AdmissionLogs(t *testing.T) {
 	verifyNoneAtEnd(t)
 	writer, flags := log.Writer(), log.Flags()
@@ -312,12 +359,21 @@ func TestATOVL32AdmissionLogs(t *testing.T) {
 	})
 	records := captureDefaultLogger(t)
 	feed := newMemFeed(t, 2100, noMemoryLimit)
-	sys := newLocalSystem(t, WithNodeName("n1"), WithAdmission(2000, 1000))
+	counts := &countMetrics{}
+	sys := newLocalSystem(t, WithNodeName("n1"), WithAdmission(2000, 1000), WithMetrics(counts))
 	if !sys.shedding() {
 		t.Fatal("the system admits after New with a live heap of 2100 over the high mark 2000")
 	}
 	feed.live.Store(900)
 	waitUntil(t, "memory source off at 900", func() bool { return !sys.shedding() })
+	waitUntil(t, "the transition to admitting counted", func() bool {
+		return counts.count("lockstep_admission_transitions_total", "to", "admitting") > 0
+	})
+	for to, want := range map[string]uint64{"refusing": 1, "admitting": 1} {
+		if got := counts.count("lockstep_admission_transitions_total", "to", to); got != want {
+			t.Errorf("lockstep_admission_transitions_total{to=%q} = %d, want %d", to, got, want)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := sys.Shutdown(ctx); err != nil {
