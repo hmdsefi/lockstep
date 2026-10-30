@@ -42,7 +42,7 @@
 // rel unit that has no reference makes the baseline malformed, and so does a baseline that yields
 // no budget.
 //
-//	allocs/op          abs   c + floor(c/100), where c is the median rounded up to an integer
+//	allocs/op          abs   c + max(1, floor(c/100)), where c is the median rounded up to an integer
 //	B/op, B/actor      abs   the median plus 10 percent, rounded up to an integer
 //	goroutines/actor   abs   the median, rounded up to hundredths
 //	ns/op, p50-ns      rel   the ratio to the reference times 1.5, or times 2 against BenchmarkCalibrate
