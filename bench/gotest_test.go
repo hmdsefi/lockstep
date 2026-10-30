@@ -66,6 +66,10 @@ func goTestCommand(t *testing.T, flags []string, pkgs ...string) *exec.Cmd {
 // -v first, so the caller's flags come after them and may set -count again, then the timeout, then
 // the packages. The timeout ends at least childMargin before this test's deadline.
 func TestGoTestCommand(t *testing.T) {
+	// latest is taken before goTestCommand reads the clock, so the time between the two reads can
+	// only make it larger than the timeout, never smaller.
+	deadline, ok := t.Deadline()
+	latest := time.Until(deadline) - childMargin
 	cmd := goTestCommand(t, []string{"-run", "^X$", "-count", "2"}, "./a", "./b")
 	head := []string{"go", "test", "-race=false", "-count=1", "-v=false", "-run", "^X$", "-count", "2", "-timeout"}
 	args := cmd.Args
@@ -76,14 +80,13 @@ func TestGoTestCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline, ok := t.Deadline()
 	if !ok {
 		if timeout != childTimeout {
 			t.Errorf("-timeout %v without a test deadline, want %v", timeout, childTimeout)
 		}
 		return
 	}
-	if latest := time.Until(deadline) - childMargin; timeout < time.Second || timeout > latest {
+	if timeout < time.Second || timeout > latest {
 		t.Errorf("-timeout %v, want at least 1s and at most %v, childMargin before the test deadline", timeout, latest)
 	}
 }
