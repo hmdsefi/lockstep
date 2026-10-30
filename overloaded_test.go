@@ -465,5 +465,38 @@ func TestOVL190SubscribeRacesWithChanges(t *testing.T) {
 	}
 }
 
+// OVL-170: the end of a subscription removes it from the list, found from both ends, the newest
+// first. The lists hold x's subscription twice, which a real list never does: a match at the
+// newest end wins, then one at the oldest end, before any deeper match. Subscribers stop newest
+// first in a shutdown, so a search from the oldest end only would take a step per remaining
+// subscription.
+func TestOverloadSubsRemoveSearchesBothEnds(t *testing.T) {
+	x, o1, o2 := &cell[any]{}, &cell[any]{}, &cell[any]{}
+	s := func(c actorCell, inc uint32, gen uint64) overloadSub { return overloadSub{cell: c, inc: inc, gen: gen} }
+	for _, tc := range []struct {
+		name     string
+		in, want []overloadSub
+	}{
+		{"newest end first", []overloadSub{s(x, 1, 1), s(o1, 1, 2), s(o2, 1, 3), s(x, 1, 4)},
+			[]overloadSub{s(x, 1, 1), s(o1, 1, 2), s(o2, 1, 3)}},
+		{"oldest end before deeper", []overloadSub{s(x, 1, 1), s(o1, 1, 2), s(x, 1, 3), s(o2, 1, 4)},
+			[]overloadSub{s(o1, 1, 2), s(x, 1, 3), s(o2, 1, 4)}},
+		{"middle", []overloadSub{s(o1, 1, 1), s(x, 1, 2), s(o2, 1, 3)}, []overloadSub{s(o1, 1, 1), s(o2, 1, 3)}},
+		{"another incarnation", []overloadSub{s(x, 1, 1), s(x, 2, 2)}, []overloadSub{s(x, 2, 2)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			o := &overloadSubs{list: tc.in}
+			o.remove(x, 1)
+			if got := o.snapshot(); !slices.Equal(got, tc.want) {
+				t.Errorf("subscriptions = %v, want %v", got, tc.want)
+			}
+			if last := backing[len(backing)-1]; last != (overloadSub{}) {
+				t.Errorf("the freed slot holds %v, want the zero subscription", last)
+			}
+		})
+	}
+}
+
 // overloadSubscribers returns the number of subscriptions of the system.
 func (s *System) overloadSubscribers() int { return len(s.ovl.snapshot()) }

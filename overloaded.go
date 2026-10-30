@@ -4,6 +4,7 @@
 package lockstep
 
 import (
+	"slices"
 	"strconv"
 	"sync"
 
@@ -97,15 +98,14 @@ func (o *overloadSubs) snapshot() []overloadSub {
 	return append([]overloadSub(nil), o.list...)
 }
 
-// remove deletes the subscription of incarnation inc of c, if there is one.
+// remove deletes the subscription of incarnation inc of c, if there is one. It searches the list
+// from both ends (indexNearEnds): subscribers stop newest first in a shutdown, and the list is in
+// subscription order.
 func (o *overloadSubs) remove(c actorCell, inc uint32) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for i, sub := range o.list {
-		if sub.cell == c && sub.inc == inc {
-			o.list = append(o.list[:i], o.list[i+1:]...)
-			return
-		}
+	if i := indexNearEnds(o.list, func(s overloadSub) bool { return s.cell == c && s.inc == inc }); i >= 0 {
+		o.list = slices.Delete(o.list, i, i+1)
 	}
 }
 

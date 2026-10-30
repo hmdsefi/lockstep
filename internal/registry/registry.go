@@ -44,8 +44,9 @@ type Registry struct {
 	mu      sync.Mutex
 	roots   map[string]*node
 	entries map[string]*entry
-	// watching maps a watcher to the paths of the targets whose lists hold it, for DropWatcher. It
-	// is looked up by key only, never ranged over.
+	// watching maps a watcher to the paths of the targets whose lists hold it, one path per entry,
+	// for DropWatcher: a watcher of one target under its uid and its path has the path twice. It is
+	// looked up by key only, never ranged over.
 	watching map[Watcher][]string
 }
 
@@ -181,19 +182,28 @@ func (r *Registry) Remove(path string) []Watch {
 }
 
 // removeAddr removes path's address from s and clears the slot it frees. It searches from both
-// ends, the newest first: a stop of many children removes the newest each time (ACT-050, SUP-060,
-// SUP-070), and actors that stop on their own tend to stop oldest first, so either takes a few
-// steps for any number of children.
+// ends (indexNearEnds).
 func removeAddr(s []Addr, path string) []Addr {
-	for lo, hi := 0, len(s)-1; lo <= hi; lo, hi = lo+1, hi-1 {
-		if s[hi].Path == path {
-			return slices.Delete(s, hi, hi+1)
-		}
-		if s[lo].Path == path {
-			return slices.Delete(s, lo, lo+1)
-		}
+	if i := indexNearEnds(s, func(a Addr) bool { return a.Path == path }); i >= 0 {
+		return slices.Delete(s, i, i+1)
 	}
 	return s
+}
+
+// indexNearEnds returns the index of the element of s nearest an end for which match is true, the
+// newest end first, or -1 if there is none. Actors stopped together stop newest first (ACT-050,
+// SUP-060, SUP-070), and actors that stop on their own tend to stop oldest first, so either finds
+// an actor's entry in a few steps for any length of s.
+func indexNearEnds[E any](s []E, match func(E) bool) int {
+	for lo, hi := 0, len(s)-1; lo <= hi; lo, hi = lo+1, hi-1 {
+		if match(s[hi]) {
+			return hi
+		}
+		if match(s[lo]) {
+			return lo
+		}
+	}
+	return -1
 }
 
 // Len returns the number of registered actors; guardians are not counted.
