@@ -3,7 +3,10 @@
 
 package registry
 
-import "slices"
+import (
+	"slices"
+	"strconv"
+)
 
 // Watcher is one watching incarnation.
 type Watcher struct {
@@ -57,14 +60,25 @@ func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool)
 	}
 	id := watchID{w, key}
 	if _, ok := r.listed[id]; ok {
-		i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w && x.Key == key })
-		e.watches[i].Seq = seq
+		e.watches[listedIndex(e, w, key)].Seq = seq
 		return true, false
 	}
 	r.listed[id] = struct{}{}
 	e.watches = append(e.watches, Watch{Watcher: w, Key: key, Seq: seq})
 	r.watching[w] = append(r.watching[w], key.Path)
 	return true, true
+}
+
+// listedIndex returns the index of w's entry under key on e's watcher list, found from both ends
+// (indexNearEnds). The caller holds r.mu and found the entry in r.listed, so a list without it
+// means the index and the lists disagree, and listedIndex panics.
+func listedIndex(e *entry, w Watcher, key Addr) int {
+	i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w && x.Key == key })
+	if i < 0 {
+		panic("registry: the index lists the watch of " + strconv.Quote(key.Path) + " by " +
+			strconv.Quote(w.Addr.Path) + ", but the watcher list lacks it")
+	}
+	return i
 }
 
 // RemoveWatch removes the entry of w under key from its target's watcher list and reports whether
