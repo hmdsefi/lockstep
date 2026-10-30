@@ -508,3 +508,38 @@ func TestStopDropsWatches(t *testing.T) {
 		t.Errorf("w's watched set after its stop = %v, want empty", c.ctx.watched.list)
 	}
 }
+
+// ACT-630: a delivered Terminated takes its address out of the watched set, found from both ends
+// of the set's list, the newest first. The lists hold x twice, which a real list never does: a
+// match at the newest end wins, then one at the oldest end, before any deeper match. A monitor
+// that watches many actors gets their Terminated newest first in a shutdown, so a search from the
+// oldest end only would take a step per remaining address.
+func TestWatchedSetRemoveSearchesBothEnds(t *testing.T) {
+	a := func(path string) Address { return Address{node: "local", path: path, uid: 1} }
+	x, b, c := a("/user/x"), a("/user/b"), a("/user/c")
+	for _, tc := range []struct {
+		name     string
+		in, want []Address
+	}{
+		{"newest end first", []Address{x, b, c, x}, []Address{x, b, c}},
+		{"oldest end before deeper", []Address{x, b, x, c}, []Address{b, x, c}},
+		{"middle", []Address{b, x, c}, []Address{b, c}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			w := watchedSet{list: tc.in, in: map[Address]uint64{x: 1, b: 2, c: 3}}
+			if !w.remove(x) {
+				t.Fatal("remove reported x not in the set")
+			}
+			if !slices.Equal(w.list, tc.want) {
+				t.Errorf("list = %v, want %v", w.list, tc.want)
+			}
+			if w.has(x) {
+				t.Error("x is still in the set")
+			}
+			if last := backing[len(backing)-1]; !last.IsZero() {
+				t.Errorf("the freed slot holds %v, want the zero Address", last)
+			}
+		})
+	}
+}

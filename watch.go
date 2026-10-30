@@ -156,16 +156,34 @@ func (w *watchedSet) add(a Address, seq uint64) {
 	w.list = append(w.list, a)
 }
 
-// remove takes a out of the set and reports whether it was there.
+// remove takes a out of the set and reports whether it was there. It searches the list from both
+// ends (indexNearEnds): a monitor that watches many actors gets their Terminated newest first in a
+// shutdown, and the list is in watch order.
 func (w *watchedSet) remove(a Address) bool {
 	if !w.has(a) {
 		return false
 	}
 	delete(w.in, a)
-	if i := slices.Index(w.list, a); i >= 0 {
+	if i := indexNearEnds(w.list, func(x Address) bool { return x == a }); i >= 0 {
 		w.list = slices.Delete(w.list, i, i+1)
 	}
 	return true
+}
+
+// indexNearEnds returns the index of the element of s nearest an end for which match is true, the
+// newest end first, or -1 if there is none. Actors stopped together stop newest first (ACT-050,
+// SUP-060, SUP-070), and actors that stop on their own tend to stop oldest first, so either finds
+// an actor's entry in a few steps for any length of s.
+func indexNearEnds[E any](s []E, match func(E) bool) int {
+	for lo, hi := 0, len(s)-1; lo <= hi; lo, hi = lo+1, hi-1 {
+		if match(s[hi]) {
+			return hi
+		}
+		if match(s[lo]) {
+			return lo
+		}
+	}
+	return -1
 }
 
 // recordWatch emits lockstep.watch (ACT-660, ACT §8). alive is "true" or "false".

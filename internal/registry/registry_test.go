@@ -459,6 +459,106 @@ func TestDropWatcher(t *testing.T) {
 	}
 }
 
+// ACT-640: DropWatcher removes one entry of the watcher per index entry, found from both ends of
+// the target's list, the newest first. The lists hold the watcher twice for one index entry, which
+// a real list never does: a match at the newest end wins, then one at the oldest end, before any
+// deeper match. Workers that watch one actor stop newest first in a shutdown, so a search from one
+// end only, or a scan of the whole list, would take a step per remaining watcher.
+func TestDropWatcherSearchesBothEnds(t *testing.T) {
+	x, o1, o2 := w("/user/x", 2, 1), w("/user/o1", 3, 1), w("/user/o2", 4, 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	e := func(x Watcher, seq uint64) Watch { return Watch{Watcher: x, Key: key, Seq: seq} }
+	for _, tc := range []struct {
+		name     string
+		in, want []Watch
+	}{
+		{"newest end first", []Watch{e(x, 1), e(o1, 2), e(o2, 3), e(x, 4)}, []Watch{e(x, 1), e(o1, 2), e(o2, 3)}},
+		{"oldest end before deeper", []Watch{e(x, 1), e(o1, 2), e(x, 3), e(o2, 4)}, []Watch{e(o1, 2), e(x, 3), e(o2, 4)}},
+		{"middle", []Watch{e(o1, 1), e(x, 2), e(o2, 3)}, []Watch{e(o1, 1), e(o2, 3)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRegistry()
+			mustAdd(t, r, "/user", "t", 1)
+			target := r.entries["/user/t"]
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			target.watches = tc.in
+			r.watching[x] = []string{"/user/t"}
+			r.DropWatcher(x)
+			if got := r.Watchers("/user/t"); !slices.Equal(got, tc.want) {
+				t.Errorf("Watchers = %+v, want %+v", got, tc.want)
+			}
+			if last := backing[len(backing)-1]; last != (Watch{}) {
+				t.Errorf("the freed slot holds %+v, want the zero Watch", last)
+			}
+			if _, ok := r.watching[x]; ok {
+				t.Error("the dropped watcher is still in the drop index")
+			}
+		})
+	}
+}
+
+// Remove takes the removed target's path out of each watcher's drop index, searching the index
+// from both ends, the newest first. The indexes hold the path twice for one watch entry, which a
+// real index never does. A monitor that watches many actors sees them stop newest first in a
+// shutdown, so a search from the oldest end only would take a step per remaining target.
+func TestRemoveUnindexesFromBothEnds(t *testing.T) {
+	x := w("/user/m", 2, 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	for _, tc := range []struct {
+		name     string
+		in, want []string
+	}{
+		{"newest end first", []string{"/user/t", "/b", "/c", "/user/t"}, []string{"/user/t", "/b", "/c"}},
+		{"oldest end before deeper", []string{"/user/t", "/b", "/user/t", "/c"}, []string{"/b", "/user/t", "/c"}},
+		{"middle", []string{"/a", "/user/t", "/c"}, []string{"/a", "/c"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRegistry()
+			mustAdd(t, r, "/user", "t", 1)
+			if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+				t.Fatalf("AddWatch = %v, %v", alive, added)
+			}
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			r.watching[x] = tc.in
+			r.Remove("/user/t")
+			if got := r.watching[x]; !slices.Equal(got, tc.want) {
+				t.Errorf("drop index = %q, want %q", got, tc.want)
+			}
+			if last := backing[len(backing)-1]; last != "" {
+				t.Errorf("the freed slot holds %q, want the empty path", last)
+			}
+		})
+	}
+}
+
+// The drop index holds a target's path once per watch entry, so DropWatcher removes every entry,
+// under the uid key and the path key, and RemoveWatch of one leaves the other's.
+func TestDropWatcherAfterRemoveWatch(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	pathKey := Addr{Node: "n1", Path: "/user/t"}
+	a, b := w("/user/a", 2, 1), w("/user/b", 3, 1)
+	r.AddWatch(key, a, 1)
+	r.AddWatch(key, b, 2)
+	r.AddWatch(pathKey, a, 3)
+	r.AddWatch(pathKey, b, 4)
+	if !r.RemoveWatch(key, a) {
+		t.Fatal("RemoveWatch reported nothing removed")
+	}
+	r.DropWatcher(a)
+	if got, want := r.Watchers("/user/t"), []Watch{{b, key, 2}, {b, pathKey, 4}}; !slices.Equal(got, want) {
+		t.Fatalf("Watchers = %v, want %v", got, want)
+	}
+	r.DropWatcher(b)
+	if got := r.Watchers("/user/t"); len(got) != 0 {
+		t.Fatalf("Watchers = %v, want none", got)
+	}
+	if len(r.watching) != 0 {
+		t.Fatalf("drop index = %v, want empty", r.watching)
+	}
+}
+
 func TestRemoveReturnsWatchers(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "t", 1)

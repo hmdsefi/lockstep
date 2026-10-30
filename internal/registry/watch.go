@@ -3,6 +3,8 @@
 
 package registry
 
+import "slices"
+
 // Watcher is one watching incarnation.
 type Watcher struct {
 	Addr Addr   // the watching actor
@@ -49,11 +51,6 @@ func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool)
 		}
 	}
 	e.watches = append(e.watches, Watch{Watcher: w, Key: key, Seq: seq})
-	for _, p := range r.watching[w] {
-		if p == key.Path {
-			return true, true
-		}
-	}
 	r.watching[w] = append(r.watching[w], key.Path)
 	return true, true
 }
@@ -70,7 +67,7 @@ func (r *Registry) RemoveWatch(key Addr, w Watcher) bool {
 	for i, x := range e.watches {
 		if x.Watcher == w && x.Key == key {
 			e.watches = append(e.watches[:i], e.watches[i+1:]...)
-			r.reindex(w, e)
+			r.unindex(w, e.addr.Path)
 			return true
 		}
 	}
@@ -89,7 +86,9 @@ func (r *Registry) Watchers(path string) []Watch {
 	return append([]Watch(nil), e.watches...)
 }
 
-// DropWatcher removes w from every watcher list it is on (ACT-640).
+// DropWatcher removes w from every watcher list it is on (ACT-640). It removes one entry of w per
+// path in w's drop index, each found from both ends of the target's list (indexNearEnds): workers
+// that watch one actor stop newest first in a shutdown, and their entries are in watch order.
 func (r *Registry) DropWatcher(w Watcher) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -98,36 +97,20 @@ func (r *Registry) DropWatcher(w Watcher) {
 		if !ok {
 			continue
 		}
-		kept := e.watches[:0]
-		for _, x := range e.watches {
-			if x.Watcher != w {
-				kept = append(kept, x)
-			}
+		if i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w }); i >= 0 {
+			e.watches = slices.Delete(e.watches, i, i+1)
 		}
-		clear(e.watches[len(kept):])
-		e.watches = kept
 	}
 	delete(r.watching, w)
 }
 
-// reindex drops path e from w's index when no entry of w remains on e. The caller holds r.mu.
-func (r *Registry) reindex(w Watcher, e *entry) {
-	for _, x := range e.watches {
-		if x.Watcher == w {
-			return
-		}
-	}
-	r.unindex(w, e.addr.Path)
-}
-
-// unindex removes path from w's list of watched targets. The caller holds r.mu.
+// unindex removes one occurrence of path from w's drop index, found from both ends
+// (indexNearEnds): a monitor that watches many actors sees them stop newest first in a shutdown,
+// and its index is in watch order. The caller holds r.mu.
 func (r *Registry) unindex(w Watcher, path string) {
 	paths := r.watching[w]
-	for i, p := range paths {
-		if p == path {
-			paths = append(paths[:i], paths[i+1:]...)
-			break
-		}
+	if i := indexNearEnds(paths, func(p string) bool { return p == path }); i >= 0 {
+		paths = slices.Delete(paths, i, i+1)
 	}
 	if len(paths) == 0 {
 		delete(r.watching, w)
