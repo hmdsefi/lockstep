@@ -821,8 +821,9 @@ come from the baseline in [`bench/results/baseline.txt`](bench/results/baseline.
 continuous integration (CI) run on `main` measured on `ubuntu-latest`. Time budgets are ratios to
 another benchmark in the same run, so a slower runner moves both sides.
 
-CI's `bench` job runs on every pull request, on every push to `main`, and every week. It fails when a
-lockstep result goes over a budget. [`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the
+CI's `bench` workflow runs on every push to `main` and every week. It also runs on pull requests that
+change code the benchmarks build: `bench/`, the root package, `internal/`, `persist/`, `sim/` or the
+root `go.mod`. It fails when a lockstep result goes over a budget. [`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the
 baseline, library by library.
 
 The job runs the benchmarks without GoAkt first (`-skip '/lib=goakt'`), then GoAkt's alone

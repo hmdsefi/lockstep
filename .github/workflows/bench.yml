@@ -1,0 +1,78 @@
+name: bench
+
+on:
+  push:
+    branches: [main]
+  # The suite takes up to half an hour, so a pull request runs it only when it changes what the
+  # bench module builds: the packages it imports, the module itself, and the root go.mod, whose
+  # requirements enter the module graph. The replaced root's go.sum is never read.
+  pull_request:
+    paths:
+      - '*.go'
+      - 'internal/**'
+      - 'persist/**'
+      - 'sim/**'
+      - '!**_test.go'
+      - '!**/testdata/**'
+      - 'bench/**'
+      - 'go.mod'
+      - '.github/workflows/bench.yml'
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+concurrency:
+  group: bench-${{ github.event.pull_request.number || github.run_id }} # one group per pull request
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GOWORK: 'off'
+    defaults:
+      run:
+        shell: bash # -eo pipefail, so a failure before | tee fails the step
+        working-directory: bench
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+      - name: budget-update trailers
+        if: github.event_name == 'pull_request'
+        run: |
+          set -e
+          for p in bench/results/baseline.txt bench/budgets.txt bench/go.mod; do
+            msgs=$(git log --format=%B "origin/${{ github.base_ref }}..HEAD" -- "../$p")
+            if [ -n "$msgs" ] && ! grep -q '^Budget-Update: ' <<<"$msgs"; then
+              echo "bench: $p changed without a Budget-Update trailer"
+              exit 1
+            fi
+          done
+      - name: simulation seeds per second
+        run: LOCKSTEP_BENCH_OUT=$PWD/sim.txt go test -run '^TestSimSeeds$' -count 10 .
+      - name: benchmarks without GoAkt
+        run: go test -run '^$' -bench . -skip '/lib=goakt' -benchmem -count 10 -timeout 80m ./... | tee results.txt
+      - name: GoAkt benchmarks, in a process of their own
+        run: go test -run '^$' -bench '/lib=goakt' -benchmem -count 10 -timeout 80m . | tee -a results.txt
+      - name: budgets
+        run: go run ./cmd/budget check -budgets budgets.txt results.txt sim.txt | tee budget.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bench-results
+          path: |
+            bench/results.txt
+            bench/sim.txt
+            bench/budget.txt
