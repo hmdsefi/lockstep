@@ -585,6 +585,25 @@ func TestRemoveWatchSearchesBothEnds(t *testing.T) {
 	}
 }
 
+// Should a bug ever leave an entry in the index that its target's list lacks, RemoveWatch panics
+// with a message that names the registry and the entry, as a re-watch does.
+func TestRemoveWatchPanicsWhenTheIndexDisagrees(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+		t.Fatalf("AddWatch = %v, %v", alive, added)
+	}
+	r.entries["/user/t"].watches = nil
+	defer func() {
+		if msg, _ := recover().(string); !strings.HasPrefix(msg, "registry: ") {
+			t.Fatalf("panic = %q, want a message that starts with %q", msg, "registry: ")
+		}
+	}()
+	r.RemoveWatch(key, x)
+}
+
 func TestDropWatcher(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "t1", 1)
