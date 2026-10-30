@@ -47,13 +47,15 @@ var rules = map[string]rule{
 // error: 100 * 1.10 is 110.00000000000001 and rounds to 110 (BEN §11).
 func ceilInt(x float64) float64 { return noNegativeZero(math.Ceil(x - tolerance)) }
 
-// ceilAllocs returns c + floor(c/100), where c is ceilInt(x): exact below 100 allocations and 1
-// percent above. Allocation counts are exact for the message benchmarks, but those of
-// BenchmarkIdleActors vary by a few between runs, as its op spawns n actors while the engine's
-// workers run.
+// ceilAllocs returns c + max(1, floor(c/100)), where c is ceilInt(x): one allocation of headroom
+// below 200 allocations and 1 percent from there up. Go prints allocs/op truncated to an integer,
+// so a count a fraction below the next integer prints one higher after a change too small to
+// matter, and the count of a parallel benchmark moves with contention. Those of
+// BenchmarkIdleActors also vary by a few between runs, as its op spawns n actors while the
+// engine's workers run.
 func ceilAllocs(x float64) float64 {
 	c := ceilInt(x)
-	return c + math.Floor(c/100)
+	return c + max(1, math.Floor(c/100))
 }
 
 // ceilHundredths returns the smallest multiple of 0.01 that is at least x, within the same
