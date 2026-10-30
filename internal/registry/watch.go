@@ -20,6 +20,13 @@ type Watch struct {
 	Seq     uint64
 }
 
+// watchID identifies an entry of a watcher list: the watcher and the key it watches under. The
+// key's path names the target, so one watchID is on at most one list.
+type watchID struct {
+	w   Watcher
+	key Addr
+}
+
 // target returns the entry a watch key refers to: the actor registered at key.Path, and, when the
 // key carries a uid, only if that uid matches. A path key (UID 0) matches whatever uid is
 // registered at the path. The caller holds r.mu.
@@ -37,6 +44,10 @@ func (r *Registry) target(key Addr) *entry {
 // (ACT-620), in which case the entry keeps its place in the list and takes seq. If the target is
 // not registered, a guardian, or has another uid, alive and added are both false and nothing is
 // stored.
+//
+// Whether the entry is listed is one lookup in r.listed, so n actors that watch one target cost
+// O(1) each. Only a re-watch reads the list, to find the entry from both ends (indexNearEnds); the
+// runtime never makes one, since Watch returns early for an address in the watched set.
 func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -44,12 +55,13 @@ func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool)
 	if e == nil {
 		return false, false
 	}
-	for i, x := range e.watches {
-		if x.Watcher == w && x.Key == key {
-			e.watches[i].Seq = seq
-			return true, false
-		}
+	id := watchID{w, key}
+	if _, ok := r.listed[id]; ok {
+		i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w && x.Key == key })
+		e.watches[i].Seq = seq
+		return true, false
 	}
+	r.listed[id] = struct{}{}
 	e.watches = append(e.watches, Watch{Watcher: w, Key: key, Seq: seq})
 	r.watching[w] = append(r.watching[w], key.Path)
 	return true, true
@@ -68,6 +80,7 @@ func (r *Registry) RemoveWatch(key Addr, w Watcher) bool {
 		if x.Watcher == w && x.Key == key {
 			e.watches = append(e.watches[:i], e.watches[i+1:]...)
 			r.unindex(w, e.addr.Path)
+			delete(r.listed, watchID{w, key})
 			return true
 		}
 	}
@@ -98,6 +111,7 @@ func (r *Registry) DropWatcher(w Watcher) {
 			continue
 		}
 		if i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w }); i >= 0 {
+			delete(r.listed, watchID{w, e.watches[i].Key})
 			e.watches = slices.Delete(e.watches, i, i+1)
 		}
 	}
