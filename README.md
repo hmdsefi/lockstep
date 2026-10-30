@@ -823,7 +823,7 @@ another benchmark in the same run, so a slower runner moves both sides.
 
 CI's `bench` workflow runs on every push to `main` and every week. It also runs on pull requests that
 change code the benchmarks build: `bench/`, the root package, `internal/`, `persist/`, `sim/` or the
-root `go.mod`. It fails when a lockstep result goes over a budget. [`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the
+root `go.mod`. Other pull requests get a passing `bench` check without running the suite. It fails when a lockstep result goes over a budget. [`bench/RESULTS.md`](bench/RESULTS.md) shows the medians of the
 baseline, library by library.
 
 The job runs the benchmarks without GoAkt first (`-skip '/lib=goakt'`), then GoAkt's alone
