@@ -25,13 +25,14 @@ func wantDerive(t *testing.T, want string, results ...string) {
 // none for the other libraries, msgs/s, seeds/s or ns/actor (BEN-170). The 100 B/actor of the
 // IdleActors row is where 100 * 1.10 is 110.00000000000001 in floating point, and the budget is
 // 110, not 111. Its 110021.5 allocs/op round up to 110022, and the budget adds 1100, one
-// hundredth of that rounded down.
+// hundredth of that rounded down. The 1 allocs/op of PingPong gets the minimum headroom of one
+// allocation.
 func TestATBEN10Derive(t *testing.T) {
 	wantRun(t, []string{"derive", baseline}, 0, lines(
 		"BenchmarkIdleActors/lib=lockstep/n=10000 B/actor abs 110",
 		"BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op abs 111122",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 B/op abs 37",
-		"BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 1",
+		"BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 2",
 		"BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 2.5",
 		"BenchmarkSendLatency/lib=lockstep p99-ns rel BenchmarkSendLatency/lib=hollywood p99-ns 3",
 		"BenchmarkSimSeeds/workload=pingpong ns/op rel BenchmarkCalibrate ns/op 40",
@@ -51,7 +52,7 @@ func TestDeriveHoldOnTheirBaseline(t *testing.T) {
 		"ok   BenchmarkIdleActors/lib=lockstep/n=10000 B/actor 100 <= 110",
 		"ok   BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op 110021.5 <= 111122",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 B/op 33 <= 37",
-		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op 1 <= 1",
+		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op 1 <= 2",
 		"ok   BenchmarkPingPong/lib=lockstep/pairs=1 ns/op 100 / 60 = 1.67 <= 2.5",
 		"ok   BenchmarkSendLatency/lib=lockstep p99-ns 900 / 600 = 1.5 <= 3",
 		"ok   BenchmarkSimSeeds/workload=pingpong ns/op 20000 / 1000 = 20 <= 40",
@@ -71,12 +72,13 @@ func TestDeriveRules(t *testing.T) {
 		ref    string // empty for an abs budget
 		want   string // the rest of the budget line, after the unit
 	}{
-		{"allocs/op", "0", "", "abs 0"},
-		{"allocs/op", "1", "", "abs 1"},
-		{"allocs/op", "1.0000000001", "", "abs 1"},
-		{"allocs/op", "1.5", "", "abs 2"},
-		{"allocs/op", "2.01", "", "abs 3"},
-		{"allocs/op", "99", "", "abs 99"},
+		{"allocs/op", "0", "", "abs 1"},
+		{"allocs/op", "1", "", "abs 2"},
+		{"allocs/op", "1.0000000001", "", "abs 2"},
+		{"allocs/op", "1.5", "", "abs 3"},
+		{"allocs/op", "2.01", "", "abs 4"},
+		{"allocs/op", "14", "", "abs 15"},
+		{"allocs/op", "99", "", "abs 100"},
 		{"allocs/op", "99.5", "", "abs 101"},
 		{"allocs/op", "100", "", "abs 101"},
 		{"allocs/op", "100.0000000001", "", "abs 101"},
@@ -139,9 +141,9 @@ func TestDeriveRules(t *testing.T) {
 // TestDeriveSelection checks which results get a budget: the lockstep results and the
 // BenchmarkSimSeeds results, in the units that have a rule (BEN-170).
 func TestDeriveSelection(t *testing.T) {
-	const want = `BenchmarkA/lib=lockstep/n=1 allocs/op abs 5
-BenchmarkB/lib=lockstep allocs/op abs 3
-BenchmarkSimSeeds/workload=w allocs/op abs 12
+	const want = `BenchmarkA/lib=lockstep/n=1 allocs/op abs 6
+BenchmarkB/lib=lockstep allocs/op abs 4
+BenchmarkSimSeeds/workload=w allocs/op abs 13
 BenchmarkSimSeeds/workload=w ns/op rel BenchmarkCalibrate ns/op 40
 `
 	wantDerive(t, want,
@@ -161,15 +163,15 @@ BenchmarkSimSeeds/workload=w ns/op rel BenchmarkCalibrate ns/op 40
 // TestDeriveSort checks that budgets come out sorted by name then unit in byte order, whatever
 // the order of the baseline (BEN-170).
 func TestDeriveSort(t *testing.T) {
-	const want = `BenchmarkAskPipe/lib=lockstep allocs/op abs 3
-BenchmarkAskPipe/lib=lockstep/extra allocs/op abs 3
+	const want = `BenchmarkAskPipe/lib=lockstep allocs/op abs 4
+BenchmarkAskPipe/lib=lockstep/extra allocs/op abs 4
 BenchmarkIdleActors/lib=lockstep/n=10000 B/actor abs 4
 BenchmarkIdleActors/lib=lockstep/n=100000 B/actor abs 4
 BenchmarkPingPong/lib=lockstep/pairs=1 B/op abs 8
-BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 1
+BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 2
 BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 1.5
 BenchmarkPingPong/lib=lockstep/pairs=procs B/op abs 8
-BenchmarkPingPong/lib=lockstep/pairs=procs allocs/op abs 1
+BenchmarkPingPong/lib=lockstep/pairs=procs allocs/op abs 2
 BenchmarkPingPong/lib=lockstep/pairs=procs ns/op rel BenchmarkPingPong/lib=hollywood/pairs=procs ns/op 1.5
 `
 	wantDerive(t, want,
@@ -239,7 +241,7 @@ BenchmarkB/lib=lockstep ns/op rel BenchmarkB/lib=hollywood ns/op 2.5
 	})
 
 	t.Run("AskPipe and SimSeeds use the calibration", func(t *testing.T) {
-		const want = `BenchmarkAskPipe/lib=lockstep allocs/op abs 5
+		const want = `BenchmarkAskPipe/lib=lockstep allocs/op abs 6
 BenchmarkAskPipe/lib=lockstep ns/op rel BenchmarkCalibrate ns/op 8
 BenchmarkAskPipe/lib=lockstep p50-ns rel BenchmarkCalibrate ns/op 6
 BenchmarkAskPipe/lib=lockstep p99-ns rel BenchmarkCalibrate ns/op 27
