@@ -49,7 +49,7 @@ type Registry struct {
 	// looked up by key only, never ranged over.
 	watching map[Watcher][]string
 	// listed holds the watchID of every entry on a watcher list, for AddWatch's duplicate check
-	// (ACT-620). It is looked up by key only, never ranged over.
+	// (ACT-620) and RemoveWatch's miss. It is looked up by key only, never ranged over.
 	listed map[watchID]struct{}
 }
 

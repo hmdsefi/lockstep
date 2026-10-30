@@ -69,6 +69,10 @@ func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool)
 
 // RemoveWatch removes the entry of w under key from its target's watcher list and reports whether
 // there was one.
+//
+// Whether the entry is listed is one lookup in r.listed, so a miss reads no list. A listed entry is
+// found from both ends of the list (indexNearEnds): watchers that unwatch one target in watch order,
+// or in the reverse, find their entries in a few steps for any number of watchers.
 func (r *Registry) RemoveWatch(key Addr, w Watcher) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -76,15 +80,15 @@ func (r *Registry) RemoveWatch(key Addr, w Watcher) bool {
 	if e == nil {
 		return false
 	}
-	for i, x := range e.watches {
-		if x.Watcher == w && x.Key == key {
-			e.watches = append(e.watches[:i], e.watches[i+1:]...)
-			r.unindex(w, e.addr.Path)
-			delete(r.listed, watchID{w, key})
-			return true
-		}
+	id := watchID{w, key}
+	if _, ok := r.listed[id]; !ok {
+		return false
 	}
-	return false
+	i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w && x.Key == key })
+	e.watches = slices.Delete(e.watches, i, i+1)
+	r.unindex(w, e.addr.Path)
+	delete(r.listed, id)
+	return true
 }
 
 // Watchers returns the watcher list of the actor registered at path, in the order the entries were

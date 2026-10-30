@@ -495,6 +495,75 @@ func TestWatchAfterRemove(t *testing.T) {
 	}
 }
 
+// RemoveWatch decides whether there is an entry to remove from the registry's index of listed
+// entries, without reading the target's list, so an Unwatch that has no entry takes no step per
+// watcher of the target. The list here holds the entry and the index lacks it, which a real
+// registry never has, so RemoveWatch reports nothing removed and leaves the list alone.
+func TestRemoveWatchChecksTheIndex(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	planted := Watch{Watcher: x, Key: key, Seq: 1}
+	r.entries["/user/t"].watches = []Watch{planted}
+	r.watching[x] = []string{"/user/t"}
+	if r.RemoveWatch(key, x) {
+		t.Fatal("RemoveWatch of an entry the index lacks reported it removed")
+	}
+	if got, want := r.Watchers("/user/t"), []Watch{planted}; !slices.Equal(got, want) {
+		t.Fatalf("Watchers = %+v, want %+v", got, want)
+	}
+	if got, want := r.watching[x], []string{"/user/t"}; !slices.Equal(got, want) {
+		t.Fatalf("drop index = %q, want %q", got, want)
+	}
+}
+
+// RemoveWatch finds a listed entry from both ends of the target's list, the newest first. The lists
+// hold the entry twice, which a real list never does: a match at the newest end goes, then one at
+// the oldest end, before any deeper match, and the same watcher's entry under another key stays.
+// Workers that watch one actor and unwatch it in watch order, or in the reverse, would otherwise
+// take a step per remaining watcher on each call.
+func TestRemoveWatchSearchesBothEnds(t *testing.T) {
+	x, o1, o2 := w("/user/x", 2, 1), w("/user/o1", 3, 1), w("/user/o2", 4, 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	pathKey := Addr{Node: "n1", Path: "/user/t"}
+	e := func(x Watcher, seq uint64) Watch { return Watch{Watcher: x, Key: key, Seq: seq} }
+	for _, tc := range []struct {
+		name     string
+		in, want []Watch
+	}{
+		{"newest end first", []Watch{e(x, 1), e(o1, 2), e(o2, 3), e(x, 4)}, []Watch{e(x, 1), e(o1, 2), e(o2, 3)}},
+		{"oldest end before deeper", []Watch{e(x, 1), e(o1, 2), e(x, 3), e(o2, 4)}, []Watch{e(o1, 2), e(x, 3), e(o2, 4)}},
+		{"middle", []Watch{e(o1, 1), e(x, 2), e(o2, 3)}, []Watch{e(o1, 1), e(o2, 3)}},
+		{"other key stays", []Watch{e(o1, 1), e(x, 2), {x, pathKey, 3}}, []Watch{e(o1, 1), {x, pathKey, 3}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRegistry()
+			mustAdd(t, r, "/user", "t", 1)
+			if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+				t.Fatalf("AddWatch = %v, %v", alive, added)
+			}
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			r.entries["/user/t"].watches = tc.in
+			if !r.RemoveWatch(key, x) {
+				t.Fatal("RemoveWatch reported nothing removed")
+			}
+			if got := r.Watchers("/user/t"); !slices.Equal(got, tc.want) {
+				t.Errorf("Watchers = %+v, want %+v", got, tc.want)
+			}
+			if last := backing[len(backing)-1]; last != (Watch{}) {
+				t.Errorf("the freed slot holds %+v, want the zero Watch", last)
+			}
+			if _, ok := r.listed[watchID{x, key}]; ok {
+				t.Error("the removed entry is still in the index")
+			}
+			if _, ok := r.watching[x]; ok {
+				t.Error("the removed entry's path is still in the drop index")
+			}
+		})
+	}
+}
+
 func TestDropWatcher(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "t1", 1)
