@@ -149,11 +149,28 @@ func (s *scheduler) turnWorker(from engine.ActorRef) *worker {
 
 // InTurn reports whether the caller is one of this engine's workers running a turn or a
 // callback (SCH-115). A worker that is choosing its next entry or parked is not in a turn.
+//
+// A worker sets its own busy flag before it runs a turn or a callback, so a caller inside one sees
+// at least that flag set. While no flag is set, InTurn returns false without reading the caller's
+// goroutine ID, which costs a walk of the caller's stack.
 func (s *scheduler) InTurn() bool {
+	if !s.anyBusy() {
+		return false
+	}
 	id := goroutineID()
 	for i, g := range s.goids {
 		if g == id {
 			return s.workers[i].busy.Load()
+		}
+	}
+	return false
+}
+
+// anyBusy reports whether some worker is running a turn or a callback (SCH-115).
+func (s *scheduler) anyBusy() bool {
+	for i := range s.workers {
+		if s.workers[i].busy.Load() {
+			return true
 		}
 	}
 	return false
@@ -448,14 +465,26 @@ func signal(c chan struct{}) {
 // heap, so a buffer on goroutineID's stack would cost an allocation on every InTurn call.
 var stackBufs = sync.Pool{New: func() any { return new([64]byte) }}
 
+// stackHook, when set, replaces the runtime.Stack call of goroutineID. Tests only.
+var stackHook atomic.Pointer[func(buf []byte) int]
+
 // goroutineID returns the calling goroutine's ID, parsed from the first line of its stack
 // trace, "goroutine <id> [" (SCH-270, as ENG-410), or 0 if that cannot be parsed (no goroutine
-// has ID 0). It does not allocate in steady state.
+// has ID 0). It does not allocate in steady state. It is slow: runtime.Stack formats the
+// caller's whole stack, however small buf is, and holds the runtime's print lock meanwhile.
 func goroutineID() uint64 {
 	buf, _ := stackBufs.Get().(*[64]byte)
-	id := parseGoroutineID(buf[:runtime.Stack(buf[:], false)])
+	id := parseGoroutineID(buf[:stack(buf[:])])
 	stackBufs.Put(buf)
 	return id
+}
+
+// stack calls the test hook if one is set, and otherwise runtime.Stack for the calling goroutine.
+func stack(buf []byte) int {
+	if h := stackHook.Load(); h != nil {
+		return (*h)(buf)
+	}
+	return runtime.Stack(buf, false)
 }
 
 // parseGoroutineID returns the number in b's prefix "goroutine <id> ", or 0.
