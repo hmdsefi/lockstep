@@ -86,7 +86,8 @@ func listedIndex(e *entry, w Watcher, key Addr) int {
 //
 // Whether the entry is listed is one lookup in r.listed, so a miss reads no list. A listed entry is
 // found from both ends of the list (listedIndex): watchers that unwatch one target in watch order,
-// or in the reverse, find their entries in a few steps for any number of watchers.
+// or in the reverse, find their entries in a few steps for any number of watchers. Removing an
+// entry near the oldest end still moves every later entry down one place.
 func (r *Registry) RemoveWatch(key Addr, w Watcher) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
