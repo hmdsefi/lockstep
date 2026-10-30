@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -382,6 +383,9 @@ func TestWatchDuplicate(t *testing.T) {
 	if r.RemoveWatch(key, watcher) {
 		t.Fatal("second RemoveWatch removed something")
 	}
+	if len(r.listed) != 2 {
+		t.Fatalf("index holds %d entries, want 2", len(r.listed))
+	}
 	if r.RemoveWatch(Addr{Node: "n1", Path: "/user/t", UID: 6}, w("/user/w", 9, 2)) {
 		t.Fatal("RemoveWatch with a stale uid removed something")
 	}
@@ -419,6 +423,99 @@ func TestWatcherOrder(t *testing.T) {
 	}
 }
 
+// AddWatch decides whether an entry is new from the registry's index of listed entries, without
+// reading the target's list: n actors that watch one target would otherwise take a step per
+// earlier watcher on each call. The list here holds a copy of the entry that the index lacks, which
+// a real registry never has, so AddWatch adds the entry again instead of finding the copy.
+func TestAddWatchChecksTheIndex(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	planted := Watch{Watcher: x, Key: key, Seq: 1}
+	r.entries["/user/t"].watches = []Watch{planted}
+	if alive, added := r.AddWatch(key, x, 2); !alive || !added {
+		t.Fatalf("AddWatch = %v, %v; want alive and added", alive, added)
+	}
+	if got, want := r.Watchers("/user/t"), []Watch{planted, {x, key, 2}}; !slices.Equal(got, want) {
+		t.Fatalf("Watchers = %+v, want %+v", got, want)
+	}
+}
+
+// A re-watch of a listed entry finds it from both ends of the target's list, the newest first, and
+// gives it the new sequence number in place (ACT-630). The lists hold the entry twice, which a real
+// list never does: a match at the newest end wins, then one at the oldest end, before any deeper
+// match. The runtime never re-watches a listed entry (Watch returns early for an address in the
+// watched set), so only the registry's own callers reach this search.
+func TestRewatchSearchesBothEnds(t *testing.T) {
+	x, o1, o2 := w("/user/x", 2, 1), w("/user/o1", 3, 1), w("/user/o2", 4, 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	e := func(x Watcher, seq uint64) Watch { return Watch{Watcher: x, Key: key, Seq: seq} }
+	for _, tc := range []struct {
+		name     string
+		in, want []Watch
+	}{
+		{"newest end first", []Watch{e(x, 1), e(o1, 2), e(o2, 3), e(x, 4)}, []Watch{e(x, 1), e(o1, 2), e(o2, 3), e(x, 9)}},
+		{"oldest end before deeper", []Watch{e(x, 1), e(o1, 2), e(x, 3), e(o2, 4)}, []Watch{e(x, 9), e(o1, 2), e(x, 3), e(o2, 4)}},
+		{"middle", []Watch{e(o1, 1), e(x, 2), e(o2, 3)}, []Watch{e(o1, 1), e(x, 9), e(o2, 3)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRegistry()
+			mustAdd(t, r, "/user", "t", 1)
+			if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+				t.Fatalf("first AddWatch = %v, %v", alive, added)
+			}
+			r.entries["/user/t"].watches = tc.in
+			if alive, added := r.AddWatch(key, x, 9); !alive || added {
+				t.Fatalf("re-watch = %v, %v; want alive and not added", alive, added)
+			}
+			if got := r.Watchers("/user/t"); !slices.Equal(got, tc.want) {
+				t.Errorf("Watchers = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The index and the lists always agree in a real registry. Should a bug ever leave an entry in the
+// index that its target's list lacks, a re-watch panics with a message that names the registry and
+// the entry, not with an index out of range.
+func TestRewatchPanicsWhenTheIndexDisagrees(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+		t.Fatalf("AddWatch = %v, %v", alive, added)
+	}
+	r.entries["/user/t"].watches = nil
+	defer func() {
+		if msg, _ := recover().(string); !strings.HasPrefix(msg, "registry: ") {
+			t.Fatalf("panic = %q, want a message that starts with %q", msg, "registry: ")
+		}
+	}()
+	r.AddWatch(key, x, 2)
+}
+
+// Remove takes the target's entries out of the index with its list: the watcher of a removed path
+// watches the actor registered there next as a new entry, under the same key.
+func TestWatchAfterRemove(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	pathKey := Addr{Node: "n1", Path: "/user/t"}
+	a := w("/user/a", 2, 1)
+	if alive, added := r.AddWatch(pathKey, a, 1); !alive || !added {
+		t.Fatalf("first AddWatch = %v, %v", alive, added)
+	}
+	r.Remove("/user/t")
+	mustAdd(t, r, "/user", "t", 3)
+	if alive, added := r.AddWatch(pathKey, a, 2); !alive || !added {
+		t.Fatalf("AddWatch after Remove = %v, %v; want alive and added", alive, added)
+	}
+	if got, want := r.Watchers("/user/t"), []Watch{{a, pathKey, 2}}; !slices.Equal(got, want) {
+		t.Fatalf("Watchers = %+v, want %+v", got, want)
+	}
+}
+
 func TestDropWatcher(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "t1", 1)
@@ -437,6 +534,9 @@ func TestDropWatcher(t *testing.T) {
 	}
 	if got := r.Watchers("/user/t2"); len(got) != 1 || got[0].Watcher != b {
 		t.Fatalf("t2 watchers = %v", got)
+	}
+	if len(r.listed) != 2 {
+		t.Fatalf("index holds %d entries, want 2", len(r.listed))
 	}
 	// Dropping a watcher that watches nothing, or twice, is fine; a can watch again.
 	r.DropWatcher(a)
@@ -557,6 +657,9 @@ func TestDropWatcherAfterRemoveWatch(t *testing.T) {
 	if len(r.watching) != 0 {
 		t.Fatalf("drop index = %v, want empty", r.watching)
 	}
+	if len(r.listed) != 0 {
+		t.Fatalf("index = %v, want empty", r.listed)
+	}
 }
 
 func TestRemoveReturnsWatchers(t *testing.T) {
@@ -571,6 +674,9 @@ func TestRemoveReturnsWatchers(t *testing.T) {
 	want := []Watch{{b, key, 7}, {a, pathKey, 8}, {c, key, 9}}
 	if got := r.Remove("/user/t"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Remove = %v, want %v", got, want)
+	}
+	if len(r.listed) != 0 {
+		t.Fatalf("index = %v, want empty", r.listed)
 	}
 	if got := r.Watchers("/user/t"); len(got) != 0 {
 		t.Fatalf("Watchers after Remove = %v", got)

@@ -3,7 +3,10 @@
 
 package registry
 
-import "slices"
+import (
+	"slices"
+	"strconv"
+)
 
 // Watcher is one watching incarnation.
 type Watcher struct {
@@ -18,6 +21,13 @@ type Watch struct {
 	Watcher Watcher
 	Key     Addr
 	Seq     uint64
+}
+
+// watchID identifies an entry of a watcher list: the watcher and the key it watches under. The
+// key's path names the target, so one watchID is on at most one list.
+type watchID struct {
+	w   Watcher
+	key Addr
 }
 
 // target returns the entry a watch key refers to: the actor registered at key.Path, and, when the
@@ -37,6 +47,10 @@ func (r *Registry) target(key Addr) *entry {
 // (ACT-620), in which case the entry keeps its place in the list and takes seq. If the target is
 // not registered, a guardian, or has another uid, alive and added are both false and nothing is
 // stored.
+//
+// Whether the entry is listed is one lookup in r.listed, so n actors that watch one target cost
+// O(1) each. Only a re-watch reads the list, to find the entry from both ends (indexNearEnds); the
+// runtime never makes one, since Watch returns early for an address in the watched set.
 func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -44,15 +58,27 @@ func (r *Registry) AddWatch(key Addr, w Watcher, seq uint64) (alive, added bool)
 	if e == nil {
 		return false, false
 	}
-	for i, x := range e.watches {
-		if x.Watcher == w && x.Key == key {
-			e.watches[i].Seq = seq
-			return true, false
-		}
+	id := watchID{w, key}
+	if _, ok := r.listed[id]; ok {
+		e.watches[listedIndex(e, w, key)].Seq = seq
+		return true, false
 	}
+	r.listed[id] = struct{}{}
 	e.watches = append(e.watches, Watch{Watcher: w, Key: key, Seq: seq})
 	r.watching[w] = append(r.watching[w], key.Path)
 	return true, true
+}
+
+// listedIndex returns the index of w's entry under key on e's watcher list, found from both ends
+// (indexNearEnds). The caller holds r.mu and found the entry in r.listed, so a list without it
+// means the index and the lists disagree, and listedIndex panics.
+func listedIndex(e *entry, w Watcher, key Addr) int {
+	i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w && x.Key == key })
+	if i < 0 {
+		panic("registry: the index lists the watch of " + strconv.Quote(key.Path) + " by " +
+			strconv.Quote(w.Addr.Path) + ", but the watcher list lacks it")
+	}
+	return i
 }
 
 // RemoveWatch removes the entry of w under key from its target's watcher list and reports whether
@@ -68,6 +94,7 @@ func (r *Registry) RemoveWatch(key Addr, w Watcher) bool {
 		if x.Watcher == w && x.Key == key {
 			e.watches = append(e.watches[:i], e.watches[i+1:]...)
 			r.unindex(w, e.addr.Path)
+			delete(r.listed, watchID{w, key})
 			return true
 		}
 	}
@@ -98,6 +125,7 @@ func (r *Registry) DropWatcher(w Watcher) {
 			continue
 		}
 		if i := indexNearEnds(e.watches, func(x Watch) bool { return x.Watcher == w }); i >= 0 {
+			delete(r.listed, watchID{w, e.watches[i].Key})
 			e.watches = slices.Delete(e.watches, i, i+1)
 		}
 	}

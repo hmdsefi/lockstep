@@ -48,6 +48,9 @@ type Registry struct {
 	// for DropWatcher: a watcher of one target under its uid and its path has the path twice. It is
 	// looked up by key only, never ranged over.
 	watching map[Watcher][]string
+	// listed holds the watchID of every entry on a watcher list, for AddWatch's duplicate check
+	// (ACT-620). It is looked up by key only, never ranged over.
+	listed map[watchID]struct{}
 }
 
 // New returns an empty registry.
@@ -56,6 +59,7 @@ func New() *Registry {
 		roots:    make(map[string]*node),
 		entries:  make(map[string]*entry),
 		watching: make(map[Watcher][]string),
+		listed:   make(map[watchID]struct{}),
 	}
 }
 
@@ -177,6 +181,7 @@ func (r *Registry) Remove(path string) []Watch {
 	}
 	for _, w := range e.watches {
 		r.unindex(w.Watcher, path)
+		delete(r.listed, watchID{w.Watcher, w.Key})
 	}
 	return e.watches
 }
