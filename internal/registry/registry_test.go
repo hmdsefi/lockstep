@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -473,6 +474,26 @@ func TestRewatchSearchesBothEnds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The index and the lists always agree in a real registry. Should a bug ever leave an entry in the
+// index that its target's list lacks, a re-watch panics with a message that names the registry and
+// the entry, not with an index out of range.
+func TestRewatchPanicsWhenTheIndexDisagrees(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+		t.Fatalf("AddWatch = %v, %v", alive, added)
+	}
+	r.entries["/user/t"].watches = nil
+	defer func() {
+		if msg, _ := recover().(string); !strings.HasPrefix(msg, "registry: ") {
+			t.Fatalf("panic = %q, want a message that starts with %q", msg, "registry: ")
+		}
+	}()
+	r.AddWatch(key, x, 2)
 }
 
 // Remove takes the target's entries out of the index with its list: the watcher of a removed path
