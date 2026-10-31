@@ -516,6 +516,98 @@ func TestWatchAfterRemove(t *testing.T) {
 	}
 }
 
+// RemoveWatch decides whether there is an entry to remove from the registry's index of listed
+// entries, without reading the target's list, so an Unwatch that has no entry takes no step per
+// watcher of the target. The list here holds the entry and the index lacks it, which a real
+// registry never has, so RemoveWatch reports nothing removed and leaves the list alone.
+func TestRemoveWatchChecksTheIndex(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	planted := Watch{Watcher: x, Key: key, Seq: 1}
+	r.entries["/user/t"].watches = []Watch{planted}
+	r.watching[x] = []string{"/user/t"}
+	if r.RemoveWatch(key, x) {
+		t.Fatal("RemoveWatch of an entry the index lacks reported it removed")
+	}
+	if got, want := r.Watchers("/user/t"), []Watch{planted}; !slices.Equal(got, want) {
+		t.Fatalf("Watchers = %+v, want %+v", got, want)
+	}
+	if got, want := r.watching[x], []string{"/user/t"}; !slices.Equal(got, want) {
+		t.Fatalf("drop index = %q, want %q", got, want)
+	}
+}
+
+// RemoveWatch finds a listed entry from both ends of the target's list, the newest first. The lists
+// hold the entry twice, which a real list never does: a match at the newest end goes, then one at
+// the oldest end, before any deeper match, and the same watcher's entry under another key stays.
+// Each of x's entries is watched before the list is planted, so x's index entries are the ones a
+// real registry holds. Workers that watch one actor and unwatch it newest first would otherwise
+// take a step per remaining watcher on each call.
+func TestRemoveWatchSearchesBothEnds(t *testing.T) {
+	x, o1, o2 := w("/user/x", 2, 1), w("/user/o1", 3, 1), w("/user/o2", 4, 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	pathKey := Addr{Node: "n1", Path: "/user/t"}
+	e := func(x Watcher, seq uint64) Watch { return Watch{Watcher: x, Key: key, Seq: seq} }
+	for _, tc := range []struct {
+		name      string
+		in, want  []Watch
+		wantPaths []string // x's drop index afterwards
+	}{
+		{"newest end first", []Watch{e(x, 1), e(o1, 2), e(o2, 3), e(x, 4)}, []Watch{e(x, 1), e(o1, 2), e(o2, 3)}, nil},
+		{"oldest end before deeper", []Watch{e(x, 1), e(o1, 2), e(x, 3), e(o2, 4)}, []Watch{e(o1, 2), e(x, 3), e(o2, 4)}, nil},
+		{"middle", []Watch{e(o1, 1), e(x, 2), e(o2, 3)}, []Watch{e(o1, 1), e(o2, 3)}, nil},
+		{"other key stays", []Watch{e(o1, 1), e(x, 2), {x, pathKey, 3}}, []Watch{e(o1, 1), {x, pathKey, 3}}, []string{"/user/t"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTestRegistry()
+			mustAdd(t, r, "/user", "t", 1)
+			for _, y := range tc.in {
+				if y.Watcher == x {
+					r.AddWatch(y.Key, x, y.Seq)
+				}
+			}
+			backing := tc.in[:len(tc.in):len(tc.in)]
+			r.entries["/user/t"].watches = tc.in
+			if !r.RemoveWatch(key, x) {
+				t.Fatal("RemoveWatch reported nothing removed")
+			}
+			if got := r.Watchers("/user/t"); !slices.Equal(got, tc.want) {
+				t.Errorf("Watchers = %+v, want %+v", got, tc.want)
+			}
+			if last := backing[len(backing)-1]; last != (Watch{}) {
+				t.Errorf("the freed slot holds %+v, want the zero Watch", last)
+			}
+			if _, ok := r.listed[watchID{x, key}]; ok {
+				t.Error("the removed entry is still in the index")
+			}
+			if got := r.watching[x]; !slices.Equal(got, tc.wantPaths) {
+				t.Errorf("drop index = %q, want %q", got, tc.wantPaths)
+			}
+		})
+	}
+}
+
+// Should a bug ever leave an entry in the index that its target's list lacks, RemoveWatch panics
+// with a message that names the registry and the entry, as a re-watch does.
+func TestRemoveWatchPanicsWhenTheIndexDisagrees(t *testing.T) {
+	r := newTestRegistry()
+	mustAdd(t, r, "/user", "t", 1)
+	key := Addr{Node: "n1", Path: "/user/t", UID: 1}
+	x := w("/user/x", 2, 1)
+	if alive, added := r.AddWatch(key, x, 1); !alive || !added {
+		t.Fatalf("AddWatch = %v, %v", alive, added)
+	}
+	r.entries["/user/t"].watches = nil
+	defer func() {
+		if msg, _ := recover().(string); !strings.HasPrefix(msg, "registry: ") {
+			t.Fatalf("panic = %q, want a message that starts with %q", msg, "registry: ")
+		}
+	}()
+	r.RemoveWatch(key, x)
+}
+
 func TestDropWatcher(t *testing.T) {
 	r := newTestRegistry()
 	mustAdd(t, r, "/user", "t1", 1)
