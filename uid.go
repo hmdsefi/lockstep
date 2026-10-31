@@ -17,6 +17,24 @@ const maxSeq = 1<<32 - 1
 func (s *System) allocUID() uint64 {
 	s.uidMu.Lock()
 	defer s.uidMu.Unlock()
+	return s.nextUID()
+}
+
+// allocAsk returns the next ask number (MSG-300 step 4) and the next uid, both allocated under the
+// uid lock, so ask numbers and uids rise together. It reports false, allocating nothing, when s is
+// stopped.
+func (s *System) allocAsk() (n, uid uint64, ok bool) {
+	s.uidMu.Lock()
+	defer s.uidMu.Unlock()
+	if s.stopped.Load() {
+		return 0, 0, false
+	}
+	s.asks.counter++
+	return s.asks.counter, s.nextUID(), true
+}
+
+// nextUID is allocUID with s.uidMu held.
+func (s *System) nextUID() uint64 {
 	if s.seq > maxSeq {
 		s.nextEpoch()
 	}

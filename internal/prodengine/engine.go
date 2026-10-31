@@ -77,6 +77,8 @@ type Engine struct {
 	tmu    sync.Mutex
 	timers map[*timer]struct{} // pending timers (timer.go); its length is the pending count
 
+	dl deadlines // the bundle's Deadlines, for ask timeouts (deadline.go)
+
 	fx           pool               // the effect pool (effects.go)
 	engineCtx    context.Context    // parent of every effect's context; cancelled by Stop
 	cancelEngine context.CancelFunc // cancels engineCtx
@@ -89,6 +91,7 @@ type Engine struct {
 // timers (SCH-130) come later, on demand.
 func New(cfg Config) *Engine {
 	e := &Engine{cfg: withDefaults(cfg), timers: make(map[*timer]struct{})}
+	e.dl.init(e, e.cfg.Workers)
 	e.engineCtx, e.cancelEngine = context.WithCancel(context.Background())
 	e.bundle = e.newBundle()
 	e.s.start(e.cfg.Workers, e.cfg.Throughput)
@@ -102,14 +105,14 @@ func (e *Engine) Config() Config {
 
 // Stop stops the engine (SCH-200). It panics when called from engine context.
 //
-// The first call marks the engine closing, so from then on Ready and ReadyFrom do nothing, and
-// AfterFunc and Start run nothing and return a Cancel that reports false. It then stops every
-// pending timer, drops the queued effects and cancels the contexts of the running ones, discards
-// every queued turn and callback, wakes every parked worker and waits until every worker has
-// exited. A worker exits at its next choice (SCH-070), so a turn or callback in progress
-// finishes first, and no callback runs after Stop returns (ENG-140). Stop does not wait for an
-// effect whose Run ignores its cancelled context; its done never runs. Later calls return once
-// the first has finished.
+// The first call marks the engine closing, so from then on Ready and ReadyFrom do nothing,
+// AfterFunc and Start run nothing and return a Cancel that reports false, and Arm arms nothing.
+// It then stops every pending timer, clears every armed deadline, drops the queued effects and
+// cancels the contexts of the running ones, discards every queued turn and callback, wakes every
+// parked worker and waits until every worker has exited. A worker exits at its next choice
+// (SCH-070), so a turn or callback in progress finishes first, and no callback runs after Stop
+// returns (ENG-140). Stop does not wait for an effect whose Run ignores its cancelled context;
+// its done never runs. Later calls return once the first has finished.
 func (e *Engine) Stop() {
 	if e.s.InTurn() {
 		panic("lockstep: prodengine: Stop called from engine context")
@@ -119,12 +122,14 @@ func (e *Engine) Stop() {
 
 // stop is the first Stop call, SCH-200 steps 1 to 4 in order.
 func (e *Engine) stop() {
-	// Step 1. The closing mark comes first: AfterFunc checks it under tmu, so stopTimers below
-	// sees every timer armed before it; Ready, ReadyFrom and the workers check it too.
+	// Step 1. The closing mark comes first: AfterFunc checks it under tmu and Arm under its
+	// shard's lock, so stopTimers and dl.stop below see every timer and deadline armed before it;
+	// Ready, ReadyFrom and the workers check it too.
 	e.s.closing.Store(true)
 	e.fx.stop() // the pool's own closing mark (Start, SCH-150 step 1); drops the queued jobs
 	// Step 2.
 	e.stopTimers()
+	e.dl.stop()
 	e.cancelEngine()
 	// Steps 2 (queued turns and callbacks), 3 and 4.
 	e.s.stop()

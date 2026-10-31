@@ -32,6 +32,7 @@ func (e *Engine) newBundle() engine.Engine {
 		Blocking:  true,
 		Scheduler: &e.s,
 		Clock:     e.clock(),
+		Deadlines: &e.dl,
 		Effects:   e.effects(),
 		Entropy:   entropy{},
 		Tracer:    noTracer{},

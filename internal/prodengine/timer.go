@@ -107,12 +107,13 @@ func (e *Engine) removeTimer(t *timer) {
 	e.tmu.Unlock()
 }
 
-// pendingTimers returns the number of pending timers: armed and neither started nor cancelled
-// (SCH-140). Tests use it.
+// pendingTimers returns the number of pending timers: armed and neither started nor cancelled,
+// ask deadlines included (SCH-140). Tests use it.
 func (e *Engine) pendingTimers() int {
 	e.tmu.Lock()
-	defer e.tmu.Unlock()
-	return len(e.timers)
+	n := len(e.timers)
+	e.tmu.Unlock()
+	return n + e.dl.pending()
 }
 
 // cancelNothing is the Cancel of a timer that was never armed.

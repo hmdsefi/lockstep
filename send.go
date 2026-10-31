@@ -259,7 +259,7 @@ func (s *System) offer(r routeRequest) outcome {
 			// askRefused (MBX-092). A tracked request was not enqueued, so its target does not
 			// track it.
 			if tracked {
-				s.asks.untrack(r.ask)
+				s.untrack(r.ask)
 			}
 			return outcome{kind: routeRefused, err: err}
 		}
@@ -290,7 +290,7 @@ func (s *System) offer(r routeRequest) outcome {
 		return outcome{kind: routeEnqueued, cell: c}
 	}
 	// The mailbox is closed.
-	if r.ask.IsZero() || tracked && s.asks.untrack(r.ask) {
+	if r.ask.IsZero() || tracked && s.untrack(r.ask) {
 		return s.deadRequest(r, reasonStopped)
 	}
 	// The stop's sweep took the tracked entry and fails the ask; a request that was not tracked
@@ -463,7 +463,7 @@ func (s *System) shedMessage(c actorCell, owner Address, r routeRequest, err err
 // has failed it already (MSG-340), or it is no longer pending. A zero ask is no request, and
 // nothing happens. The caller holds no cell lock.
 func (s *System) askRefused(ask, target Address, err error) {
-	if ask.IsZero() || !s.asks.untrack(ask) {
+	if ask.IsZero() || !s.untrack(ask) {
 		return
 	}
 	s.replyAttempt(ask, target, nil, err)

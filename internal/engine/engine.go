@@ -103,6 +103,25 @@ type Clock interface {
 	AfterFunc(d time.Duration, label string, fn func()) Cancel
 }
 
+// Deadlines arms ask timeouts: many short-lived timers that mostly stop before they expire. The
+// engine keeps them in one structure of its own, so arming and stopping one allocates nothing.
+type Deadlines interface {
+	// Arm makes x.Expire run in engine context once d has passed on the engine's clock (d <= 0:
+	// as soon as possible), exactly once unless Disarm stops it, and never inside the Arm call.
+	// key spreads concurrent callers over the engine's structure; callers pass a value that
+	// differs between concurrent calls. Arm returns the deadline's handle, never 0, or 0 when the
+	// engine arms nothing because it is stopping.
+	Arm(key uint64, d time.Duration, x Expirer) uint64
+	// Disarm stops the deadline with handle h. It returns true if this call kept Expire from ever
+	// running, and false if Expire has started, the deadline was disarmed before, or h is 0.
+	Disarm(h uint64) bool
+}
+
+// Expirer is what a deadline runs when it expires.
+type Expirer interface {
+	Expire()
+}
+
 // Transport carries envelopes to systems on other nodes.
 type Transport interface {
 	// Deliver sends env to the node env.To.Node. It never blocks. It returns an error only when
@@ -278,6 +297,7 @@ type Engine struct {
 	Blocking   bool       // a goroutine of an external caller may block (BlockSender, MBX)
 	Scheduler  Scheduler  // required
 	Clock      Clock      // required
+	Deadlines  Deadlines  // nil: ask timeouts use Clock.AfterFunc (every engine but production)
 	Transport  Transport  // nil: the system has no other nodes
 	Effects    Effects    // required
 	Entropy    Entropy    // required

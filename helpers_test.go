@@ -147,3 +147,16 @@ func stepUntilSuspended[M any](t *testing.T, eng *enginetest.Engine, c *cell[M])
 		}
 	}
 }
+
+// entries returns the number of entries in t's maps: asks of this system that are pending or
+// tracked, and tracked asks of other nodes.
+func (t *askTable) entries() (local, remote int) {
+	for i := range t.shards {
+		sh := &t.shards[i]
+		sh.mu.Lock()
+		local += len(sh.local)
+		remote += len(sh.remote)
+		sh.mu.Unlock()
+	}
+	return local, remote
+}
