@@ -207,7 +207,13 @@ func applyAskOptions(opts []AskOption) (askConfig, error) {
 	return cfg, nil
 }
 
-// armTimeout starts p's timeout timer on the engine clock (MSG-320, ENG-070).
+// armTimeout starts p's timeout timer on the engine clock (MSG-320): a deadline of the engine's
+// Deadlines, keyed by p's uid, so that concurrent asks spread over its structure, or else a
+// Clock.AfterFunc timer (ENG-070).
 func (s *System) armTimeout(p *pendingAsk) {
-	s.asks.arm(p, s.eng.Clock.AfterFunc(p.timeout, askTimeoutLabel, func() { s.askTimedOut(p) }))
+	if dl := s.eng.Deadlines; dl != nil {
+		s.arm(p, dl.Arm(p.addr.uid, p.timeout, p), nil)
+		return
+	}
+	s.arm(p, 0, s.eng.Clock.AfterFunc(p.timeout, askTimeoutLabel, func() { s.askTimedOut(p) }))
 }

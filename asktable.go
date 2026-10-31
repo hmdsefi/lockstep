@@ -17,8 +17,8 @@ import (
 // askTable is a system's ask state (MSG §11): the pending asks whose asker is this system, and the
 // asks this system's actors track (MSG-340). One mutex guards both, so applying a reply attempt
 // is atomic with every other resolution of the same ask (MSG-420). Lock order: a caller may hold
-// the table's lock while it takes the uid allocator's lock, the engine's timer lock (Cancel) or
-// the tracer's lock; nothing that holds those calls back into the table.
+// the table's lock while it takes the uid allocator's lock, the engine's timer or deadline lock
+// (stopping a timeout) or the tracer's lock; nothing that holds those calls back into the table.
 type askTable struct {
 	mu      sync.Mutex
 	counter uint64                 // the number of the last ask allocated: /temp/<counter> (MSG-300 step 4)
@@ -32,14 +32,22 @@ type askTable struct {
 
 // pendingAsk is one pending ask of the asker system (MSG-370).
 type pendingAsk struct {
+	sys     *System       // the asker system
 	addr    Address       // the ask address
 	asker   Address       // the asking actor, or the system address for a *System sender
 	target  Address       // the request's target; the zero Address for NewReply
 	timeout time.Duration // the ask's timeout (MSG-320)
-	cancel  engine.Cancel // the timeout timer's Cancel; nil until Ask or NewReply arms it
 	reply   resolver      // the typed Reply, seen without its R
 	removed bool          // no longer pending: resolved, or dropped after a builder panic
+
+	// The timeout timer, armed by Ask or NewReply: a deadline of the engine's Deadlines, or the
+	// Cancel of a Clock.AfterFunc timer on an engine without them.
+	deadline uint64
+	cancel   engine.Cancel
 }
+
+// Expire is the ask's deadline (MSG-320): it resolves p with ErrTimeout if p is still pending.
+func (p *pendingAsk) Expire() { p.sys.askTimedOut(p) }
 
 // resolver is the untyped view of a *Reply[R] (MSG §11), so reply attempts that arrive through
 // the transport resolve an ask without knowing R.
@@ -94,6 +102,7 @@ func (s *System) newAsk(asker, target Address, timeout time.Duration, reply reso
 	}
 	t.counter++
 	p := &pendingAsk{
+		sys:     s,
 		addr:    Address{node: s.node, path: "/temp/" + strconv.FormatUint(t.counter, 10), uid: s.allocUID()},
 		asker:   asker,
 		target:  target,
@@ -128,17 +137,30 @@ func (t *askTable) remove(p *pendingAsk) {
 	}
 }
 
-// arm stores the Cancel of p's timeout timer. If p already resolved (a reply attempt can arrive
-// through a ReplyTo that build leaked to another goroutine), it cancels the timer instead.
-func (t *askTable) arm(p *pendingAsk, cancel engine.Cancel) {
+// arm stores p's timeout timer: the deadline handle, or the AfterFunc timer's Cancel. If p already
+// resolved (a reply attempt can arrive through a ReplyTo that build leaked to another goroutine),
+// it stops the timer instead.
+func (s *System) arm(p *pendingAsk, deadline uint64, cancel engine.Cancel) {
+	t := &s.asks
 	t.mu.Lock()
 	if !p.removed {
-		p.cancel = cancel
+		p.deadline, p.cancel = deadline, cancel
 		t.mu.Unlock()
 		return
 	}
 	t.mu.Unlock()
-	cancel()
+	s.stopTimeout(deadline, cancel)
+}
+
+// stopTimeout stops an ask's timeout timer, given as arm stored it.
+func (s *System) stopTimeout(deadline uint64, cancel engine.Cancel) {
+	if cancel != nil {
+		cancel()
+		return
+	}
+	if dl := s.eng.Deadlines; dl != nil {
+		dl.Disarm(deadline)
+	}
 }
 
 // pendingAsks returns a copy of each pending ask of s, with its ask address, asker, target and
@@ -231,9 +253,7 @@ func (s *System) resolveLocked(ask Address, res resolution, desc string) (r reso
 		}
 	}
 	t.remove(p)
-	if p.cancel != nil {
-		p.cancel()
-	}
+	s.stopTimeout(p.deadline, p.cancel)
 	if res.how == byTimeout {
 		s.recordTimeout(p)
 	} else {
@@ -255,8 +275,8 @@ func (s *System) describeErr(err error) string {
 	return tr.Describe(err)
 }
 
-// askTimedOut is the timeout timer's function (MSG-320): it resolves p with ErrTimeout if p is
-// still pending.
+// askTimedOut is the timeout timer's function and p's Expire (MSG-320): it resolves p with
+// ErrTimeout if p is still pending.
 func (s *System) askTimedOut(p *pendingAsk) {
 	s.settle(p.addr, resolution{
 		how: byTimeout,
