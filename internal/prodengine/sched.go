@@ -25,7 +25,8 @@ type scheduler struct {
 	closing    atomic.Bool // set by stop; Ready and the workers check it (SCH-050, SCH-200)
 	global     globalQueue
 	workers    []worker
-	goids      []uint64 // goids[i] is worker i's goroutine ID; written before start returns
+	goids      []uint64 // goids[i] is worker i's goroutine ID, for RunningTurns (SCH-270)
+	keys       []uint64 // keys[i] is worker i's goroutineKey, for InTurn (SCH-115)
 	park       parkList
 	exited     sync.WaitGroup // one count per running worker
 }
@@ -58,11 +59,12 @@ type worker struct {
 }
 
 // start initializes s and starts workers worker goroutines. It returns once every worker has
-// recorded its goroutine ID, so InTurn is exact from then on.
+// recorded its goroutine ID and key, so InTurn is exact from then on.
 func (s *scheduler) start(workers, throughput int) {
 	s.throughput = throughput
 	s.workers = make([]worker, workers)
 	s.goids = make([]uint64, workers)
+	s.keys = make([]uint64, workers)
 	s.park.stack = make([]*worker, 0, workers)
 	var started sync.WaitGroup
 	started.Add(workers)
@@ -113,9 +115,9 @@ func (s *scheduler) Ready(a engine.ActorRef) {
 //
 // A call from any goroutine is safe. The runtime normally calls it on the worker that runs
 // from's turn, but a handler that uses its Context from a helper goroutine makes the runtime call
-// it from there (ACT-120). ReadyFrom never asks which goroutine calls it, since that would cost a
-// stack trace per call (SCH-110); instead pushLocal lets one goroutine at a time push to a local
-// queue, and a push that finds another one in progress goes to the global queue.
+// it from there (ACT-120). ReadyFrom never asks which goroutine calls it, since on some platforms
+// that costs a stack trace per call (goroutineKey); instead pushLocal lets one goroutine at a time
+// push to a local queue, and a push that finds another one in progress goes to the global queue.
 func (s *scheduler) ReadyFrom(a, from engine.ActorRef) {
 	if s.closing.Load() {
 		return
@@ -150,16 +152,19 @@ func (s *scheduler) turnWorker(from engine.ActorRef) *worker {
 // InTurn reports whether the caller is one of this engine's workers running a turn or a
 // callback (SCH-115). A worker that is choosing its next entry or parked is not in a turn.
 //
-// A worker sets its own busy flag before it runs a turn or a callback, so a caller inside one sees
-// at least that flag set. While no flag is set, InTurn returns false without reading the caller's
-// goroutine ID, which costs a walk of the caller's stack.
+// InTurn looks for the caller's goroutineKey among the workers' keys. Where reading the key walks
+// the caller's stack, InTurn first checks the busy flags: a worker sets its own before it runs a
+// turn or a callback, so a caller inside one sees at least that flag set, and while no flag is set
+// InTurn returns false without reading the key. Where the key is cheap, InTurn skips that check,
+// so a caller that is not a worker reads no busy flag, each of which its worker writes twice per
+// entry.
 func (s *scheduler) InTurn() bool {
-	if !s.anyBusy() {
+	if !goroutineKeyCheap && !s.anyBusy() {
 		return false
 	}
-	id := goroutineID()
-	for i, g := range s.goids {
-		if g == id {
+	k := goroutineKey()
+	for i, wk := range s.keys {
+		if wk == k {
 			return s.workers[i].busy.Load()
 		}
 	}
@@ -226,12 +231,18 @@ func (w *worker) popLocal() (engine.ActorRef, bool) {
 	return a, ok
 }
 
-// loop is the worker goroutine: it records its goroutine ID, then runs entries until the engine
-// closes. On the way out it drops the entries left in its own local queue; no other goroutine
-// pops a worker's local queue except to steal (SCH-200 step 3).
+// loop is the worker goroutine: it records its goroutine ID and key, then runs entries until the
+// engine closes. On the way out it drops the entries left in its own local queue; no other
+// goroutine pops a worker's local queue except to steal (SCH-200 step 3).
+//
+// A turn whose handler calls runtime.Goexit ends the worker with busy still set. The runtime may
+// give the exited worker's g to a new goroutine, whose goroutineKey is then the worker's key, so
+// loop clears busy on every way out, and InTurn stays false for that goroutine.
 func (w *worker) loop(started *sync.WaitGroup) {
 	defer w.s.exited.Done()
+	defer w.busy.Store(false)
 	w.s.goids[w.index] = goroutineID()
+	w.s.keys[w.index] = goroutineKey()
 	started.Done()
 	for {
 		ent, ok := w.next()
@@ -462,7 +473,8 @@ func signal(c chan struct{}) {
 }
 
 // stackBufs holds the buffers goroutineID passes to runtime.Stack. The buffer escapes to the
-// heap, so a buffer on goroutineID's stack would cost an allocation on every InTurn call.
+// heap, so a buffer on goroutineID's stack would cost an allocation on every call, and InTurn
+// calls it where goroutineKey is the goroutine ID.
 var stackBufs = sync.Pool{New: func() any { return new([64]byte) }}
 
 // stackHook, when set, replaces the runtime.Stack call of goroutineID. Tests only.
