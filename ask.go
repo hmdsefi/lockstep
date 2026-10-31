@@ -66,11 +66,11 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 		return resolvedReply[R](sys, sys.errStopped())
 	}
 
-	// 4. The ask address and the table entry. newAsk checks the stopped mark again under the
-	// table's lock, for a system that stopped since the check above (MSG-360).
+	// 4. The ask address and the table entry. newAsk checks the stopped mark again under its
+	// shard's lock, for a system that stopped since the check above (MSG-360).
 	r := newReply[R](sys)
-	p := sys.newAsk(fromAddr, to.addr, cfg.timeout, r)
-	if p == nil {
+	p := &r.entry
+	if !sys.newAsk(p, r, fromAddr, to.addr, cfg.timeout) {
 		return resolvedReply[R](sys, sys.errStopped())
 	}
 	r.ask = p.addr // before Ask returns, so before any Pipe reads it
@@ -180,8 +180,8 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 	// MSG-300 step 4 with the zero target, then the timer and the record. No actor tracks the ask
 	// (MSG-390): it resolves by a reply attempt, its timeout or its system stopping.
 	r := newReply[R](sys)
-	p := sys.newAsk(fromAddr, Address{}, cfg.timeout, r)
-	if p == nil {
+	p := &r.entry
+	if !sys.newAsk(p, r, fromAddr, Address{}, cfg.timeout) {
 		return ReplyTo[R]{}, resolvedReply[R](sys, sys.errStopped())
 	}
 	r.ask = p.addr
@@ -209,11 +209,15 @@ func applyAskOptions(opts []AskOption) (askConfig, error) {
 
 // armTimeout starts p's timeout timer on the engine clock (MSG-320): a deadline of the engine's
 // Deadlines, keyed by p's uid, so that concurrent asks spread over its structure, or else a
-// Clock.AfterFunc timer (ENG-070).
+// Clock.AfterFunc timer (ENG-070). If p resolved already (a reply attempt can arrive through a
+// ReplyTo that build leaked to another goroutine), it stops the timer again.
 func (s *System) armTimeout(p *pendingAsk) {
 	if dl := s.eng.Deadlines; dl != nil {
-		s.arm(p, dl.Arm(p.addr.uid, p.timeout, p), nil)
-		return
+		p.deadline = dl.Arm(p.addr.uid, p.timeout, p)
+	} else {
+		p.cancel = s.eng.Clock.AfterFunc(p.timeout, askTimeoutLabel, func() { s.askTimedOut(p) })
 	}
-	s.arm(p, 0, s.eng.Clock.AfterFunc(p.timeout, askTimeoutLabel, func() { s.askTimedOut(p) }))
+	if !p.timer.CompareAndSwap(timerUnarmed, timerArmed) {
+		s.stopTimeout(p)
+	}
 }

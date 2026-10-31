@@ -69,6 +69,8 @@ type actorCell interface {
 	// stuck reports whether the turn in progress is marked stuck (OVL-520); any goroutine may call
 	// it, and it takes no lock.
 	stuck() bool
+	// tracks returns the list of the asks the actor tracks (MSG-340); the ask table uses it.
+	tracks() *trackList
 }
 
 // cell is one actor: the engine.ActorRef that engines schedule (ENG-300). The same cell, with the
@@ -118,6 +120,10 @@ type cell[M any] struct {
 	// live is the cell's place in the system's live index, which the depth gauges iterate (obs.go);
 	// the index's lock guards it. It is unused when the system has metrics off.
 	live liveSlot
+
+	// tracked is the list of the asks the actor tracks, across incarnations (MSG-340); its own
+	// lock guards it (asktable.go).
+	tracked trackList
 
 	// guarded by mu
 	closed  bool   // both queues are closed: the final stop drained them (SUP-060 step 5)
@@ -269,6 +275,9 @@ func (c *cell[M]) blocksSenders() bool { return c.user.Policy() == mailbox.Block
 
 // userQueue returns the user mailbox (actorCell).
 func (c *cell[M]) userQueue() *mailbox.Queue[entry] { return c.user }
+
+// tracks returns the list of the asks the actor tracks (actorCell).
+func (c *cell[M]) tracks() *trackList { return &c.tracked }
 
 // offerWait offers e to the BlockSender user mailbox and waits for a slot (actorCell). It takes no
 // cell lock: a waiter holding mu would keep the turn from popping and so from freeing a slot. The

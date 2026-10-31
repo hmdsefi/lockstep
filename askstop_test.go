@@ -229,11 +229,11 @@ func TestOfferClosedMailbox(t *testing.T) {
 	if v, err := r.Await(context.Background()); v != 0 || !errors.Is(err, ErrTerminated) || err.Error() != terminatedText(a) {
 		t.Errorf("Await = %d, %v, want 0 and ErrTerminated with text %q", v, err, terminatedText(a))
 	}
-	sys.asks.mu.Lock()
-	tracked, lists := len(sys.asks.tracked), len(sys.asks.byActor)
-	sys.asks.mu.Unlock()
-	if tracked != 0 || lists != 0 {
-		t.Errorf("%d tracked asks and %d per-actor lists after a refused request, want none", tracked, lists)
+	if local, remote := sys.asks.entries(); local != 0 || remote != 0 {
+		t.Errorf("%d entries of local asks and %d of remote asks after a refused request, want none", local, remote)
+	}
+	if l := c.tracks(); l.head != nil {
+		t.Errorf("a's track list holds %v after a refused request, want nothing", l.head.addr)
 	}
 }
 
@@ -273,6 +273,7 @@ func TestTrackOnlyPendingAsks(t *testing.T) {
 func TestAskRacingStop(t *testing.T) {
 	sys := newLocalSystem(t)
 	const n = 200
+	cells := make([]*cell[acctMsg], 0, n)
 	for i := range n {
 		tp, err := Spawn(sys, fmt.Sprintf("t%d", i), actorOf[acctMsg](&fnActor[acctMsg]{
 			receive: func(ctx *Context[acctMsg], m acctMsg) {
@@ -284,6 +285,7 @@ func TestAskRacingStop(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		cells = append(cells, cellOf(t, sys, tp))
 		var wg sync.WaitGroup
 		replies := make([]*Reply[int64], 4)
 		for j := range replies {
@@ -306,11 +308,13 @@ func TestAskRacingStop(t *testing.T) {
 	}
 	// Every ask resolved, so none stays tracked: a stop removes its tracked asks before it fails
 	// them, and a reply attempt or a refused request removes its own.
-	sys.asks.mu.Lock()
-	tracked, lists := len(sys.asks.tracked), len(sys.asks.byActor)
-	sys.asks.mu.Unlock()
-	if tracked != 0 || lists != 0 {
-		t.Errorf("%d tracked asks and %d per-actor lists left after every ask resolved", tracked, lists)
+	if local, remote := sys.asks.entries(); local != 0 || remote != 0 {
+		t.Errorf("%d entries of local asks and %d of remote asks left after every ask resolved", local, remote)
+	}
+	for _, c := range cells {
+		if l := c.tracks(); l.head != nil {
+			t.Fatalf("%v's track list holds %v after every ask resolved", c.addr, l.head.addr)
+		}
 	}
 }
 
@@ -452,5 +456,42 @@ func TestATMSG26PipeAcrossRestart(t *testing.T) {
 				t.Errorf("a's mailbox holds %d entries", n)
 			}
 		})
+	}
+}
+
+// MSG-360, MSG-370: the ask table's shards list their asks in no order, so the pending asks that
+// the table lists, and resolves at the stop, are sorted by ask counter, with resolved asks left
+// out.
+func TestPendingAsksInCounterOrder(t *testing.T) {
+	sys, rec := newRecordingSystem(t)
+	var want []Address
+	for i := range 3 * askShards {
+		rt, _ := NewReply[int](sys, WithTimeout(time.Hour))
+		if i%3 == 1 {
+			rt.Send(sys, i) // resolved: no longer pending
+			continue
+		}
+		want = append(want, rt.addr)
+	}
+	var got []Address
+	for _, p := range sys.pendingAsks() {
+		got = append(got, p.addr)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("pendingAsks = %v, want %v", got, want)
+	}
+	shutdownWithin(t, sys)
+	var stopped []string
+	for _, a := range recordsOf(rec.Records(), "lockstep.reply") {
+		if slices.Contains(a, "err="+stoppedText(sys)) {
+			stopped = append(stopped, a[0])
+		}
+	}
+	wantStopped := make([]string, len(want))
+	for i, a := range want {
+		wantStopped[i] = "ask=" + a.String()
+	}
+	if !slices.Equal(stopped, wantStopped) {
+		t.Errorf("asks resolved at the stop = %v, want %v", stopped, wantStopped)
 	}
 }

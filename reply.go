@@ -47,6 +47,10 @@ type Reply[R any] struct {
 	ask  Address       // the ask address; zero for a reply resolved before it was sent (MSG-300 step 3)
 	done chan struct{} // closed at resolution (MSG-470)
 
+	// entry is the ask's entry in the asker's table (asktable.go), allocated with the reply. A
+	// reply resolved before it was sent leaves it unused.
+	entry pendingAsk
+
 	// val and err are written once, by the resolution (under the asker table's lock, or before
 	// Ask returns an already-resolved reply), before resolved is set and done is closed; readers
 	// load resolved, or receive from done, before they read them.

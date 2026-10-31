@@ -280,10 +280,10 @@ func TestTrackDuplicateDelivery(t *testing.T) {
 		t.Fatalf("silent tracks %v, want [%v] once", got, n2Ask)
 	}
 	ReplyTo[int]{addr: n2Ask}.Send(sys, 1)
-	sys.asks.mu.Lock()
-	l := sys.asks.byActor[c]
-	sys.asks.mu.Unlock()
-	if l != nil {
-		t.Errorf("silent's track list survives its only ask's reply: %+v", *l)
+	if l := c.tracks(); l.head != nil {
+		t.Errorf("silent's track list holds %v after its only ask's reply, want nothing", l.head.addr)
+	}
+	if _, remote := sys.asks.entries(); remote != 0 {
+		t.Errorf("%d entries of remote asks after the only one's reply, want none", remote)
 	}
 }
