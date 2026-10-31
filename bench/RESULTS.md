@@ -8,8 +8,8 @@ The header lines of that file give the platform, the commit and the date:
 goos: linux
 goarch: amd64
 cpu: AMD EPYC 7763 64-Core Processor
-# commit: ab9e41e6ae3c11c7d5dd8166ccda14f00e5cb984
-# date: 2026-10-29
+# commit: 39107e010343737aeadeb223a1a133c982757177
+# date: 2026-10-30
 ```
 
 ## PingPong
@@ -20,8 +20,8 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| pairs=1 | 780.7 | 2697.5 | 381.2 | 425.85 |
-| pairs=procs | 348.9 | 971.65 | 201.85 | 258.65 |
+| pairs=1 | 783.7 | 2758.5 | 385.8 | 431.85 |
+| pairs=procs | 330.3 | 963.95 | 198.7 | 256.55 |
 
 Median `allocs/op`:
 
@@ -38,8 +38,8 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| consumers=16 | 491.7 | 119.5 | 194 | 95.36 |
-| consumers=1024 | 526.85 | 286.35 | 372.5 | 231.5 |
+| consumers=16 | 486.7 | 121.8 | 199.15 | 94.255 |
+| consumers=1024 | 522.2 | 291.15 | 373.5 | 226.95 |
 
 Median `allocs/op`:
 
@@ -56,22 +56,22 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| n=10000 | 29011287.5 | 15043243.5 | 84773740 | 469269167 |
-| n=100000 | 258812053.5 | 161584858.5 | 686543711.5 | 4833572933 |
+| n=10000 | 30171851.5 | 16931474 | 87049616.5 | 486163318 |
+| n=100000 | 264596463 | 174943140.5 | 741022441 | 4957887550.5 |
 
 Median `B/actor`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| n=10000 | 2026 | 876 | 27904 | 1297 |
+| n=10000 | 2026 | 876 | 27905 | 1297 |
 | n=100000 | 2018 | 718 | 27899 | 1237 |
 
 Median `allocs/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| n=10000 | 110005 | 158649 | 202339 | 2449244.5 |
-| n=100000 | 1100483 | 1531632 | 2023897.5 | 24490701 |
+| n=10000 | 110005 | 158649 | 202440.5 | 2449242.5 |
+| n=100000 | 1100483 | 1531631.5 | 2023891 | 24490709 |
 
 ## SendLatency
 
@@ -81,19 +81,19 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| - | 1381 | 2803.5 | 660.75 | 696.15 |
+| - | 1410 | 2871 | 679.55 | 704.9 |
 
 Median `p50-ns`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| - | 752 | 331 | 321 | 371 |
+| - | 761 | 331 | 331 | 371 |
 
 Median `p99-ns`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| - | 2319 | 1638 | 1217.5 | 962 |
+| - | 2560 | 2053 | 1338 | 992 |
 
 Median `allocs/op`:
 
@@ -109,22 +109,22 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| callers=1 | 3864 | 6031.5 | 2263 | 1338.5 |
-| callers=procs | 4874 | 3613.5 | 2518 | 1025 |
+| callers=1 | 3942 | 5733 | 2368 | 1346.5 |
+| callers=procs | 4976 | 3589.5 | 2569.5 | 1026 |
 
 Median `p50-ns`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| callers=1 | 2815 | 3817 | 1713 | 1082 |
-| callers=procs | 7764.5 | 4388.5 | 1823 | 2305.5 |
+| callers=1 | 2836 | 3982 | 1748.5 | 1082 |
+| callers=procs | 7929.5 | 4985.5 | 1853.5 | 2304.5 |
 
 Median `p99-ns`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| callers=1 | 15519 | 18941 | 10060.5 | 6026 |
-| callers=procs | 148887.5 | 132174 | 144207.5 | 21903.5 |
+| callers=1 | 15960 | 19115.5 | 10835 | 6096 |
+| callers=procs | 150508 | 131384.5 | 144325 | 21978.5 |
 
 Median `allocs/op`:
 
@@ -141,19 +141,19 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| - | 3821 | n/a | n/a | n/a |
+| - | 3875 | n/a | n/a | n/a |
 
 Median `p50-ns`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| - | 2730 | n/a | n/a | n/a |
+| - | 2755 | n/a | n/a | n/a |
 
 Median `p99-ns`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| - | 13766 | n/a | n/a | n/a |
+| - | 14407 | n/a | n/a | n/a |
 
 Median `allocs/op`:
 
@@ -169,5 +169,5 @@ Median `ns/op`:
 
 | parameter | lockstep | protoactor | hollywood | goakt |
 |---|---:|---:|---:|---:|
-| workload=pingpong | 10942976 | n/a | n/a | n/a |
-| workload=crash3 | 313668773.5 | n/a | n/a | n/a |
+| workload=pingpong | 11208474 | n/a | n/a | n/a |
+| workload=crash3 | 317530045.5 | n/a | n/a | n/a |
