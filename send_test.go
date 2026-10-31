@@ -416,9 +416,9 @@ func (s *inTurnCounter) InTurn() bool {
 }
 
 // MBX-090, MBX-092: an outside Send or Ask asks Scheduler.InTurn only when the target's mailbox is
-// BlockSender, the one policy under which the sender may wait. The production engine's InTurn reads
-// the caller's goroutine ID from its stack, so a Send or Ask to a mailbox of any other policy must
-// not pay for it.
+// BlockSender, the one policy under which the sender may wait. On some platforms the production
+// engine's InTurn reads the caller's goroutine ID from its stack, so a Send or Ask to a mailbox of
+// any other policy must not pay for it.
 func TestOutsideOfferAsksInTurnOnlyForBlockSender(t *testing.T) {
 	b := enginetest.New("local", 1).Engine()
 	b.Blocking = true // as on the production engine, where an outside sender may wait

@@ -122,6 +122,11 @@ jobs:
         run: go mod tidy -diff
       - name: vet
         run: go vet ./...
+      - name: vet the production engine's other goroutineKey builds (SCH-115)
+        run: |
+          GOARCH=arm64 go vet ./internal/prodengine/
+          GOARCH=386 go vet ./internal/prodengine/
+          go vet -tags purego ./internal/prodengine/
       - name: build
         run: go build -v ./...
 
@@ -141,6 +146,8 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: test
         run: go test -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile=cover.out ./...
+      - name: test the production engine's goroutine-ID InTurn (purego, SCH-115)
+        run: go test -race -count=1 -tags purego ./internal/prodengine/
       - name: check coverage
         if: matrix.go == '1.26.x'
         id: coverage

@@ -154,7 +154,9 @@ func TestInTurnIdleSkipsStack(t *testing.T) {
 }
 
 // TestInTurnWhileWorkerBusy covers InTurn (SCH-115) while a worker runs a turn: false on the test
-// goroutine, which the busy worker makes InTurn check by goroutine ID, and true on the worker.
+// goroutine and true on the worker. Where goroutineKey is cheap, neither call walks a stack; where
+// it is the goroutine ID (other architectures, or the purego build tag), the busy worker makes
+// InTurn read the test goroutine's ID.
 func TestInTurnWhileWorkerBusy(t *testing.T) {
 	e := newEngine(t, Config{Node: "n", Workers: 2})
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -183,12 +185,88 @@ func TestInTurnWhileWorkerBusy(t *testing.T) {
 	if outside {
 		t.Error("InTurn() on the test goroutine while a worker is busy = true, want false")
 	}
-	if n := walks.Load(); n == 0 {
-		t.Error("InTurn() while a worker is busy did not check the goroutine ID")
-	}
 	waitFor(t, time.Second, "the turn", func() bool { return a.processed.Load() == 1 })
 	if got := inside.Load(); got != 2 {
 		t.Errorf("InTurn() inside RunTurn: state %d, want 2 (true)", got)
+	}
+	switch n := walks.Load(); {
+	case goroutineKeyCheap && n != 0:
+		t.Errorf("InTurn() walked the stack %d times, want 0 with a cheap goroutineKey", n)
+	case !goroutineKeyCheap && n == 0:
+		t.Error("InTurn() while a worker is busy did not check the goroutine ID")
+	}
+}
+
+// TestGoroutineKey covers the key InTurn compares (SCH-115): not 0, the same on one goroutine
+// after its stack has grown and moved, and different on goroutines that are alive at the same time.
+func TestGoroutineKey(t *testing.T) {
+	k := goroutineKey()
+	if k == 0 {
+		t.Fatal("goroutineKey() = 0 on the test goroutine")
+	}
+	if got := keyAtDepth(10_000, nil); got != k {
+		t.Errorf("goroutineKey() after the stack grew = %#x, want %#x as before", got, k)
+	}
+	const n = 8
+	keys := make(chan uint64)
+	release := make(chan struct{})
+	for range n {
+		go func() {
+			keys <- goroutineKey()
+			<-release // alive until every key is read, so the runtime cannot reuse its g
+		}()
+	}
+	seen := map[uint64]bool{k: true}
+	for range n {
+		got := <-keys
+		if seen[got] {
+			t.Errorf("goroutineKey() = %#x on two live goroutines", got)
+		}
+		seen[got] = true
+	}
+	close(release)
+}
+
+// keyAtDepth returns goroutineKey from depth frames further down. Each frame passes a 128-byte
+// buffer on its stack to the next, so the goroutine's stack grows past its initial size and is
+// copied to a new address on the way.
+//
+//go:noinline
+func keyAtDepth(depth int, buf []byte) uint64 {
+	if depth == 0 {
+		return goroutineKey()
+	}
+	var pad [128]byte
+	copy(pad[:], buf)
+	return keyAtDepth(depth-1, pad[:])
+}
+
+// TestInTurnAfterWorkerGoexit covers InTurn (SCH-115) after a turn ends its worker goroutine with
+// runtime.Goexit: the runtime may give the worker's g, and with it the worker's goroutineKey, to a
+// new goroutine, which is not in a turn. The test goroutine takes the dead worker's key, as such a
+// goroutine would.
+func TestInTurnAfterWorkerGoexit(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 1})
+	a := newFake(t, 0)
+	a.onTurn = func(*fakeActor, int) { runtime.Goexit() }
+	a.add()
+	e.s.Ready(a)
+	exited := make(chan struct{})
+	go func() {
+		e.s.exited.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker did not exit within 5 s of its turn calling runtime.Goexit")
+	}
+	key := e.s.keys[0]
+	e.s.keys[0] = goroutineKey()
+	inTurn := e.s.InTurn()
+	e.s.keys[0] = key // or Stop, at cleanup, would take the test goroutine for a busy worker
+	if inTurn {
+		t.Error("InTurn() on a goroutine with the key of a worker that exited in a turn = true, want false")
 	}
 }
 
@@ -325,6 +403,7 @@ func idleScheduler(n int) *scheduler {
 	s := &scheduler{throughput: 1}
 	s.workers = make([]worker, n)
 	s.goids = make([]uint64, n)
+	s.keys = make([]uint64, n)
 	s.park.stack = make([]*worker, 0, n)
 	for i := range s.workers {
 		w := &s.workers[i]
