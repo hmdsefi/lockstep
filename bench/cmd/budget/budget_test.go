@@ -503,6 +503,11 @@ func TestUsage(t *testing.T) {
 		{"report without a baseline", []string{"report"}, 2, "budget: missing baseline file\n" + usage},
 		{"report with two baselines", []string{"report", "a.txt", "b.txt"}, 2, "budget: too many baseline files\n" + usage},
 		{"report with an unknown flag", []string{"report", "-x"}, 2, "budget: flag provided but not defined: -x\n" + usage},
+		{"readme help", []string{"readme", "-h"}, 0, usage},
+		{"readme without a baseline", []string{"readme"}, 2, "budget: missing baseline file\n" + usage},
+		{"readme without a README", []string{"readme", "a.txt"}, 2, "budget: missing README file\n" + usage},
+		{"readme with three files", []string{"readme", "a.txt", "README.md", "b.txt"}, 2, "budget: too many files\n" + usage},
+		{"readme with an unknown flag", []string{"readme", "-x"}, 2, "budget: flag provided but not defined: -x\n" + usage},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			wantRun(t, c.args, c.wantCode, "", c.wantStderr)
