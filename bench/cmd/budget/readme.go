@@ -51,7 +51,7 @@ type headline struct {
 	count float64
 }
 
-// headlines lists the rows of the README table, in order.
+// headlines lists the rows of the README table, in order (BEN-185).
 var headlines = []headline{
 	{"Ping-pong, 1 pair", "BenchmarkPingPong/lib=lockstep/pairs=1", "ns/op", "per message", 0},
 	{"Ping-pong, `GOMAXPROCS` pairs", "BenchmarkPingPong/lib=lockstep/pairs=procs", "ns/op", "per message", 0},
@@ -59,7 +59,7 @@ var headlines = []headline{
 	{"100,000 idle actors", "BenchmarkIdleActors/lib=lockstep/n=100000", "B/actor", "heap bytes per actor", 0},
 	// The median ns/op divided by 100,000, not the median ns/actor, so that the row follows from
 	// the ns/op table of RESULTS.md, which has no ns/actor table.
-	{"Spawning 100,000 idle actors", "BenchmarkIdleActors/lib=lockstep/n=100000", "ns/op", "per actor", 100000},
+	{"Spawning 100,000 actors and sending each a message", "BenchmarkIdleActors/lib=lockstep/n=100000", "ns/op", "per actor", 100000},
 	{"Send latency, p50", "BenchmarkSendLatency/lib=lockstep", "p50-ns", "", 0},
 	{"Send latency, p99", "BenchmarkSendLatency/lib=lockstep", "p99-ns", "", 0},
 	{"Ask latency, 1 caller, p50", "BenchmarkAskLatency/lib=lockstep/callers=1", "p50-ns", "", 0},

@@ -45,7 +45,7 @@ var readmeBlock = strings.Join([]string{
 		"| Ping-pong, `GOMAXPROCS` pairs (ns per message) | 330 | n/a | n/a | n/a |\n" +
 		"| Fan-out to 1,024 consumers (µs per item) | 1,234.6 | n/a | n/a | n/a |\n" +
 		"| 100,000 idle actors (heap bytes per actor) | 2,025.5 | n/a | n/a | 1,237 |\n" +
-		"| Spawning 100,000 idle actors (ns per actor) | 2,646 | n/a | n/a | 49,579 |\n" +
+		"| Spawning 100,000 actors and sending each a message (ns per actor) | 2,646 | n/a | n/a | 49,579 |\n" +
 		"| Send latency, p50 (ns) | 761 | n/a | 331 | n/a |\n" +
 		"| Send latency, p99 (µs) | 12.3 | n/a | 10.0 | n/a |\n" +
 		"| Ask latency, 1 caller, p50 (ns) | 2,835 | n/a | 1,749 | n/a |\n" +

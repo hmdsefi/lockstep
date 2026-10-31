@@ -826,7 +826,7 @@ Lower is better in every row.
 | Ping-pong, `GOMAXPROCS` pairs (ns per message) | 330 | 964 | 199 | 257 |
 | Fan-out to 1,024 consumers (ns per item) | 522 | 291 | 374 | 227 |
 | 100,000 idle actors (heap bytes per actor) | 2,018 | 718 | 27,899 | 1,237 |
-| Spawning 100,000 idle actors (ns per actor) | 2,646 | 1,749 | 7,410 | 49,579 |
+| Spawning 100,000 actors and sending each a message (ns per actor) | 2,646 | 1,749 | 7,410 | 49,579 |
 | Send latency, p50 (ns) | 761 | 331 | 331 | 371 |
 | Send latency, p99 (ns) | 2,560 | 2,053 | 1,338 | 992 |
 | Ask latency, 1 caller, p50 (ns) | 2,836 | 3,982 | 1,749 | 1,082 |
