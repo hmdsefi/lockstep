@@ -15,7 +15,3 @@ const goroutineKeyCheap = true
 func goroutineKey() uint64 {
 	return uint64(getg())
 }
-
-// getg returns the address of the calling goroutine's runtime g. It is written in assembly
-// (getg_amd64.s, getg_arm64.s), so it needs no go:linkname into the runtime.
-func getg() uintptr
