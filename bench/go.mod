@@ -8,7 +8,7 @@ require (
 	github.com/anthdm/hollywood v1.0.5
 	github.com/asynkron/protoactor-go v0.0.0-20260118094027-288962e52f3f
 	github.com/hmdsefi/faultline v0.1.2
-	github.com/hmdsefi/lockstep v0.1.0
+	github.com/hmdsefi/lockstep v0.2.0
 	github.com/tochemey/goakt/v4 v4.6.3
 	go.uber.org/goleak v1.3.0
 )

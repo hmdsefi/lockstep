@@ -1,302 +1,302 @@
-# commit: 39107e010343737aeadeb223a1a133c982757177
-# date: 2026-10-30
+# commit: 439c4669ca6f15f6ca4bc0c2734bfbe630cff90e
+# date: 2026-10-31
 # runner: ubuntu-latest
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1512879	       779.5 ns/op	   1282892 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1508901	       781.8 ns/op	   1279156 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1538407	       787.1 ns/op	   1270483 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1524244	       795.8 ns/op	   1256587 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1522222	       778.5 ns/op	   1284471 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1471782	       842.3 ns/op	   1187226 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1511116	       790.0 ns/op	   1265860 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1532626	       785.5 ns/op	   1273072 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1529631	       781.9 ns/op	   1278927 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1531516	       778.2 ns/op	   1285047 msgs/s	      16 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3794646	       331.7 ns/op	   3014521 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3749164	       338.4 ns/op	   2955266 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3695044	       308.2 ns/op	   3244187 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3723788	       332.7 ns/op	   3006089 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3728505	       327.3 ns/op	   3055558 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3657813	       327.5 ns/op	   3053145 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3721460	       317.2 ns/op	   3152926 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3689208	       331.7 ns/op	   3015143 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3737812	       328.9 ns/op	   3040802 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3610832	       334.5 ns/op	   2989492 msgs/s	      15 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  394500	      3293 ns/op	    303682 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  433434	      2753 ns/op	    363204 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  448078	      2764 ns/op	    361780 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  422648	      2699 ns/op	    370542 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  453819	      2690 ns/op	    371785 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  458118	      2684 ns/op	    372527 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  436816	      2819 ns/op	    354741 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  430905	      2788 ns/op	    358710 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  435566	      2806 ns/op	    356432 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=1-4           	  440868	      2752 ns/op	    363430 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1215794	       973.5 ns/op	   1027182 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1228837	       978.4 ns/op	   1022029 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1220440	       968.2 ns/op	   1032809 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1234719	       959.4 ns/op	   1042325 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1228830	       960.3 ns/op	   1041393 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1247355	       964.8 ns/op	   1036478 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1243645	       970.8 ns/op	   1030119 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1240611	       957.3 ns/op	   1044645 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1251248	       963.1 ns/op	   1038316 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1254097	       956.5 ns/op	   1045495 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3141007	       383.2 ns/op	   2609353 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3056420	       383.8 ns/op	   2605637 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3115761	       385.8 ns/op	   2592212 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3079972	       387.2 ns/op	   2582353 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3046292	       383.4 ns/op	   2608380 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3118150	       385.8 ns/op	   2592293 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3073524	       384.8 ns/op	   2599014 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3077416	       386.4 ns/op	   2588040 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3147363	       387.7 ns/op	   2579088 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3126022	       388.8 ns/op	   2571711 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6155540	       201.9 ns/op	   4952751 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6107516	       198.8 ns/op	   5029093 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5944848	       195.1 ns/op	   5126223 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6169834	       198.6 ns/op	   5035603 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6140058	       196.1 ns/op	   5098709 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6134888	       201.9 ns/op	   4953531 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6218194	       219.3 ns/op	   4560143 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 4476787	       249.3 ns/op	   4011170 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6263276	       195.3 ns/op	   5119242 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6144840	       193.7 ns/op	   5163500 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2477426	       486.4 ns/op	   2056019 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2461165	       487.7 ns/op	   2050503 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2458341	       483.0 ns/op	   2070343 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2466576	       486.8 ns/op	   2054178 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2451710	       488.1 ns/op	   2048935 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2460380	       486.6 ns/op	   2054985 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2441302	       485.9 ns/op	   2057973 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2476267	       487.8 ns/op	   2050221 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2458446	       486.4 ns/op	   2055804 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2469020	       487.2 ns/op	   2052380 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2281954	       519.7 ns/op	   1924158 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2265960	       521.5 ns/op	   1917642 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2276314	       527.3 ns/op	   1896575 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2279534	       525.7 ns/op	   1902184 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2290635	       522.3 ns/op	   1914676 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2295141	       522.0 ns/op	   1915864 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2277595	       522.1 ns/op	   1915272 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2286480	       523.9 ns/op	   1908864 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2299136	       525.3 ns/op	   1903598 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2298032	       521.1 ns/op	   1918882 msgs/s	      24 B/op	       3 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	11316006	       119.8 ns/op	   8345352 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	11509731	       126.3 ns/op	   7915524 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	10351249	       118.9 ns/op	   8411040 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	10570428	       118.5 ns/op	   8437404 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	10205337	       122.1 ns/op	   8193009 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	10252219	       120.9 ns/op	   8268344 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	12018685	       121.8 ns/op	   8212036 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	10474424	       125.0 ns/op	   8001630 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	10317709	       123.1 ns/op	   8124718 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=16-4        	 9936610	       121.8 ns/op	   8211429 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4083196	       293.7 ns/op	   3404387 msgs/s	      24 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4152650	       287.3 ns/op	   3481225 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4095718	       291.3 ns/op	   3432801 msgs/s	      24 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4114119	       293.0 ns/op	   3412667 msgs/s	      24 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4418037	       265.9 ns/op	   3761114 msgs/s	      20 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4255518	       300.9 ns/op	   3322999 msgs/s	      24 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4132946	       292.5 ns/op	   3418417 msgs/s	      24 B/op	       2 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4130548	       291.0 ns/op	   3436707 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4113882	       289.9 ns/op	   3448900 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4286842	       289.9 ns/op	   3450000 msgs/s	      23 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6058046	       206.4 ns/op	   4844520 msgs/s	      39 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6243589	       192.6 ns/op	   5191433 msgs/s	      38 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 5914864	       199.0 ns/op	   5023883 msgs/s	      39 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6273466	       200.1 ns/op	   4997630 msgs/s	      39 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6320042	       194.7 ns/op	   5137379 msgs/s	      38 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6243378	       194.1 ns/op	   5152538 msgs/s	      38 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6263386	       200.2 ns/op	   4995930 msgs/s	      39 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6336781	       203.1 ns/op	   4924758 msgs/s	      39 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6283262	       199.3 ns/op	   5018292 msgs/s	      39 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6111042	       198.8 ns/op	   5029298 msgs/s	      38 B/op	       1 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3026844	       371.5 ns/op	   2691479 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3073520	       373.1 ns/op	   2680584 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3025414	       371.7 ns/op	   2690381 msgs/s	      47 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3047298	       372.4 ns/op	   2685162 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3082116	       381.8 ns/op	   2619171 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3069514	       374.1 ns/op	   2673304 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3063464	       373.9 ns/op	   2674602 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3059444	       374.0 ns/op	   2674112 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3100081	       375.0 ns/op	   2666971 msgs/s	      48 B/op	       2 allocs/op
-BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3049459	       371.0 ns/op	   2695272 msgs/s	      48 B/op	       3 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      37	  30180958 ns/op	      2026 B/actor	         0 goroutines/actor	      3018 ns/actor	23056482 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      42	  29145549 ns/op	      2026 B/actor	         0 goroutines/actor	      2915 ns/actor	23059966 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      36	  29676362 ns/op	      2026 B/actor	         0 goroutines/actor	      2968 ns/actor	23060813 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      42	  29057878 ns/op	      2026 B/actor	         0 goroutines/actor	      2906 ns/actor	23057707 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      38	  29125234 ns/op	      2026 B/actor	         0 goroutines/actor	      2913 ns/actor	23065792 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      39	  30318003 ns/op	      2026 B/actor	         0 goroutines/actor	      3032 ns/actor	23058382 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      38	  30162745 ns/op	      2026 B/actor	         0 goroutines/actor	      3016 ns/actor	23056634 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      34	  32115721 ns/op	      2026 B/actor	         0 goroutines/actor	      3212 ns/actor	23060709 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      33	  31375293 ns/op	      2026 B/actor	         0 goroutines/actor	      3138 ns/actor	23058385 B/op	  110005 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=10000-4           	      38	  31142652 ns/op	      2026 B/actor	         0 goroutines/actor	      3114 ns/actor	23059590 B/op	  110006 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 292876162 ns/op	      2018 B/actor	         0 goroutines/actor	      2929 ns/actor	233087760 B/op	 1100485 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 258674791 ns/op	      2019 B/actor	         0 goroutines/actor	      2587 ns/actor	233284220 B/op	 1100483 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 262464486 ns/op	      2018 B/actor	         0 goroutines/actor	      2625 ns/actor	233136776 B/op	 1100482 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 266731178 ns/op	      2018 B/actor	         0 goroutines/actor	      2667 ns/actor	233087608 B/op	 1100482 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 260391847 ns/op	      2019 B/actor	         0 goroutines/actor	      2604 ns/actor	233284260 B/op	 1100483 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 265250696 ns/op	      2019 B/actor	         0 goroutines/actor	      2653 ns/actor	233235078 B/op	 1100483 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 282711542 ns/op	      2018 B/actor	         0 goroutines/actor	      2827 ns/actor	233136900 B/op	 1100485 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 269649420 ns/op	      2018 B/actor	         0 goroutines/actor	      2696 ns/actor	233112256 B/op	 1100483 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 263942230 ns/op	      2019 B/actor	         0 goroutines/actor	      2639 ns/actor	233333440 B/op	 1100484 allocs/op
-BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 259689752 ns/op	      2018 B/actor	         0 goroutines/actor	      2597 ns/actor	233136948 B/op	 1100483 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      74	  16981976 ns/op	       876.0 B/actor	         0 goroutines/actor	      1698 ns/actor	 9167323 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      78	  16197818 ns/op	       876.0 B/actor	         0 goroutines/actor	      1620 ns/actor	 9167316 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      78	  16476160 ns/op	       876.0 B/actor	         0 goroutines/actor	      1648 ns/actor	 9167316 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      66	  16496208 ns/op	       876.0 B/actor	         0 goroutines/actor	      1650 ns/actor	 9167323 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      75	  16560571 ns/op	       876.0 B/actor	         0 goroutines/actor	      1656 ns/actor	 9167322 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      72	  16880972 ns/op	       876.0 B/actor	         0 goroutines/actor	      1688 ns/actor	 9167328 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      75	  17269435 ns/op	       876.0 B/actor	         0 goroutines/actor	      1727 ns/actor	 9167333 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      76	  17343429 ns/op	       876.0 B/actor	         0 goroutines/actor	      1734 ns/actor	 9167321 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      64	  17397301 ns/op	       876.0 B/actor	         0 goroutines/actor	      1740 ns/actor	 9167332 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=10000-4         	      78	  17941153 ns/op	       876.0 B/actor	         0 goroutines/actor	      1794 ns/actor	 9167318 B/op	  158649 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       6	 176626534 ns/op	       718.0 B/actor	         0 goroutines/actor	      1766 ns/actor	75871152 B/op	 1531631 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 171193551 ns/op	       718.0 B/actor	         0 goroutines/actor	      1712 ns/actor	75871140 B/op	 1531631 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 175196850 ns/op	       718.0 B/actor	         0 goroutines/actor	      1752 ns/actor	75871172 B/op	 1531633 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 178516687 ns/op	       718.0 B/actor	         0 goroutines/actor	      1785 ns/actor	75871161 B/op	 1531632 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       6	 175478056 ns/op	       718.0 B/actor	         0 goroutines/actor	      1755 ns/actor	75871117 B/op	 1531630 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       6	 173815652 ns/op	       718.0 B/actor	         0 goroutines/actor	      1738 ns/actor	75871170 B/op	 1531633 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       6	 174584035 ns/op	       718.0 B/actor	         0 goroutines/actor	      1746 ns/actor	75871154 B/op	 1531632 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       6	 174168564 ns/op	       718.0 B/actor	         0 goroutines/actor	      1742 ns/actor	75871138 B/op	 1531631 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       6	 174689431 ns/op	       718.0 B/actor	         0 goroutines/actor	      1747 ns/actor	75871144 B/op	 1531632 allocs/op
-BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 175900543 ns/op	       718.0 B/actor	         0 goroutines/actor	      1759 ns/actor	75871145 B/op	 1531631 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      13	  91940721 ns/op	     27905 B/actor	         0 goroutines/actor	      9194 ns/actor	283430303 B/op	  202541 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  87199940 ns/op	     27905 B/actor	         0 goroutines/actor	      8720 ns/actor	283429396 B/op	  202500 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      13	  85813974 ns/op	     27904 B/actor	         0 goroutines/actor	      8581 ns/actor	283429896 B/op	  202447 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      13	  86040633 ns/op	     27904 B/actor	         0 goroutines/actor	      8604 ns/actor	283429641 B/op	  202430 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  86899293 ns/op	     27905 B/actor	         0 goroutines/actor	      8690 ns/actor	283429748 B/op	  202431 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  86835224 ns/op	     27905 B/actor	         0 goroutines/actor	      8684 ns/actor	283429695 B/op	  202452 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  87558596 ns/op	     27905 B/actor	         0 goroutines/actor	      8756 ns/actor	283429739 B/op	  202457 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      13	  87380513 ns/op	     27905 B/actor	         0 goroutines/actor	      8738 ns/actor	283429524 B/op	  202399 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  93276224 ns/op	     27904 B/actor	         0 goroutines/actor	      9328 ns/actor	283429171 B/op	  202295 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  86210064 ns/op	     27904 B/actor	         0 goroutines/actor	      8621 ns/actor	283429770 B/op	  202434 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	1901432252 ns/op	     27899 B/actor	         0 goroutines/actor	     19014 ns/actor	2833245264 B/op	 2045268 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 724540531 ns/op	     27899 B/actor	         0 goroutines/actor	      7245 ns/actor	2833149260 B/op	 2023450 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 711661086 ns/op	     27899 B/actor	         0 goroutines/actor	      7117 ns/actor	2833175140 B/op	 2023565 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 725778238 ns/op	     27899 B/actor	         0 goroutines/actor	      7258 ns/actor	2833152308 B/op	 2023798 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 734642456 ns/op	     27899 B/actor	         0 goroutines/actor	      7346 ns/actor	2833150724 B/op	 2023951 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 738512766 ns/op	     27899 B/actor	         0 goroutines/actor	      7385 ns/actor	2833156984 B/op	 2024501 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 786559644 ns/op	     27899 B/actor	         0 goroutines/actor	      7866 ns/actor	2833149324 B/op	 2023829 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 747821637 ns/op	     27899 B/actor	         0 goroutines/actor	      7478 ns/actor	2833155360 B/op	 2023831 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 743532116 ns/op	     27899 B/actor	         0 goroutines/actor	      7435 ns/actor	2833155392 B/op	 2024090 allocs/op
-BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 750052082 ns/op	     27899 B/actor	         0 goroutines/actor	      7501 ns/actor	2833155860 B/op	 2024075 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  825016	      1406 ns/op	       761.0 p50-ns	      2555 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  838179	      1424 ns/op	       762.0 p50-ns	      3177 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  832443	      1394 ns/op	       761.0 p50-ns	      2375 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  808114	      1429 ns/op	       762.0 p50-ns	      3307 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  811482	      1398 ns/op	       761.0 p50-ns	      2485 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  748930	      1428 ns/op	       761.0 p50-ns	      3316 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  852162	      1403 ns/op	       761.0 p50-ns	      2514 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  802498	      1418 ns/op	       761.0 p50-ns	      2565 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  866998	      1403 ns/op	       762.0 p50-ns	      2374 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=lockstep-4                  	  752755	      1414 ns/op	       752.0 p50-ns	      2605 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  441973	      2903 ns/op	       331.0 p50-ns	      2645 p99-ns	      24 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  421640	      2880 ns/op	       331.0 p50-ns	      2415 p99-ns	      24 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  420933	      2843 ns/op	       331.0 p50-ns	      1924 p99-ns	      24 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  422968	      2868 ns/op	       330.0 p50-ns	      2103 p99-ns	      23 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  408420	      2874 ns/op	       331.0 p50-ns	      2525 p99-ns	      24 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  409873	      2853 ns/op	       331.0 p50-ns	      1893 p99-ns	      23 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  422635	      2870 ns/op	       331.0 p50-ns	      2104 p99-ns	      23 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  406495	      2874 ns/op	       331.0 p50-ns	      1983 p99-ns	      23 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  421617	      2859 ns/op	       331.0 p50-ns	      1874 p99-ns	      23 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=protoactor-4                	  429656	      2872 ns/op	       331.0 p50-ns	      2003 p99-ns	      23 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1706215	       682.0 ns/op	       331.0 p50-ns	      1222 p99-ns	      48 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1742944	       676.6 ns/op	       331.0 p50-ns	      1282 p99-ns	      48 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1749175	       698.1 ns/op	       340.0 p50-ns	      1333 p99-ns	      48 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1728164	       702.1 ns/op	       331.0 p50-ns	      1483 p99-ns	      47 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1520702	       686.7 ns/op	       331.0 p50-ns	      1352 p99-ns	      48 B/op	       3 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1775490	       679.6 ns/op	       331.0 p50-ns	      1312 p99-ns	      48 B/op	       3 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1730973	       677.6 ns/op	       331.0 p50-ns	      1343 p99-ns	      48 B/op	       3 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1729869	       679.5 ns/op	       331.0 p50-ns	      1383 p99-ns	      48 B/op	       3 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1771281	       678.3 ns/op	       331.0 p50-ns	      1303 p99-ns	      48 B/op	       2 allocs/op
-BenchmarkSendLatency/lib=hollywood-4                 	 1735731	       677.9 ns/op	       331.0 p50-ns	      1362 p99-ns	      48 B/op	       3 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  306912	      3956 ns/op	      2835 p50-ns	     16160 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  314973	      3972 ns/op	      2835 p50-ns	     16050 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  319339	      3892 ns/op	      2835 p50-ns	     15720 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  319842	      3977 ns/op	      2845 p50-ns	     15920 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  318482	      3891 ns/op	      2835 p50-ns	     15699 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  296894	      3936 ns/op	      2845 p50-ns	     16060 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  322036	      4005 ns/op	      2855 p50-ns	     16000 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  299458	      3937 ns/op	      2836 p50-ns	     16050 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  321438	      3925 ns/op	      2836 p50-ns	     15879 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=1-4         	  322699	      3947 ns/op	      2855 p50-ns	     15870 p99-ns	     784 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  252753	      4964 ns/op	      8005 p50-ns	    150011 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  240174	      5021 ns/op	      7934 p50-ns	    151001 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  254599	      4928 ns/op	      7955 p50-ns	    148759 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  245622	      4990 ns/op	      7835 p50-ns	    151255 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  251332	      4950 ns/op	      7835 p50-ns	    150217 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  247544	      4992 ns/op	      7935 p50-ns	    150511 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  252103	      4961 ns/op	      7845 p50-ns	    150505 p99-ns	     786 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  248536	      4997 ns/op	      7955 p50-ns	    151159 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  248565	      4979 ns/op	      7925 p50-ns	    149909 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  246824	      4973 ns/op	      7784 p50-ns	    151337 p99-ns	     787 B/op	      14 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  227366	      5733 ns/op	      4018 p50-ns	     19507 p99-ns	     553 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  203865	      5733 ns/op	      3997 p50-ns	     18405 p99-ns	     558 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  220568	      5708 ns/op	      3967 p50-ns	     18985 p99-ns	     554 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  198480	      5658 ns/op	      3967 p50-ns	     19597 p99-ns	     559 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  234390	      5906 ns/op	      4027 p50-ns	     19997 p99-ns	     552 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  238029	      5744 ns/op	      4007 p50-ns	     19075 p99-ns	     551 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  214395	      5755 ns/op	      3998 p50-ns	     19567 p99-ns	     555 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  225986	      5750 ns/op	      3948 p50-ns	     18805 p99-ns	     553 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  214623	      5568 ns/op	      3958 p50-ns	     19156 p99-ns	     555 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=1-4       	  203023	      5570 ns/op	      3937 p50-ns	     18665 p99-ns	     558 B/op	      10 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  333483	      3618 ns/op	      4929 p50-ns	    132063 p99-ns	     534 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  354394	      3569 ns/op	      4861 p50-ns	    130928 p99-ns	     532 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  347410	      3602 ns/op	      4926 p50-ns	    131334 p99-ns	     533 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  348140	      3535 ns/op	      5159 p50-ns	    129743 p99-ns	     533 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  349332	      3623 ns/op	      4649 p50-ns	    132005 p99-ns	     533 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  334161	      4154 ns/op	      5811 p50-ns	    134094 p99-ns	     535 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  290462	      4009 ns/op	      5931 p50-ns	    133237 p99-ns	     539 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  348661	      3537 ns/op	      5053 p50-ns	    131095 p99-ns	     533 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  349975	      3577 ns/op	      4949 p50-ns	    131435 p99-ns	     533 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  337288	      3554 ns/op	      5022 p50-ns	    130574 p99-ns	     534 B/op	       9 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  526135	      2365 ns/op	      1814 p50-ns	     10169 p99-ns	     703 B/op	      13 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  544425	      2341 ns/op	      1743 p50-ns	     10590 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  541042	      2372 ns/op	      1743 p50-ns	     11031 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  531440	      2371 ns/op	      1753 p50-ns	     10880 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  530082	      2393 ns/op	      1764 p50-ns	     11118 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  549994	      2340 ns/op	      1743 p50-ns	     10790 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  530569	      2422 ns/op	      1803 p50-ns	     11080 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  538408	      2371 ns/op	      1753 p50-ns	     11031 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  540631	      2351 ns/op	      1744 p50-ns	     10740 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=1-4        	  552186	      2351 ns/op	      1743 p50-ns	     10646 p99-ns	     703 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  483860	      2615 ns/op	      1863 p50-ns	    145402 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  492310	      2578 ns/op	      1854 p50-ns	    144353 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  489129	      2571 ns/op	      1853 p50-ns	    144597 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  489597	      2544 ns/op	      1853 p50-ns	    143509 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  485376	      2562 ns/op	      1853 p50-ns	    143938 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  482910	      2556 ns/op	      1844 p50-ns	    144350 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  487155	      2568 ns/op	      1864 p50-ns	    144209 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  477061	      2523 ns/op	      1843 p50-ns	    143138 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  483147	      2581 ns/op	      1854 p50-ns	    144300 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  485348	      2572 ns/op	      1863 p50-ns	    144481 p99-ns	     701 B/op	      12 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  319490	      3844 ns/op	      2795 p50-ns	     13656 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  332311	      3893 ns/op	      2775 p50-ns	     14647 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  323594	      3906 ns/op	      2765 p50-ns	     14467 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  323590	      3885 ns/op	      2755 p50-ns	     14467 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  314530	      3893 ns/op	      2745 p50-ns	     14457 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  328126	      3874 ns/op	      2755 p50-ns	     14491 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  326884	      3869 ns/op	      2745 p50-ns	     13946 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  327836	      3834 ns/op	      2745 p50-ns	     14016 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  322098	      3876 ns/op	      2745 p50-ns	     14357 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkAskPipe/lib=lockstep-4                      	  333991	      3854 ns/op	      2755 p50-ns	     14356 p99-ns	    1040 B/op	      20 allocs/op
-BenchmarkCalibrate-4                                 	     268	   4359344 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     276	   4346977 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     276	   4342094 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     274	   4402657 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     276	   4339655 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     274	   4341125 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     273	   4361436 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     273	   4350726 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     276	   4515318 ns/op	       0 B/op	       0 allocs/op
-BenchmarkCalibrate-4                                 	     274	   4350244 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1542180	       778.6 ns/op	   1284367 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1547438	       773.1 ns/op	   1293412 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1476424	       862.0 ns/op	   1160084 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1526054	       783.1 ns/op	   1276903 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1524327	       782.3 ns/op	   1278278 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1529379	       787.2 ns/op	   1270328 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1521046	       789.2 ns/op	   1267120 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1530993	       785.9 ns/op	   1272412 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1514168	       777.0 ns/op	   1286981 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=1-4 	 1535698	       775.7 ns/op	   1289225 msgs/s	      16 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3823386	       317.6 ns/op	   3148461 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3632652	       309.5 ns/op	   3230554 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3714171	       320.1 ns/op	   3124056 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3713034	       323.6 ns/op	   3090148 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3642444	       383.0 ns/op	   2611187 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3797890	       312.6 ns/op	   3198880 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3808980	       307.7 ns/op	   3249948 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3817069	       317.5 ns/op	   3149762 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3770258	       317.5 ns/op	   3150007 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=lockstep/pairs=procs-4         	 3553911	       315.1 ns/op	   3173955 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  439317	      2680 ns/op	    373115 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  432692	      2650 ns/op	    377344 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  466228	      2671 ns/op	    374327 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  416162	      2681 ns/op	    373019 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  410811	      2682 ns/op	    372806 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  442278	      2678 ns/op	    373353 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  458751	      2656 ns/op	    376502 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  441220	      2665 ns/op	    375222 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  444020	      2669 ns/op	    374632 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=1-4           	  456478	      2648 ns/op	    377658 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1237594	       974.6 ns/op	   1026099 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1231452	       965.8 ns/op	   1035397 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1237560	       967.0 ns/op	   1034167 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1236595	       967.7 ns/op	   1033377 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1242054	       965.4 ns/op	   1035789 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1242067	       967.9 ns/op	   1033134 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1227232	       970.3 ns/op	   1030563 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1237804	       969.4 ns/op	   1031574 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1244233	       967.0 ns/op	   1034147 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=protoactor/pairs=procs-4       	 1241607	       966.5 ns/op	   1034656 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3155959	       385.4 ns/op	   2594786 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3120069	       385.1 ns/op	   2596439 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3110964	       381.9 ns/op	   2618728 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3146883	       387.0 ns/op	   2584099 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3111019	       382.6 ns/op	   2613526 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3182773	       383.4 ns/op	   2608425 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3098972	       381.9 ns/op	   2618154 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3107649	       385.7 ns/op	   2592590 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3108158	       379.6 ns/op	   2634241 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=1-4            	 3124522	       383.7 ns/op	   2606192 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6033294	       258.8 ns/op	   3864192 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5965324	       197.9 ns/op	   5054010 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5977164	       200.1 ns/op	   4997010 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5936680	       199.8 ns/op	   5006213 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6008563	       199.6 ns/op	   5010345 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6161073	       200.7 ns/op	   4983338 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5894048	       197.1 ns/op	   5073593 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5946189	       199.7 ns/op	   5008046 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 5869556	       199.2 ns/op	   5019315 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkPingPong/lib=hollywood/pairs=procs-4        	 6080809	       195.9 ns/op	   5104588 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2470930	       485.9 ns/op	   2057884 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2491810	       486.4 ns/op	   2056124 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2472949	       488.4 ns/op	   2047565 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2426781	       485.9 ns/op	   2058168 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2478957	       489.1 ns/op	   2044594 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2466840	       483.4 ns/op	   2068582 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2479900	       488.6 ns/op	   2046566 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2462682	       486.4 ns/op	   2056046 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2473393	       489.7 ns/op	   2042033 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=16-4          	 2467173	       481.2 ns/op	   2078060 msgs/s	      24 B/op	       2 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2314330	       523.5 ns/op	   1910264 msgs/s	      25 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2301462	       527.8 ns/op	   1894832 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2287113	       520.6 ns/op	   1920983 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2280550	       521.4 ns/op	   1917773 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2290140	       522.7 ns/op	   1913246 msgs/s	      26 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2289573	       519.8 ns/op	   1923783 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2307325	       520.2 ns/op	   1922408 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2294654	       523.5 ns/op	   1910347 msgs/s	      25 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2305494	       521.5 ns/op	   1917720 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=lockstep/consumers=1024-4        	 2278220	       520.2 ns/op	   1922283 msgs/s	      24 B/op	       3 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	11072788	       119.3 ns/op	   8383505 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	10932769	       121.7 ns/op	   8220136 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	10125811	       125.9 ns/op	   7939922 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	 9660753	       123.0 ns/op	   8130067 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	10579785	       120.8 ns/op	   8277564 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	11297989	       120.7 ns/op	   8286582 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	10581483	       121.7 ns/op	   8219510 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	10933143	       115.8 ns/op	   8638959 msgs/s	      10 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	11223472	       121.6 ns/op	   8223430 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=16-4        	10350903	       121.9 ns/op	   8204719 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4063413	       286.2 ns/op	   3493749 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4136104	       289.6 ns/op	   3453275 msgs/s	      24 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4100740	       287.7 ns/op	   3476284 msgs/s	      24 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4088892	       286.0 ns/op	   3496092 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4153012	       288.4 ns/op	   3467197 msgs/s	      24 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4187595	       284.0 ns/op	   3521264 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4122066	       286.8 ns/op	   3486910 msgs/s	      24 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4105984	       285.3 ns/op	   3504780 msgs/s	      23 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4202706	       291.1 ns/op	   3435589 msgs/s	      24 B/op	       1 allocs/op
+BenchmarkFanOut/lib=protoactor/consumers=1024-4      	 4204939	       287.3 ns/op	   3480634 msgs/s	      24 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6296958	       196.3 ns/op	   5093341 msgs/s	      39 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6387388	       188.9 ns/op	   5292504 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6361081	       186.1 ns/op	   5372893 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6436738	       192.0 ns/op	   5207325 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6099351	       196.9 ns/op	   5080006 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6730932	       190.4 ns/op	   5252749 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6459835	       193.8 ns/op	   5159014 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6265390	       189.1 ns/op	   5288323 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6363505	       190.8 ns/op	   5240035 msgs/s	      38 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=16-4         	 6654820	       195.0 ns/op	   5127923 msgs/s	      39 B/op	       1 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3095486	       369.0 ns/op	   2710055 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3093247	       367.5 ns/op	   2721389 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3088428	       369.6 ns/op	   2705831 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3054196	       368.7 ns/op	   2712569 msgs/s	      48 B/op	       3 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3062774	       367.6 ns/op	   2720505 msgs/s	      47 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3112321	       367.9 ns/op	   2718115 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3085814	       365.4 ns/op	   2737098 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3083328	       369.6 ns/op	   2705702 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3058354	       371.8 ns/op	   2689502 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkFanOut/lib=hollywood/consumers=1024-4       	 3100125	       369.9 ns/op	   2703431 msgs/s	      48 B/op	       2 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      49	  28991437 ns/op	      2026 B/actor	         0 goroutines/actor	      2899 ns/actor	23063007 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      38	  28536904 ns/op	      2026 B/actor	         0 goroutines/actor	      2854 ns/actor	23055813 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      40	  28252183 ns/op	      2026 B/actor	         0 goroutines/actor	      2825 ns/actor	23058219 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      39	  28380757 ns/op	      2026 B/actor	         0 goroutines/actor	      2838 ns/actor	23057547 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      43	  30882238 ns/op	      2026 B/actor	         0 goroutines/actor	      3088 ns/actor	23058801 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      42	  28455019 ns/op	      2026 B/actor	         0 goroutines/actor	      2846 ns/actor	23054816 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      43	  28517591 ns/op	      2026 B/actor	         0 goroutines/actor	      2852 ns/actor	23057529 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      42	  28576076 ns/op	      2026 B/actor	         0 goroutines/actor	      2858 ns/actor	23054953 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      39	  28006743 ns/op	      2026 B/actor	         0 goroutines/actor	      2801 ns/actor	23059108 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=10000-4           	      42	  28427655 ns/op	      2026 B/actor	         0 goroutines/actor	      2843 ns/actor	23057761 B/op	  110005 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 260237656 ns/op	      2018 B/actor	         0 goroutines/actor	      2602 ns/actor	233136816 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 256871018 ns/op	      2018 B/actor	         0 goroutines/actor	      2569 ns/actor	233186036 B/op	 1100483 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 255058550 ns/op	      2018 B/actor	         0 goroutines/actor	      2551 ns/actor	233101872 B/op	 1100483 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 263021683 ns/op	      2018 B/actor	         0 goroutines/actor	      2630 ns/actor	233186088 B/op	 1100485 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 251537851 ns/op	      2018 B/actor	         0 goroutines/actor	      2515 ns/actor	233087616 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       5	 252389628 ns/op	      2018 B/actor	         0 goroutines/actor	      2524 ns/actor	233126952 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       5	 246074473 ns/op	      2018 B/actor	         0 goroutines/actor	      2461 ns/actor	233166267 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 261204888 ns/op	      2018 B/actor	         0 goroutines/actor	      2612 ns/actor	233136776 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       5	 247153790 ns/op	      2019 B/actor	         0 goroutines/actor	      2472 ns/actor	233205579 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=lockstep/n=100000-4          	       4	 254429762 ns/op	      2018 B/actor	         0 goroutines/actor	      2544 ns/actor	233136772 B/op	 1100482 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      90	  13870383 ns/op	       876.0 B/actor	         0 goroutines/actor	      1387 ns/actor	 9167329 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      85	  14234544 ns/op	       876.2 B/actor	         0 goroutines/actor	      1423 ns/actor	 9169184 B/op	  158652 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      82	  14234439 ns/op	       876.0 B/actor	         0 goroutines/actor	      1423 ns/actor	 9167325 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      78	  14379789 ns/op	       876.0 B/actor	         0 goroutines/actor	      1438 ns/actor	 9167325 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      72	  14418483 ns/op	       876.0 B/actor	         0 goroutines/actor	      1442 ns/actor	 9167320 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      86	  14505166 ns/op	       876.0 B/actor	         0 goroutines/actor	      1451 ns/actor	 9167323 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      75	  14484935 ns/op	       876.0 B/actor	         0 goroutines/actor	      1448 ns/actor	 9167325 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      87	  14363030 ns/op	       876.0 B/actor	         0 goroutines/actor	      1436 ns/actor	 9167326 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      85	  14350934 ns/op	       876.0 B/actor	         0 goroutines/actor	      1435 ns/actor	 9167330 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=10000-4         	      86	  14578410 ns/op	       876.0 B/actor	         0 goroutines/actor	      1458 ns/actor	 9167331 B/op	  158649 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 152885727 ns/op	       718.0 B/actor	         0 goroutines/actor	      1529 ns/actor	75871188 B/op	 1531633 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 147894006 ns/op	       718.0 B/actor	         0 goroutines/actor	      1479 ns/actor	75871129 B/op	 1531631 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 154573453 ns/op	       718.1 B/actor	         0 goroutines/actor	      1546 ns/actor	75896809 B/op	 1531670 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 152778780 ns/op	       718.0 B/actor	         0 goroutines/actor	      1528 ns/actor	75871163 B/op	 1531633 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 148689499 ns/op	       718.0 B/actor	         0 goroutines/actor	      1487 ns/actor	75871142 B/op	 1531631 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 147808349 ns/op	       718.0 B/actor	         0 goroutines/actor	      1478 ns/actor	75871142 B/op	 1531631 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 147329489 ns/op	       718.0 B/actor	         0 goroutines/actor	      1473 ns/actor	75871142 B/op	 1531631 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 149970774 ns/op	       718.0 B/actor	         0 goroutines/actor	      1500 ns/actor	75871154 B/op	 1531632 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       8	 148393909 ns/op	       718.0 B/actor	         0 goroutines/actor	      1484 ns/actor	75871184 B/op	 1531634 allocs/op
+BenchmarkIdleActors/lib=protoactor/n=100000-4        	       7	 146842635 ns/op	       718.0 B/actor	         0 goroutines/actor	      1468 ns/actor	75871190 B/op	 1531632 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  87877578 ns/op	     27904 B/actor	         0 goroutines/actor	      8788 ns/actor	283429334 B/op	  202416 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      15	  85374822 ns/op	     27904 B/actor	         0 goroutines/actor	      8537 ns/actor	283429248 B/op	  202367 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  86848517 ns/op	     27904 B/actor	         0 goroutines/actor	      8685 ns/actor	283429908 B/op	  202361 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      15	  83728604 ns/op	     27904 B/actor	         0 goroutines/actor	      8373 ns/actor	283428540 B/op	  202276 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  83984283 ns/op	     27905 B/actor	         0 goroutines/actor	      8398 ns/actor	283429091 B/op	  202315 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  83013859 ns/op	     27904 B/actor	         0 goroutines/actor	      8301 ns/actor	283428172 B/op	  202213 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      12	  92319063 ns/op	     27904 B/actor	         0 goroutines/actor	      9232 ns/actor	283429072 B/op	  202372 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  83507142 ns/op	     27905 B/actor	         0 goroutines/actor	      8351 ns/actor	283429541 B/op	  202274 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  84511240 ns/op	     27904 B/actor	         0 goroutines/actor	      8451 ns/actor	283429168 B/op	  202321 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=10000-4          	      14	  82698415 ns/op	     27904 B/actor	         0 goroutines/actor	      8270 ns/actor	283429176 B/op	  202273 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	1829390387 ns/op	     27899 B/actor	         0 goroutines/actor	     18294 ns/actor	2833214568 B/op	 2044079 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 691006070 ns/op	     27899 B/actor	         0 goroutines/actor	      6910 ns/actor	2833173868 B/op	 2023675 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 669632988 ns/op	     27899 B/actor	         0 goroutines/actor	      6696 ns/actor	2833196776 B/op	 2023660 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 666061636 ns/op	     27899 B/actor	         0 goroutines/actor	      6661 ns/actor	2833176300 B/op	 2023403 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 684245946 ns/op	     27899 B/actor	         0 goroutines/actor	      6842 ns/actor	2833147824 B/op	 2023858 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 694352662 ns/op	     27899 B/actor	         0 goroutines/actor	      6944 ns/actor	2833160972 B/op	 2023780 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 678445456 ns/op	     27899 B/actor	         0 goroutines/actor	      6784 ns/actor	2833147700 B/op	 2023745 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 666695187 ns/op	     27899 B/actor	         0 goroutines/actor	      6667 ns/actor	2833147420 B/op	 2023728 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 664900885 ns/op	     27899 B/actor	         0 goroutines/actor	      6649 ns/actor	2833144584 B/op	 2023298 allocs/op
+BenchmarkIdleActors/lib=hollywood/n=100000-4         	       2	 650356272 ns/op	     27899 B/actor	         0 goroutines/actor	      6504 ns/actor	2833145656 B/op	 2023328 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  879734	      1342 ns/op	       751.0 p50-ns	      2244 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  860030	      1356 ns/op	       741.0 p50-ns	      2525 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  884996	      1357 ns/op	       752.0 p50-ns	      2335 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  863164	      1364 ns/op	       742.0 p50-ns	      2755 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  868292	      1349 ns/op	       751.0 p50-ns	      2224 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  762842	      1388 ns/op	       761.0 p50-ns	      2555 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  884749	      1359 ns/op	       752.0 p50-ns	      2234 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  784437	      1389 ns/op	       762.0 p50-ns	      2665 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  857167	      1359 ns/op	       751.0 p50-ns	      2395 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=lockstep-4                  	  845094	      1357 ns/op	       741.0 p50-ns	      2435 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  396511	      2906 ns/op	       361.0 p50-ns	      1693 p99-ns	      24 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  405937	      2890 ns/op	       361.0 p50-ns	      1703 p99-ns	      23 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  411165	      2916 ns/op	       361.0 p50-ns	      1743 p99-ns	      23 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  414372	      2912 ns/op	       370.0 p50-ns	      1703 p99-ns	      24 B/op	       2 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  417519	      2899 ns/op	       361.0 p50-ns	      1623 p99-ns	      24 B/op	       2 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  420628	      2878 ns/op	       361.0 p50-ns	      1723 p99-ns	      23 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  410170	      2912 ns/op	       361.0 p50-ns	      1693 p99-ns	      23 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  410384	      2921 ns/op	       370.0 p50-ns	      1803 p99-ns	      24 B/op	       2 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  412245	      2888 ns/op	       370.0 p50-ns	      1633 p99-ns	      23 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=protoactor-4                	  394118	      2914 ns/op	       371.0 p50-ns	      1693 p99-ns	      24 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1788370	       653.8 ns/op	       331.0 p50-ns	      1123 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1807881	       656.3 ns/op	       330.0 p50-ns	      1172 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1815216	       700.7 ns/op	       331.0 p50-ns	      1373 p99-ns	      48 B/op	       2 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1642556	       663.4 ns/op	       330.0 p50-ns	      1272 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1776074	       660.0 ns/op	       330.0 p50-ns	      1253 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1819462	       658.9 ns/op	       330.0 p50-ns	      1212 p99-ns	      48 B/op	       2 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1795202	       665.0 ns/op	       330.0 p50-ns	      1253 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1775611	       662.3 ns/op	       330.0 p50-ns	      1243 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1819005	       661.7 ns/op	       331.0 p50-ns	      1222 p99-ns	      48 B/op	       3 allocs/op
+BenchmarkSendLatency/lib=hollywood-4                 	 1783299	       661.0 ns/op	       330.0 p50-ns	      1243 p99-ns	      48 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  447471	      2662 ns/op	      2034 p50-ns	     11051 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  445816	      2686 ns/op	      2044 p50-ns	     11051 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  467750	      2640 ns/op	      2053 p50-ns	     10710 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  465978	      2634 ns/op	      2053 p50-ns	     10720 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  456153	      2665 ns/op	      2053 p50-ns	     10951 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  467822	      2620 ns/op	      2044 p50-ns	     10680 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  445568	      2643 ns/op	      2035 p50-ns	     10897 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  477440	      2626 ns/op	      2034 p50-ns	     10539 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  442658	      2660 ns/op	      2054 p50-ns	     10930 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=1-4         	  486063	      2648 ns/op	      2054 p50-ns	     10660 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  521560	      2348 ns/op	      5210 p50-ns	    124542 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  528320	      2326 ns/op	      5189 p50-ns	    124153 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  521055	      2338 ns/op	      5210 p50-ns	    124522 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  522840	      2327 ns/op	      5195 p50-ns	    124575 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  530846	      2339 ns/op	      5269 p50-ns	    124441 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  534160	      2338 ns/op	      5320 p50-ns	    124360 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  527407	      2340 ns/op	      5230 p50-ns	    124462 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  521929	      2339 ns/op	      5198 p50-ns	    124762 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  525145	      2348 ns/op	      5249 p50-ns	    124431 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=lockstep/callers=procs-4     	  523212	      2348 ns/op	      5270 p50-ns	    124593 p99-ns	     592 B/op	       7 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  213441	      6013 ns/op	      3727 p50-ns	     18334 p99-ns	     556 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  196465	      5579 ns/op	      3656 p50-ns	     18485 p99-ns	     559 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  175290	      5962 ns/op	      3707 p50-ns	     18695 p99-ns	     565 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  198297	      6018 ns/op	      3727 p50-ns	     19426 p99-ns	     559 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  218973	      6002 ns/op	      3717 p50-ns	     18695 p99-ns	     555 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  209156	      6041 ns/op	      3727 p50-ns	     18244 p99-ns	     557 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  209509	      5991 ns/op	      3707 p50-ns	     18425 p99-ns	     556 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  179348	      5888 ns/op	      3697 p50-ns	     18885 p99-ns	     564 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  212996	      5938 ns/op	      3707 p50-ns	     18525 p99-ns	     556 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=1-4       	  225542	      6041 ns/op	      3718 p50-ns	     18154 p99-ns	     553 B/op	      10 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  334340	      3692 ns/op	      4028 p50-ns	    133981 p99-ns	     535 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  341096	      3665 ns/op	      4058 p50-ns	    132892 p99-ns	     534 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  334774	      3666 ns/op	      4088 p50-ns	    133430 p99-ns	     535 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  326882	      3708 ns/op	      4068 p50-ns	    133498 p99-ns	     536 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  335796	      3937 ns/op	      4148 p50-ns	    133830 p99-ns	     536 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  262316	      4273 ns/op	      4458 p50-ns	    134095 p99-ns	     544 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  334190	      3708 ns/op	      4017 p50-ns	    133777 p99-ns	     535 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  331918	      3675 ns/op	      4028 p50-ns	    133194 p99-ns	     535 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  337345	      3671 ns/op	      4101 p50-ns	    133108 p99-ns	     535 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=protoactor/callers=procs-4   	  330724	      3674 ns/op	      4105 p50-ns	    133740 p99-ns	     535 B/op	       9 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  552756	      2299 ns/op	      1753 p50-ns	      9849 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  558147	      2247 ns/op	      1723 p50-ns	      9668 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  568333	      2252 ns/op	      1733 p50-ns	      9618 p99-ns	     703 B/op	      13 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  551942	      2257 ns/op	      1723 p50-ns	      9789 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  562488	      2242 ns/op	      1723 p50-ns	      9618 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  543536	      2251 ns/op	      1723 p50-ns	      9628 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  554930	      2264 ns/op	      1723 p50-ns	      9728 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  561562	      2239 ns/op	      1723 p50-ns	      9581 p99-ns	     703 B/op	      13 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  562471	      2252 ns/op	      1723 p50-ns	      9618 p99-ns	     703 B/op	      13 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=1-4        	  556650	      2258 ns/op	      1723 p50-ns	      9746 p99-ns	     703 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  497932	      2515 ns/op	      1804 p50-ns	    143349 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  496464	      2488 ns/op	      1814 p50-ns	    142362 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  505342	      2491 ns/op	      1813 p50-ns	    143096 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  505818	      2485 ns/op	      1823 p50-ns	    141635 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  491136	      2461 ns/op	      1823 p50-ns	    141143 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  497046	      2460 ns/op	      1814 p50-ns	    141329 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  509402	      2453 ns/op	      1813 p50-ns	    140639 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  492322	      2476 ns/op	      1814 p50-ns	    142125 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  507184	      2460 ns/op	      1814 p50-ns	    141606 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskLatency/lib=hollywood/callers=procs-4    	  502179	      2455 ns/op	      1823 p50-ns	    141331 p99-ns	     701 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  438429	      2802 ns/op	      2044 p50-ns	      8526 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  432128	      2834 ns/op	      2044 p50-ns	      9128 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  448638	      2839 ns/op	      2034 p50-ns	      9157 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  445093	      2830 ns/op	      2044 p50-ns	      8996 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  438646	      2833 ns/op	      2044 p50-ns	      9127 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  443218	      2828 ns/op	      2043 p50-ns	      9217 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  451839	      2819 ns/op	      2044 p50-ns	      9057 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  448096	      2815 ns/op	      2034 p50-ns	      9041 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  441018	      2829 ns/op	      2044 p50-ns	      9027 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkAskPipe/lib=lockstep-4                      	  441211	      2824 ns/op	      2034 p50-ns	      9026 p99-ns	     848 B/op	      12 allocs/op
+BenchmarkCalibrate-4                                 	     272	   4376916 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     276	   4333851 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     274	   4324785 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     277	   4329802 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     276	   4326358 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     277	   4335937 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     277	   4335661 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     272	   4327287 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     236	   4382681 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCalibrate-4                                 	     276	   4342587 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/hmdsefi/lockstep/bench	638.707s
+ok  	github.com/hmdsefi/lockstep/bench	629.880s
 PASS
 ok  	github.com/hmdsefi/lockstep/bench/cmd/budget	0.003s
 PASS
@@ -306,184 +306,184 @@ ok  	github.com/hmdsefi/lockstep/bench/internal/protoreg	0.003s
 ?   	github.com/hmdsefi/lockstep/bench/libs	[no test files]
 ?   	github.com/hmdsefi/lockstep/bench/libs/goakt	[no test files]
 PASS
-ok  	github.com/hmdsefi/lockstep/bench/libs/hollywood	0.004s
+ok  	github.com/hmdsefi/lockstep/bench/libs/hollywood	0.003s
 PASS
 ok  	github.com/hmdsefi/lockstep/bench/libs/lockstep	0.003s
 PASS
-ok  	github.com/hmdsefi/lockstep/bench/libs/protoactor	0.006s
+ok  	github.com/hmdsefi/lockstep/bench/libs/protoactor	0.005s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2765859	       431.6 ns/op	   2316948 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2341588	       506.5 ns/op	   1974363 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2787589	       434.1 ns/op	   2303794 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2758456	       434.0 ns/op	   2303932 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2777895	       429.6 ns/op	   2327922 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2791063	       430.4 ns/op	   2323682 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2763163	       428.2 ns/op	   2335587 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2782418	       431.5 ns/op	   2317401 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2742098	       432.5 ns/op	   2312404 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=1-4 	 2765342	       432.1 ns/op	   2314452 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4667535	       254.3 ns/op	   3932565 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4722291	       258.9 ns/op	   3862587 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4811500	       257.1 ns/op	   3890022 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4816898	       268.0 ns/op	   3730855 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4641424	       256.0 ns/op	   3906488 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4699960	       248.6 ns/op	   4022347 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4849495	       262.6 ns/op	   3808330 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4767946	       262.1 ns/op	   3815138 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4590225	       245.3 ns/op	   4076222 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4738617	       249.7 ns/op	   4005295 msgs/s	       7 B/op	       0 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12276855	        94.91 ns/op	  10535987 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12769561	        93.79 ns/op	  10662489 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12795697	        95.06 ns/op	  10520109 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12439226	        93.39 ns/op	  10707763 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12765950	        94.20 ns/op	  10616109 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12564680	        93.36 ns/op	  10711498 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12625905	        94.60 ns/op	  10570367 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12965432	        93.56 ns/op	  10688232 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12794760	        94.34 ns/op	  10599714 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=16-4          	12595875	        94.31 ns/op	  10603001 msgs/s	       8 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5124351	       215.8 ns/op	   4633790 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5454008	       225.3 ns/op	   4437565 msgs/s	      10 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5442783	       229.9 ns/op	   4348861 msgs/s	      11 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5493154	       236.9 ns/op	   4220686 msgs/s	      10 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5090727	       234.4 ns/op	   4265368 msgs/s	       9 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5182490	       197.6 ns/op	   5060477 msgs/s	      17 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 6119449	       225.9 ns/op	   4426901 msgs/s	      10 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5595130	       233.4 ns/op	   4285112 msgs/s	       9 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5248519	       228.0 ns/op	   4386104 msgs/s	       9 B/op	       1 allocs/op
-BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5363258	       223.8 ns/op	   4468603 msgs/s	       9 B/op	       1 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       2	 524363486 ns/op	      1297 B/actor	         0 goroutines/actor	     52436 ns/actor	162960048 B/op	 2449250 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 484521230 ns/op	      1297 B/actor	         0 goroutines/actor	     48452 ns/actor	162961429 B/op	 2449250 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 480482470 ns/op	      1297 B/actor	         0 goroutines/actor	     48048 ns/actor	162959642 B/op	 2449249 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 500469652 ns/op	      1297 B/actor	         0 goroutines/actor	     50047 ns/actor	162963426 B/op	 2449243 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 487805406 ns/op	      1297 B/actor	         0 goroutines/actor	     48781 ns/actor	162963314 B/op	 2449242 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 469973526 ns/op	      1296 B/actor	         0 goroutines/actor	     46997 ns/actor	162956408 B/op	 2449196 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 505901230 ns/op	      1297 B/actor	         0 goroutines/actor	     50590 ns/actor	162960698 B/op	 2449242 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 483852890 ns/op	      1297 B/actor	         0 goroutines/actor	     48385 ns/actor	162961264 B/op	 2449246 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 459644801 ns/op	      1297 B/actor	         0 goroutines/actor	     45964 ns/actor	162962960 B/op	 2449242 allocs/op
-BenchmarkIdleActors/lib=goakt/n=10000-4           	       2	 511580830 ns/op	      1297 B/actor	         0 goroutines/actor	     51158 ns/actor	162957024 B/op	 2449241 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	5015226480 ns/op	      1237 B/actor	         0 goroutines/actor	     50152 ns/actor	1617758384 B/op	24490728 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4956481161 ns/op	      1237 B/actor	         0 goroutines/actor	     49565 ns/actor	1617755536 B/op	24490710 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4969149098 ns/op	      1237 B/actor	         0 goroutines/actor	     49691 ns/actor	1617755136 B/op	24490708 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4817904031 ns/op	      1237 B/actor	         0 goroutines/actor	     48179 ns/actor	1617755744 B/op	24490712 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4923396620 ns/op	      1237 B/actor	         0 goroutines/actor	     49234 ns/actor	1617755832 B/op	24490714 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4959293940 ns/op	      1237 B/actor	         0 goroutines/actor	     49593 ns/actor	1617756104 B/op	24490716 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4998904258 ns/op	      1237 B/actor	         0 goroutines/actor	     49989 ns/actor	1617754504 B/op	24490706 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	5024914362 ns/op	      1237 B/actor	         0 goroutines/actor	     50249 ns/actor	1617753856 B/op	24490701 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4811127605 ns/op	      1237 B/actor	         0 goroutines/actor	     48111 ns/actor	1617752832 B/op	24490694 allocs/op
-BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4937788852 ns/op	      1237 B/actor	         0 goroutines/actor	     49378 ns/actor	1617752880 B/op	24490695 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1702804	       709.7 ns/op	       371.0 p50-ns	      1082 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1755723	       729.5 ns/op	       371.0 p50-ns	      1152 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1744921	       705.8 ns/op	       371.0 p50-ns	       992.0 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1719310	       704.2 ns/op	       371.0 p50-ns	       982.0 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1708412	       743.5 ns/op	       371.0 p50-ns	      1012 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1625209	       703.9 ns/op	       371.0 p50-ns	       982.0 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1722668	       703.2 ns/op	       371.0 p50-ns	       992.0 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1732874	       705.6 ns/op	       371.0 p50-ns	      1002 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1729746	       702.9 ns/op	       371.0 p50-ns	       981.0 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkSendLatency/lib=goakt-4                  	 1702353	       697.0 ns/op	       371.0 p50-ns	       962.0 p99-ns	       8 B/op	       1 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  895906	      1348 ns/op	      1082 p50-ns	      6402 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  894620	      1319 ns/op	      1092 p50-ns	      5380 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  885853	      1313 ns/op	      1083 p50-ns	      5470 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  856292	      1334 ns/op	      1062 p50-ns	      6101 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  893778	      1347 ns/op	      1082 p50-ns	      6152 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  889651	      1344 ns/op	      1082 p50-ns	      6051 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  934612	      1349 ns/op	      1082 p50-ns	      6114 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  890710	      1351 ns/op	      1082 p50-ns	      6091 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  885124	      1346 ns/op	      1082 p50-ns	      6103 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=1-4         	  876451	      1348 ns/op	      1082 p50-ns	      6071 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1227128	      1014 ns/op	      2328 p50-ns	     21405 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1051 ns/op	      2285 p50-ns	     22692 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1026 ns/op	      2334 p50-ns	     22081 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1024 ns/op	      2308 p50-ns	     22072 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1039 ns/op	      2331 p50-ns	     22529 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1017 ns/op	      2301 p50-ns	     21834 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1045 ns/op	      2301 p50-ns	     22440 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1021 ns/op	      2286 p50-ns	     21729 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1032 ns/op	      2358 p50-ns	     21885 p99-ns	     128 B/op	       2 allocs/op
-BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1026 ns/op	      2294 p50-ns	     21868 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2847338	       423.4 ns/op	   2361754 msgs/s	       8 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2836898	       424.2 ns/op	   2357340 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2845518	       428.2 ns/op	   2335099 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2348408	       490.5 ns/op	   2038781 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2834091	       419.1 ns/op	   2386257 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2851185	       417.6 ns/op	   2394377 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2833940	       423.3 ns/op	   2362486 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2819182	       421.2 ns/op	   2374102 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2786210	       422.7 ns/op	   2365608 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=1-4 	 2851850	       422.2 ns/op	   2368316 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4736006	       248.9 ns/op	   4017679 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4737433	       258.8 ns/op	   3864398 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4564890	       257.2 ns/op	   3887793 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4613730	       261.2 ns/op	   3828701 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4908256	       250.2 ns/op	   3996590 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4669006	       247.7 ns/op	   4036995 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4759812	       262.2 ns/op	   3813437 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4603416	       258.7 ns/op	   3865400 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4774230	       250.5 ns/op	   3992507 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkPingPong/lib=goakt/pairs=procs-4         	 4796332	       243.6 ns/op	   4104423 msgs/s	       7 B/op	       0 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12238590	        93.48 ns/op	  10697283 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	13053662	        94.04 ns/op	  10633577 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12978549	        92.20 ns/op	  10845776 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	13071056	        94.35 ns/op	  10598342 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12630996	        92.86 ns/op	  10768729 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12946186	        94.83 ns/op	  10544970 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12815400	        93.69 ns/op	  10672967 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12967839	        92.67 ns/op	  10791232 msgs/s	       9 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12921676	        93.45 ns/op	  10700993 msgs/s	       9 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=16-4          	12945414	        92.39 ns/op	  10824238 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5114232	       225.2 ns/op	   4441452 msgs/s	       9 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5473195	       228.7 ns/op	   4371645 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5227519	       231.4 ns/op	   4321835 msgs/s	       9 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5117356	       228.9 ns/op	   4368406 msgs/s	      11 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5270406	       233.7 ns/op	   4278319 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5233248	       229.0 ns/op	   4366839 msgs/s	      10 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 6709840	       199.6 ns/op	   5010701 msgs/s	      15 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5267551	       232.1 ns/op	   4308240 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 4977651	       237.3 ns/op	   4214503 msgs/s	       9 B/op	       1 allocs/op
+BenchmarkFanOut/lib=goakt/consumers=1024-4        	 5411731	       216.2 ns/op	   4624536 msgs/s	       8 B/op	       1 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 480335683 ns/op	      1297 B/actor	         0 goroutines/actor	     48034 ns/actor	162961922 B/op	 2449254 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 477274487 ns/op	      1297 B/actor	         0 goroutines/actor	     47727 ns/actor	162958944 B/op	 2449244 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 473458763 ns/op	      1297 B/actor	         0 goroutines/actor	     47346 ns/actor	162959234 B/op	 2449236 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 471245502 ns/op	      1297 B/actor	         0 goroutines/actor	     47125 ns/actor	162962573 B/op	 2449249 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 477567133 ns/op	      1297 B/actor	         0 goroutines/actor	     47757 ns/actor	162965272 B/op	 2449256 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 481542445 ns/op	      1297 B/actor	         0 goroutines/actor	     48154 ns/actor	162963333 B/op	 2449245 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 465959423 ns/op	      1297 B/actor	         0 goroutines/actor	     46596 ns/actor	162957173 B/op	 2449229 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 450368575 ns/op	      1297 B/actor	         0 goroutines/actor	     45037 ns/actor	162962090 B/op	 2449247 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 473020041 ns/op	      1297 B/actor	         0 goroutines/actor	     47302 ns/actor	162960981 B/op	 2449244 allocs/op
+BenchmarkIdleActors/lib=goakt/n=10000-4           	       3	 466628673 ns/op	      1297 B/actor	         0 goroutines/actor	     46663 ns/actor	162959882 B/op	 2449247 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4808084626 ns/op	      1237 B/actor	         0 goroutines/actor	     48081 ns/actor	1617758464 B/op	24490729 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4779565881 ns/op	      1237 B/actor	         0 goroutines/actor	     47796 ns/actor	1617757136 B/op	24490724 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4982596021 ns/op	      1237 B/actor	         0 goroutines/actor	     49826 ns/actor	1617755696 B/op	24490711 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4862205846 ns/op	      1237 B/actor	         0 goroutines/actor	     48622 ns/actor	1617755176 B/op	24490708 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4808005568 ns/op	      1237 B/actor	         0 goroutines/actor	     48080 ns/actor	1617731528 B/op	24490549 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4765210755 ns/op	      1237 B/actor	         0 goroutines/actor	     47652 ns/actor	1617753320 B/op	24490698 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4912778859 ns/op	      1237 B/actor	         0 goroutines/actor	     49128 ns/actor	1617755504 B/op	24490717 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4820181723 ns/op	      1237 B/actor	         0 goroutines/actor	     48202 ns/actor	1617756160 B/op	24490722 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4706595222 ns/op	      1237 B/actor	         0 goroutines/actor	     47066 ns/actor	1617755184 B/op	24490713 allocs/op
+BenchmarkIdleActors/lib=goakt/n=100000-4          	       1	4872040213 ns/op	      1237 B/actor	         0 goroutines/actor	     48720 ns/actor	1617756016 B/op	24490721 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1738588	       688.9 ns/op	       361.0 p50-ns	      1031 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1727600	       694.3 ns/op	       370.0 p50-ns	      1082 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1768176	       670.7 ns/op	       361.0 p50-ns	       952.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1809069	       670.1 ns/op	       361.0 p50-ns	       952.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1802908	       668.7 ns/op	       361.0 p50-ns	       932.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1702753	       728.7 ns/op	       370.0 p50-ns	      1011 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1774276	       668.9 ns/op	       361.0 p50-ns	       922.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1806391	       665.3 ns/op	       361.0 p50-ns	       932.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1778666	       666.1 ns/op	       361.0 p50-ns	       931.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkSendLatency/lib=goakt-4                  	 1840065	       655.8 ns/op	       351.0 p50-ns	       932.0 p99-ns	       8 B/op	       1 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  972976	      1317 ns/op	      1071 p50-ns	      6131 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  854102	      1327 ns/op	      1071 p50-ns	      6091 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  894741	      1318 ns/op	      1072 p50-ns	      5882 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  946797	      1357 ns/op	      1102 p50-ns	      5992 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  925190	      1320 ns/op	      1072 p50-ns	      5891 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  918820	      1271 ns/op	      1062 p50-ns	      5219 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  911059	      1282 ns/op	      1072 p50-ns	      5340 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  878602	      1336 ns/op	      1072 p50-ns	      6082 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  919390	      1326 ns/op	      1072 p50-ns	      5903 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=1-4         	  919170	      1305 ns/op	      1062 p50-ns	      5821 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1016 ns/op	      2274 p50-ns	     21630 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1015 ns/op	      2271 p50-ns	     21560 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1010 ns/op	      2316 p50-ns	     21175 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1020 ns/op	      2261 p50-ns	     21628 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1025 ns/op	      2311 p50-ns	     21685 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1020 ns/op	      2272 p50-ns	     21266 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1020 ns/op	      2293 p50-ns	     21506 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1014 ns/op	      2328 p50-ns	     21230 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1000000	      1016 ns/op	      2228 p50-ns	     21354 p99-ns	     128 B/op	       2 allocs/op
+BenchmarkAskLatency/lib=goakt/callers=procs-4     	 1243474	      1003 ns/op	      2312 p50-ns	     20595 p99-ns	     128 B/op	       2 allocs/op
 PASS
-ok  	github.com/hmdsefi/lockstep/bench	214.325s
+ok  	github.com/hmdsefi/lockstep/bench	213.340s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11216147 ns/op 89.16 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10724872 ns/op 93.24 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 324128533 ns/op 3.09 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 314915072 ns/op 3.18 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11383004 ns/op 87.85 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10855457 ns/op 92.12 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 323806545 ns/op 3.09 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 304798856 ns/op 3.28 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11224407 ns/op 89.09 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10717448 ns/op 93.31 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 316903482 ns/op 3.16 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 304566393 ns/op 3.28 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11226836 ns/op 89.07 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10804869 ns/op 92.55 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 316888679 ns/op 3.16 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 305376547 ns/op 3.27 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11135237 ns/op 89.81 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10760718 ns/op 92.93 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 318156609 ns/op 3.14 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 309042151 ns/op 3.24 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11200801 ns/op 89.28 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10720512 ns/op 93.28 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 322451674 ns/op 3.10 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 305183412 ns/op 3.28 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11158552 ns/op 89.62 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10720862 ns/op 93.28 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 312900272 ns/op 3.20 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 304778663 ns/op 3.28 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11354130 ns/op 88.07 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10709870 ns/op 93.37 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 316509553 ns/op 3.16 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 305348534 ns/op 3.27 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 10933944 ns/op 91.46 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10778803 ns/op 92.77 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 318907643 ns/op 3.14 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 308799720 ns/op 3.24 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=pingpong 50 11172516 ns/op 89.51 seeds/s
+BenchmarkSimSeeds/workload=pingpong 50 10682159 ns/op 93.61 seeds/s
 goos: linux
 goarch: amd64
 pkg: github.com/hmdsefi/lockstep/bench
-BenchmarkSimSeeds/workload=crash3 50 316814066 ns/op 3.16 seeds/s
+BenchmarkSimSeeds/workload=crash3 50 305149834 ns/op 3.28 seeds/s
