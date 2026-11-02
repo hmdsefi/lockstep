@@ -76,7 +76,12 @@ func newReply[R any](sys *System) *Reply[R] {
 
 // resolvedReply returns a reply on sys already resolved with err (MSG-300 step 3).
 func resolvedReply[R any](sys *System, err error) *Reply[R] {
-	r := newReply[R](sys)
+	return newReply[R](sys).resolveNow(err)
+}
+
+// resolveNow resolves r, a reply that never entered the ask table, with err and returns it
+// (MSG-300 step 3).
+func (r *Reply[R]) resolveNow(err error) *Reply[R] {
 	r.resolve(nil, err)
 	r.fire()
 	return r

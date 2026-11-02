@@ -740,3 +740,38 @@ func TestAskResolutionRace(t *testing.T) {
 	}
 	t.Logf("%d of %d asks timed out, the others were answered", timedOut, n)
 }
+
+// TestAskAllocations covers three steps of an outside Ask that allocate nothing of their own: the
+// options are applied to the reply's table entry, the wait context is the reply under another type,
+// and the ask address's path is built with one allocation, the string.
+func TestAskAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
+	r := newReply[int](nil)
+	opts := []AskOption{WithTimeout(time.Second), WithTimeout(time.Minute)}
+	if n := testing.AllocsPerRun(100, func() {
+		if err := applyAskOptions(opts, &r.entry.askConfig); err != nil {
+			t.Fatal(err)
+		}
+	}); n != 0 {
+		t.Errorf("applying two options to a reply's entry: %v allocations, want 0", n)
+	}
+	if r.entry.timeout != time.Minute {
+		t.Errorf("timeout after the options = %v, want the last one, 1m", r.entry.timeout)
+	}
+	var wait context.Context
+	if n := testing.AllocsPerRun(100, func() { wait = (*askWait[int])(r) }); n != 0 {
+		t.Errorf("the wait context of an ask: %v allocations, want 0", n)
+	}
+	if wait.Err() != nil {
+		t.Errorf("wait context of a pending ask: Err = %v, want nil", wait.Err())
+	}
+	var path string
+	if n := testing.AllocsPerRun(100, func() { path = askPath(1234567) }); n != 1 {
+		t.Errorf("askPath: %v allocations, want 1", n)
+	}
+	if path != "/temp/1234567" {
+		t.Errorf("askPath(1234567) = %q, want /temp/1234567", path)
+	}
+}

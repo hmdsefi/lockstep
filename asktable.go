@@ -46,13 +46,15 @@ type askShard struct {
 // and is still tracked, or, without a reply, an ask of another node that an actor of this system
 // tracks (MSG-340). A Reply holds the entry of its ask, so an ask allocates it with the reply.
 type pendingAsk struct {
-	sys     *System       // the asker system; nil for an ask of another node
-	addr    Address       // the ask address
-	n       uint64        // the ask's number, /temp/<n>; 0 for an ask of another node
-	asker   Address       // the asking actor, or the system address for a *System sender
-	target  Address       // the request's target; the zero Address for NewReply
-	timeout time.Duration // the ask's timeout (MSG-320)
-	reply   resolver      // the typed Reply, seen without its R; nil for an ask of another node
+	sys    *System // the asker system; nil for an ask of another node
+	addr   Address // the ask address
+	n      uint64  // the ask's number, /temp/<n>; 0 for an ask of another node
+	asker  Address // the asking actor, or the system address for a *System sender
+	target Address // the request's target; the zero Address for NewReply
+	// askConfig holds the ask's timeout (MSG-320). Ask and NewReply apply the options to it in
+	// place, so applying them allocates nothing beyond the reply.
+	askConfig
+	reply resolver // the typed Reply, seen without its R; nil for an ask of another node
 
 	// Guarded by the shard's lock; the tracker's list also reads tracker without it.
 	pending    bool                      // from newAsk until it resolves or its builder panics
@@ -189,7 +191,7 @@ func (s *System) newAsk(p *pendingAsk, reply resolver, asker, target Address, ti
 		return false
 	}
 	p.sys, p.n, p.reply, p.asker, p.target, p.timeout = s, n, reply, asker, target, timeout
-	p.addr = Address{node: s.node, path: "/temp/" + strconv.FormatUint(n, 10), uid: uid}
+	p.addr = Address{node: s.node, path: askPath(n), uid: uid}
 	sh := s.asks.shard(uid)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -198,6 +200,13 @@ func (s *System) newAsk(p *pendingAsk, reply resolver, asker, target Address, ti
 	}
 	sh.add(p)
 	return true
+}
+
+// askPath returns the path of ask number n, /temp/<n> (MSG-300 step 4). The string is its one
+// allocation: the digits go to a buffer on the stack first.
+func askPath(n uint64) string {
+	var b [len("/temp/") + 20]byte // 20 digits hold any uint64
+	return string(strconv.AppendUint(append(b[:0], "/temp/"...), n, 10))
 }
 
 // add enters the new ask p as pending. The caller holds sh.mu.
