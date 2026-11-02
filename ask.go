@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sync/atomic"
 	"time"
 )
 
@@ -52,25 +51,26 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	}
 	sys, fromAddr, fromRef := s.sendOrigin() // panics for a Context outside its turn (ACT-120)
 
-	// 2. Options, in argument order: the last WithTimeout wins.
-	cfg, err := applyAskOptions(opts)
+	// 2. Options, in argument order: the last WithTimeout wins. They are applied to the reply's
+	// table entry: an option is a function, so a configuration on the stack would escape.
+	r := newReply[R](sys)
+	p := &r.entry
+	err := applyAskOptions(opts, &p.askConfig)
 
-	// 3. Failures before sending: nothing is built, allocated or recorded.
+	// 3. Failures before sending: nothing is built or recorded, and the reply is resolved.
 	if err != nil {
-		return resolvedReply[R](sys, err)
+		return r.resolveNow(err)
 	}
 	if to.IsZero() {
-		return resolvedReply[R](sys, fmt.Errorf("%w: %s", ErrNotFound, to.addr))
+		return r.resolveNow(fmt.Errorf("%w: %s", ErrNotFound, to.addr))
 	}
 	if sys.stopped.Load() {
-		return resolvedReply[R](sys, sys.errStopped())
+		return r.resolveNow(sys.errStopped())
 	}
 
 	// 4. The ask address and the table entry. newAsk checks the stopped mark again under its
 	// shard's lock, for a system that stopped since the check above (MSG-360).
-	r := newReply[R](sys)
-	p := &r.entry
-	if !sys.newAsk(p, r, *fromAddr, to.addr, cfg.timeout) {
+	if !sys.newAsk(p, r, *fromAddr, to.addr, p.timeout) {
 		return resolvedReply[R](sys, sys.errStopped())
 	}
 	r.ask = p.addr // before Ask returns, so before any Pipe reads it
@@ -94,7 +94,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 		// A wait for room in a BlockSender mailbox starts after the timer and ends when the ask
 		// resolves, at its timeout at the latest (MSG-115, MSG-330); an actor never waits, and
 		// neither does a call in engine context (offer).
-		req.wait = askWait{done: r.done, resolved: &r.resolved}
+		req.wait = (*askWait[R])(r)
 	}
 	o := sys.route(req)
 
@@ -117,24 +117,22 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 // before the waiter saw it still enqueues the request (MBX-070): the hand-off came first in the
 // queue's order, and the target's answer is then recorded as late. The request is tracked by its
 // target for the whole wait, so a target that completes its final stop while a timed-out waiter
-// has not yet left the line fails the ask once more, recorded as late.
-type askWait struct {
-	done     <-chan struct{} // the reply's done channel, closed at resolution
-	resolved *atomic.Bool    // the reply's resolved mark, set before done is closed
-}
+// has not yet left the line fails the ask once more, recorded as late. It is the reply itself under
+// another type, so making it the request's context allocates nothing.
+type askWait[R any] Reply[R]
 
-func (askWait) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (*askWait[R]) Deadline() (time.Time, bool) { return time.Time{}, false }
 
-func (w askWait) Done() <-chan struct{} { return w.done }
+func (w *askWait[R]) Done() <-chan struct{} { return w.done }
 
-func (w askWait) Err() error {
+func (w *askWait[R]) Err() error {
 	if w.resolved.Load() {
 		return context.Canceled
 	}
 	return nil
 }
 
-func (askWait) Value(any) any { return nil }
+func (*askWait[R]) Value(any) any { return nil }
 
 // buildRequest calls build with p's ReplyTo and returns the request and its size for the mailbox
 // estimate of the target at to (OVL-410). If build or Size panics, p leaves the table before the
@@ -169,19 +167,18 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 		}
 	}
 	// An invalid option value, then a stopped system: the zero ReplyTo and a resolved reply, with
-	// nothing allocated or recorded.
-	cfg, err := applyAskOptions(opts)
-	if err != nil {
-		return ReplyTo[R]{}, resolvedReply[R](sys, err)
+	// nothing recorded. The options are applied to the reply's table entry, as in Ask.
+	r := newReply[R](sys)
+	p := &r.entry
+	if err := applyAskOptions(opts, &p.askConfig); err != nil {
+		return ReplyTo[R]{}, r.resolveNow(err)
 	}
 	if sys.stopped.Load() {
-		return ReplyTo[R]{}, resolvedReply[R](sys, sys.errStopped())
+		return ReplyTo[R]{}, r.resolveNow(sys.errStopped())
 	}
 	// MSG-300 step 4 with the zero target, then the timer and the record. No actor tracks the ask
 	// (MSG-390): it resolves by a reply attempt, its timeout or its system stopping.
-	r := newReply[R](sys)
-	p := &r.entry
-	if !sys.newAsk(p, r, *fromAddr, Address{}, cfg.timeout) {
+	if !sys.newAsk(p, r, *fromAddr, Address{}, p.timeout) {
 		return ReplyTo[R]{}, resolvedReply[R](sys, sys.errStopped())
 	}
 	r.ask = p.addr
@@ -194,17 +191,18 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 // (MSG §7): it names the system address.
 func (s *System) errStopped() error { return fmt.Errorf("%w: %s", ErrStopped, s.user) }
 
-// applyAskOptions applies opts, which hold no nil option, in argument order, so the last
-// WithTimeout wins, and validates the result: a timeout <= 0 is MSG-700's ErrInvalidOption error.
-func applyAskOptions(opts []AskOption) (askConfig, error) {
-	cfg := askConfig{timeout: defaultAskTimeout}
+// applyAskOptions sets cfg to the defaults and applies opts, which hold no nil option, in argument
+// order, so the last WithTimeout wins, and validates the result: a timeout <= 0 is MSG-700's
+// ErrInvalidOption error.
+func applyAskOptions(opts []AskOption, cfg *askConfig) error {
+	*cfg = askConfig{timeout: defaultAskTimeout}
 	for _, o := range opts {
-		o(&cfg)
+		o(cfg)
 	}
 	if cfg.timeout <= 0 {
-		return cfg, fmt.Errorf("%w: WithTimeout(%s): timeout must be positive", ErrInvalidOption, cfg.timeout)
+		return fmt.Errorf("%w: WithTimeout(%s): timeout must be positive", ErrInvalidOption, cfg.timeout)
 	}
-	return cfg, nil
+	return nil
 }
 
 // armTimeout starts p's timeout timer on the engine clock (MSG-320): a deadline of the engine's
