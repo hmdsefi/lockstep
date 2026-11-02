@@ -222,7 +222,7 @@ func TestOfferClosedMailbox(t *testing.T) {
 	c.closed = true // the window between the router's lookup and the final stop's drain
 	c.mu.Unlock()
 
-	if o := sys.route(routeRequest{from: sys.user, to: a.Address(), msg: "x"}); o.kind != routeDead || o.reason != reasonStopped {
+	if o := sys.route(routeRequest{from: &sys.user, to: a.Address(), msg: "x"}); o.kind != routeDead || o.reason != reasonStopped {
 		t.Errorf("route to a closed mailbox = %+v, want a stopped dead letter", o)
 	}
 	r := askSilent(sys, a, WithTimeout(time.Hour))
