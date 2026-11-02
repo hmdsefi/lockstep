@@ -1,44 +1,44 @@
-BenchmarkAskLatency/lib=lockstep/callers=1 B/op abs 652
-BenchmarkAskLatency/lib=lockstep/callers=1 allocs/op abs 8
-BenchmarkAskLatency/lib=lockstep/callers=1 ns/op rel BenchmarkAskLatency/lib=goakt/callers=1 ns/op 3.01
-BenchmarkAskLatency/lib=lockstep/callers=1 p50-ns rel BenchmarkAskLatency/lib=goakt/callers=1 p50-ns 2.87
-BenchmarkAskLatency/lib=lockstep/callers=1 p99-ns rel BenchmarkAskLatency/lib=goakt/callers=1 p99-ns 3.67
-BenchmarkAskLatency/lib=lockstep/callers=procs B/op abs 652
-BenchmarkAskLatency/lib=lockstep/callers=procs allocs/op abs 8
-BenchmarkAskLatency/lib=lockstep/callers=procs ns/op rel BenchmarkAskLatency/lib=goakt/callers=procs ns/op 3.46
-BenchmarkAskLatency/lib=lockstep/callers=procs p50-ns rel BenchmarkAskLatency/lib=hollywood/callers=procs p50-ns 4.32
-BenchmarkAskLatency/lib=lockstep/callers=procs p99-ns rel BenchmarkAskLatency/lib=goakt/callers=procs p99-ns 11.7
-BenchmarkAskPipe/lib=lockstep B/op abs 933
-BenchmarkAskPipe/lib=lockstep allocs/op abs 13
-BenchmarkAskPipe/lib=lockstep ns/op rel BenchmarkCalibrate ns/op 0.00131
-BenchmarkAskPipe/lib=lockstep p50-ns rel BenchmarkCalibrate ns/op 0.000944
-BenchmarkAskPipe/lib=lockstep p99-ns rel BenchmarkCalibrate ns/op 0.00627
+BenchmarkAskLatency/lib=lockstep/callers=1 B/op abs 616
+BenchmarkAskLatency/lib=lockstep/callers=1 allocs/op abs 5
+BenchmarkAskLatency/lib=lockstep/callers=1 ns/op rel BenchmarkAskLatency/lib=goakt/callers=1 ns/op 2.41
+BenchmarkAskLatency/lib=lockstep/callers=1 p50-ns rel BenchmarkAskLatency/lib=goakt/callers=1 p50-ns 2.2
+BenchmarkAskLatency/lib=lockstep/callers=1 p99-ns rel BenchmarkAskLatency/lib=goakt/callers=1 p99-ns 2.8
+BenchmarkAskLatency/lib=lockstep/callers=procs B/op abs 616
+BenchmarkAskLatency/lib=lockstep/callers=procs allocs/op abs 5
+BenchmarkAskLatency/lib=lockstep/callers=procs ns/op rel BenchmarkAskLatency/lib=goakt/callers=procs ns/op 2.64
+BenchmarkAskLatency/lib=lockstep/callers=procs p50-ns rel BenchmarkAskLatency/lib=hollywood/callers=procs p50-ns 3.49
+BenchmarkAskLatency/lib=lockstep/callers=procs p99-ns rel BenchmarkAskLatency/lib=goakt/callers=procs p99-ns 10.2
+BenchmarkAskPipe/lib=lockstep B/op abs 916
+BenchmarkAskPipe/lib=lockstep allocs/op abs 11
+BenchmarkAskPipe/lib=lockstep ns/op rel BenchmarkCalibrate ns/op 0.000886
+BenchmarkAskPipe/lib=lockstep p50-ns rel BenchmarkCalibrate ns/op 0.000678
+BenchmarkAskPipe/lib=lockstep p99-ns rel BenchmarkCalibrate ns/op 0.00342
 BenchmarkFanOut/lib=lockstep/consumers=1024 B/op abs 27
 BenchmarkFanOut/lib=lockstep/consumers=1024 allocs/op abs 4
-BenchmarkFanOut/lib=lockstep/consumers=1024 ns/op rel BenchmarkFanOut/lib=goakt/consumers=1024 ns/op 3.42
+BenchmarkFanOut/lib=lockstep/consumers=1024 ns/op rel BenchmarkFanOut/lib=protoactor/consumers=1024 ns/op 2.2
 BenchmarkFanOut/lib=lockstep/consumers=16 B/op abs 27
 BenchmarkFanOut/lib=lockstep/consumers=16 allocs/op abs 3
-BenchmarkFanOut/lib=lockstep/consumers=16 ns/op rel BenchmarkFanOut/lib=goakt/consumers=16 ns/op 7.81
-BenchmarkIdleActors/lib=lockstep/n=10000 B/actor abs 2229
-BenchmarkIdleActors/lib=lockstep/n=10000 B/op abs 25363420
-BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op abs 111105
+BenchmarkFanOut/lib=lockstep/consumers=16 ns/op rel BenchmarkFanOut/lib=goakt/consumers=16 ns/op 5.3
+BenchmarkIdleActors/lib=lockstep/n=10000 B/actor abs 1861
+BenchmarkIdleActors/lib=lockstep/n=10000 B/op abs 21680577
+BenchmarkIdleActors/lib=lockstep/n=10000 allocs/op abs 111106
 BenchmarkIdleActors/lib=lockstep/n=10000 goroutines/actor abs 0
-BenchmarkIdleActors/lib=lockstep/n=10000 ns/op rel BenchmarkIdleActors/lib=protoactor/n=10000 ns/op 2.98
-BenchmarkIdleActors/lib=lockstep/n=100000 B/actor abs 2220
-BenchmarkIdleActors/lib=lockstep/n=100000 B/op abs 256450476
-BenchmarkIdleActors/lib=lockstep/n=100000 allocs/op abs 1111486
+BenchmarkIdleActors/lib=lockstep/n=10000 ns/op rel BenchmarkIdleActors/lib=protoactor/n=10000 ns/op 2.49
+BenchmarkIdleActors/lib=lockstep/n=100000 B/actor abs 1852
+BenchmarkIdleActors/lib=lockstep/n=100000 B/op abs 219652438
+BenchmarkIdleActors/lib=lockstep/n=100000 allocs/op abs 1111481
 BenchmarkIdleActors/lib=lockstep/n=100000 goroutines/actor abs 0
-BenchmarkIdleActors/lib=lockstep/n=100000 ns/op rel BenchmarkIdleActors/lib=protoactor/n=100000 ns/op 2.58
+BenchmarkIdleActors/lib=lockstep/n=100000 ns/op rel BenchmarkIdleActors/lib=protoactor/n=100000 ns/op 1.96
 BenchmarkPingPong/lib=lockstep/pairs=1 B/op abs 18
 BenchmarkPingPong/lib=lockstep/pairs=1 allocs/op abs 2
-BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 3.07
+BenchmarkPingPong/lib=lockstep/pairs=1 ns/op rel BenchmarkPingPong/lib=hollywood/pairs=1 ns/op 2.85
 BenchmarkPingPong/lib=lockstep/pairs=procs B/op abs 17
 BenchmarkPingPong/lib=lockstep/pairs=procs allocs/op abs 2
-BenchmarkPingPong/lib=lockstep/pairs=procs ns/op rel BenchmarkPingPong/lib=hollywood/pairs=procs ns/op 2.39
+BenchmarkPingPong/lib=lockstep/pairs=procs ns/op rel BenchmarkPingPong/lib=hollywood/pairs=procs ns/op 1.81
 BenchmarkSendLatency/lib=lockstep B/op abs 9
 BenchmarkSendLatency/lib=lockstep allocs/op abs 2
-BenchmarkSendLatency/lib=lockstep ns/op rel BenchmarkSendLatency/lib=hollywood ns/op 3.09
-BenchmarkSendLatency/lib=lockstep p50-ns rel BenchmarkSendLatency/lib=hollywood p50-ns 3.42
-BenchmarkSendLatency/lib=lockstep p99-ns rel BenchmarkSendLatency/lib=goakt p99-ns 5.13
-BenchmarkSimSeeds/workload=crash3 ns/op rel BenchmarkCalibrate ns/op 141
-BenchmarkSimSeeds/workload=pingpong ns/op rel BenchmarkCalibrate ns/op 4.95
+BenchmarkSendLatency/lib=lockstep ns/op rel BenchmarkSendLatency/lib=hollywood ns/op 2.73
+BenchmarkSendLatency/lib=lockstep p50-ns rel BenchmarkSendLatency/lib=protoactor p50-ns 3.52
+BenchmarkSendLatency/lib=lockstep p99-ns rel BenchmarkSendLatency/lib=goakt p99-ns 3.61
+BenchmarkSimSeeds/workload=crash3 ns/op rel BenchmarkCalibrate ns/op 99.7
+BenchmarkSimSeeds/workload=pingpong ns/op rel BenchmarkCalibrate ns/op 3.49
