@@ -18,6 +18,12 @@ import (
 // actor code (ENG-330, SUP-140). The engine re-queues the cell when it returns true; the runtime
 // never calls Ready for that (ENG-350). An actor spawned with WithActorThroughput(n) processes up
 // to n user messages in place of budget, unless budget is 1 (ENG-310, SCH-040).
+//
+// Each pop, the hold check with it, is one critical section of c.mu (popNext). When the last pop
+// found both queues empty while the cell accepted user messages, RunTurn reports no more work
+// without looking again: a message queued after that pop is followed by its Ready (ENG-350), which
+// finds the Slot running and makes the engine queue the next turn, so ENG-320's answer at the last
+// pop is the one that matters. In every other case it looks again (hasWork).
 func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if budget < 1 {
 		panic("lockstep: RunTurn budget " + strconv.Itoa(budget) + " < 1")
@@ -25,33 +31,27 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if c.throughput > 0 && budget > 1 {
 		budget = c.throughput // WithActorThroughput replaces the engine's budget; 1 is never raised
 	}
-	c.mu.Lock()
-	held := c.holding()
-	c.mu.Unlock()
-	if held {
-		return false // held by a test (hold.go): nothing runs until the release schedules the cell
-	}
-	c.beginTurn() // OVL-520: the counter names this turn until endTurn
 	var system, u int
 	var first any
 	var firstShown bool // the first user message has a description for lockstep.turn
-	for {
-		if m, ok := c.popSystem(); ok {
+
+	m, e, got := c.popNext(true) // u is 0, below any budget
+	if got == poppedHeld {
+		return false // held by a test (hold.go): nothing runs until the release schedules the cell
+	}
+	c.beginTurn() // OVL-520: the counter names this turn until endTurn
+	for got == poppedSystem || got == poppedUser {
+		if got == poppedSystem {
 			c.processSystem(m)
 			system++
-			continue
-		}
-		if u < budget && c.accepting() {
-			if e, ok := c.popUser(); ok {
-				msg, shown := c.processUser(e)
-				if u == 0 {
-					first, firstShown = msg, shown
-				}
-				u++
-				continue
+		} else {
+			msg, shown := c.processUser(e)
+			if u == 0 {
+				first, firstShown = msg, shown
 			}
+			u++
 		}
-		break
+		m, e, got = c.popNext(u < budget)
 	}
 	c.measureIfRan() // OVL-420: after every turn that called actor code
 	c.endTurn()      // OVL-530: a mark of this turn is cleared by now
@@ -61,7 +61,10 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 	if h := c.sys.afterTurn; h != nil {
 		h(c.addr, system, u) // a test hook (AT-SCH-25); nil in production
 	}
-	return c.hasWork()
+	if got == poppedEmpty {
+		return false // a message queued since the last pop has asked the Slot for the next turn
+	}
+	return c.hasWork() // the budget ran out, the cell did not accept user messages, or it is held
 }
 
 // accepting reports whether the cell pops user messages: only in Running (SUP-010, ENG-310 step
@@ -69,28 +72,44 @@ func (c *cell[M]) RunTurn(budget int) (more bool) {
 // and not while the incarnation's user delivery is paused (MBX-190, PER-250).
 func (c *cell[M]) accepting() bool { return c.state == supervise.Running && !c.paused }
 
-// popSystem and popUser pop under c.mu, so a hold that starts during a turn stops it at the next
-// pop (hold.go); a held cell pops nothing.
-func (c *cell[M]) popSystem() (sysMsg, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.holding() {
-		return nil, false
-	}
-	return c.sysq.Pop()
-}
+// popped says what popNext found.
+type popped uint8
 
-// popUser returns the oldest user entry. The queue's kind is the authority for e.kind.
-func (c *cell[M]) popUser() (entry, bool) {
+const (
+	poppedEmpty  popped = iota // nothing: both queues were empty and the cell accepted user messages
+	poppedNone                 // nothing: no system message, and the user mailbox was not looked at
+	poppedSystem               // a system message
+	poppedUser                 // a user entry
+	poppedHeld                 // nothing, because the cell is held (hold.go)
+)
+
+// popNext pops the next message in one critical section of c.mu: a system message, else, when user
+// is true and the cell accepts user messages, the oldest user entry. It pops under c.mu, so a hold
+// that starts during a turn stops it at the next pop (hold.go); a held cell pops nothing. The user
+// queue's kind is the authority for e.kind.
+func (c *cell[M]) popNext(user bool) (m sysMsg, e entry, got popped) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.holding() {
-		return entry{}, false
+		return nil, entry{}, poppedHeld
+	}
+	// Every push to sysq holds c.mu (offerSystem, requestStop), as does closeQueues, so Empty is
+	// exact here, and an empty system queue costs no lock of its own.
+	if !c.sysq.Empty() {
+		if m, ok := c.sysq.Pop(); ok {
+			return m, entry{}, poppedSystem
+		}
+	}
+	if !user || !c.accepting() {
+		return nil, entry{}, poppedNone
 	}
 	e, k, ok := c.user.Pop()
+	if !ok {
+		return nil, entry{}, poppedEmpty
+	}
 	e.kind = entryKindOf(k)
-	c.mem.addMailbox(-e.size) // zero for no entry and for a Self entry (OVL-410)
-	return e, ok
+	c.mem.addMailbox(-e.size) // zero for a Self entry (OVL-410)
+	return nil, e, poppedUser
 }
 
 // hasWork is RunTurn's result (ENG-320). A held cell has none: its release schedules it.

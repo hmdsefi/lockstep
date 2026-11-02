@@ -79,3 +79,30 @@ func TestSystemQueueCloseEmpty(t *testing.T) {
 		t.Fatalf("second Close = %v, want nil", got)
 	}
 }
+
+// TestSystemQueueEmpty checks that Empty follows every Push, Pop and Close, so a consumer can skip
+// the queue's lock while it is empty.
+func TestSystemQueueEmpty(t *testing.T) {
+	s := NewSystemQueue[int]()
+	if !s.Empty() {
+		t.Fatal("Empty on a new queue = false")
+	}
+	s.Push(1)
+	s.Push(2)
+	if s.Empty() {
+		t.Fatal("Empty after two pushes = true")
+	}
+	s.Pop()
+	if s.Empty() {
+		t.Fatal("Empty with one value left = true")
+	}
+	s.Pop()
+	if !s.Empty() {
+		t.Fatal("Empty after popping every value = false")
+	}
+	s.Push(3)
+	s.Close()
+	if !s.Empty() {
+		t.Fatal("Empty after Close = false")
+	}
+}
