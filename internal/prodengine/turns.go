@@ -20,12 +20,14 @@ type RunningTurn struct {
 
 // RunningTurns appends one RunningTurn per worker that is inside RunTurn and returns the
 // extended slice. The snapshot is per worker; it may include a turn that ends while
-// RunningTurns runs.
+// RunningTurns runs. A turn's Start is the scheduler's epoch plus the time since it that the
+// worker published, so it keeps the epoch's monotonic reading and every snapshot of one turn
+// returns an equal Start.
 func (e *Engine) RunningTurns(dst []RunningTurn) []RunningTurn {
 	s := &e.s
 	for i := range s.workers {
 		if a, start, ok := s.workers[i].turn.get(); ok {
-			dst = append(dst, RunningTurn{Worker: i, GoID: s.goids[i], Actor: a, Start: start})
+			dst = append(dst, RunningTurn{Worker: i, GoID: s.goids[i], Actor: a, Start: s.epoch.Add(start)})
 		}
 	}
 	return dst
@@ -37,26 +39,25 @@ func (e *Engine) RunningTurns(dst []RunningTurn) []RunningTurn {
 type publishedTurn struct {
 	mu    sync.Mutex
 	actor engine.ActorRef // nil when no turn runs
-	start time.Time
+	start time.Duration   // when the turn started, as time since the scheduler's epoch
 }
 
-// set publishes a turn of a starting now.
-func (p *publishedTurn) set(a engine.ActorRef) {
-	now := time.Now()
+// set publishes a turn of a that started at start, the time since the scheduler's epoch.
+func (p *publishedTurn) set(a engine.ActorRef, start time.Duration) {
 	p.mu.Lock()
-	p.actor, p.start = a, now
+	p.actor, p.start = a, start
 	p.mu.Unlock()
 }
 
 // clear withdraws the published turn and drops its reference to the actor.
 func (p *publishedTurn) clear() {
 	p.mu.Lock()
-	p.actor, p.start = nil, time.Time{}
+	p.actor, p.start = nil, 0
 	p.mu.Unlock()
 }
 
 // get returns the published turn, or false if none is published.
-func (p *publishedTurn) get() (engine.ActorRef, time.Time, bool) {
+func (p *publishedTurn) get() (engine.ActorRef, time.Duration, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.actor, p.start, p.actor != nil

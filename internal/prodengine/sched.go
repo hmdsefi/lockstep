@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
 )
@@ -27,8 +28,12 @@ type scheduler struct {
 	workers    []worker
 	goids      []uint64 // goids[i] is worker i's goroutine ID, for RunningTurns (SCH-270)
 	keys       []uint64 // keys[i] is worker i's goroutineKey, for InTurn (SCH-115)
-	park       parkList
-	exited     sync.WaitGroup // one count per running worker
+	// epoch is when the scheduler started; start sets it before it starts the workers. A worker
+	// publishes a turn's start as the time since epoch, which reads only the monotonic clock, where
+	// time.Now would read the wall clock too (SCH-270).
+	epoch  time.Time
+	park   parkList
+	exited sync.WaitGroup // one count per running worker
 }
 
 var _ engine.LocalScheduler = (*scheduler)(nil)
@@ -62,6 +67,7 @@ type worker struct {
 // recorded its goroutine ID and key, so InTurn is exact from then on.
 func (s *scheduler) start(workers, throughput int) {
 	s.throughput = throughput
+	s.epoch = time.Now()
 	s.workers = make([]worker, workers)
 	s.goids = make([]uint64, workers)
 	s.keys = make([]uint64, workers)
@@ -378,7 +384,7 @@ func (w *worker) runTurn(a engine.ActorRef) {
 	slot := a.Slot()
 	slot.Begin()
 	slot.Hint.Store(w.hint)
-	w.turn.set(a)
+	w.turn.set(a, time.Since(w.s.epoch))
 	more := a.RunTurn(w.s.throughput)
 	w.turn.clear()
 	if slot.End(more) {
