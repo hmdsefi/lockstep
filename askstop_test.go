@@ -311,9 +311,15 @@ func TestAskRacingStop(t *testing.T) {
 	if local, remote := sys.asks.entries(); local != 0 || remote != 0 {
 		t.Errorf("%d entries of local asks and %d of remote asks left after every ask resolved", local, remote)
 	}
+	// A cell's stop resets its list under the list's lock, and the stop of the last cells may still
+	// be running on a worker, so the list is read under that lock.
 	for _, c := range cells {
-		if l := c.tracks(); l.head != nil {
-			t.Fatalf("%v's track list holds %v after every ask resolved", c.addr, l.head.addr)
+		l := c.tracks()
+		l.mu.Lock()
+		head := l.head
+		l.mu.Unlock()
+		if head != nil {
+			t.Fatalf("%v's track list holds %v after every ask resolved", c.addr, head.addr)
 		}
 	}
 }
