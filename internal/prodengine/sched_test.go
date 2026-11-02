@@ -442,21 +442,80 @@ func TestParkPassesWakeOn(t *testing.T) {
 	// Y is pushed before w1 leaves the park; its wakeOne picks w1, the most recent registrant.
 	y.slot.Ready()
 	s.pushGlobal(y)
-	if !woken(w1) || w1.parked {
+	if !woken(w1) || w1.parked.Load() {
 		t.Fatal("the push did not choose w1")
 	}
 	w1.leavePark()
-	if !woken(w0) || w0.parked || s.park.n.Load() != 0 {
+	if !woken(w0) || w0.parked.Load() || s.park.n.Load() != 0 {
 		t.Errorf("after w1 left the park: w0 parked=%v, count %d; want w0 woken and the count 0",
-			w0.parked, s.park.n.Load())
+			w0.parked.Load(), s.park.n.Load())
 	}
 
 	// Without a waker in between, leaving the park wakes nobody.
 	s.park.register(w0)
 	s.park.register(w1)
 	w1.leavePark()
-	if woken(w0) || !w0.parked || s.park.n.Load() != 1 {
+	if woken(w0) || !w0.parked.Load() || s.park.n.Load() != 1 {
 		t.Errorf("w1 left the park unchosen: w0 woken or unregistered (count %d); want w0 still parked",
 			s.park.n.Load())
 	}
+}
+
+// returnsWithin fails t unless fn returns within a second. fn runs on a goroutine of its own, so a
+// call that blocks on a lock the test holds fails the test instead of hanging it.
+func returnsWithin(t *testing.T, what string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("%s blocked on a lock it should not take", what)
+	}
+}
+
+// TestEmptyQueuesTakeNoLock covers SCH-070 and SCH-090's looks at empty queues: a worker finds
+// its own local queue, every victim's and the global queue empty without taking its push flag or
+// the global queue's mutex, and leaves the park after a wakeup without the park list's mutex. Each
+// lock is held by the test while the worker looks.
+func TestEmptyQueuesTakeNoLock(t *testing.T) {
+	s := idleScheduler(3)
+	w := &s.workers[0]
+
+	w.pushing.Store(true) // another goroutine's push to w's queue in progress
+	returnsWithin(t, "popLocal of an empty queue", func() {
+		if a, ok := w.popLocal(); ok {
+			t.Errorf("popLocal of an empty queue = %v", a)
+		}
+	})
+	returnsWithin(t, "steal from empty victims", func() {
+		if a, ok := w.steal(); ok {
+			t.Errorf("steal from empty victims = %v", a)
+		}
+	})
+	w.pushing.Store(false)
+
+	s.global.mu.Lock()
+	returnsWithin(t, "pop of an empty global queue", func() {
+		if e, ok := s.global.pop(); ok {
+			t.Errorf("pop of an empty global queue = %v", e)
+		}
+	})
+	s.global.mu.Unlock()
+
+	s.park.register(w)
+	s.park.wakeOne()
+	if !woken(w) {
+		t.Fatal("wakeOne did not wake the only parked worker")
+	}
+	s.park.mu.Lock()
+	returnsWithin(t, "unregister after a wakeup", func() {
+		if s.park.unregister(w) {
+			t.Error("unregister after wakeOne = true, want false")
+		}
+	})
+	s.park.mu.Unlock()
 }

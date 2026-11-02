@@ -415,3 +415,27 @@ func TestLocalRingDrop(t *testing.T) {
 		}
 	}
 }
+
+// TestGlobalQueueSize checks that size follows every push, pop and close, so pop can find the
+// queue empty without its mutex.
+func TestGlobalQueueSize(t *testing.T) {
+	var g globalQueue
+	x, y, z := newFake(t, 0), newFake(t, 1), newFake(t, 2)
+	g.pushTurn(x)
+	g.pushCallback(func() {})
+	g.pushBatch([]engine.ActorRef{y, z})
+	if n := g.size.Load(); n != 4 {
+		t.Fatalf("size after four pushes = %d, want 4", n)
+	}
+	g.pop()
+	if n := g.size.Load(); n != 3 {
+		t.Fatalf("size after a pop = %d, want 3", n)
+	}
+	g.close()
+	if n := g.size.Load(); n != 0 {
+		t.Fatalf("size after close = %d, want 0", n)
+	}
+	if e, ok := g.pop(); ok {
+		t.Fatalf("pop after close = %v", e)
+	}
+}

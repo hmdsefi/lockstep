@@ -165,6 +165,9 @@ type globalQueue struct {
 	head   int  // index of the oldest entry
 	n      int  // number of entries
 	closed bool // set by close; pushes then drop their entries
+	// size is n, stored under mu after every change, so pop can find the queue empty without
+	// taking mu. A worker looks at the global queue twice each time it runs out of work.
+	size atomic.Int64
 }
 
 // len returns the number of entries.
@@ -184,6 +187,7 @@ func (g *globalQueue) pushTurn(a engine.ActorRef) {
 	g.grow(1)
 	g.buf[g.index(g.n)] = globalEntry{actor: a}
 	g.n++
+	g.size.Store(int64(g.n))
 	g.mu.Unlock()
 }
 
@@ -197,6 +201,7 @@ func (g *globalQueue) pushCallback(fn func()) {
 	g.grow(1)
 	g.buf[g.index(g.n)] = globalEntry{fn: fn}
 	g.n++
+	g.size.Store(int64(g.n))
 	g.mu.Unlock()
 }
 
@@ -213,11 +218,17 @@ func (g *globalQueue) pushBatch(as []engine.ActorRef) {
 		g.buf[g.index(g.n)] = globalEntry{actor: a}
 		g.n++
 	}
+	g.size.Store(int64(g.n))
 	g.mu.Unlock()
 }
 
-// pop removes and returns the oldest entry. It reports false when the queue is empty.
+// pop removes and returns the oldest entry. It reports false when the queue is empty, without
+// taking mu when size is 0: a push that lands after that look then reads the park count, so
+// either it wakes a parked worker or the caller's next look finds the entry (parkList).
 func (g *globalQueue) pop() (globalEntry, bool) {
+	if g.size.Load() == 0 {
+		return globalEntry{}, false
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.n == 0 {
@@ -227,6 +238,7 @@ func (g *globalQueue) pop() (globalEntry, bool) {
 	g.buf[g.head] = globalEntry{} // drop the references
 	g.head = g.index(1)
 	g.n--
+	g.size.Store(int64(g.n))
 	return e, true
 }
 
@@ -238,6 +250,7 @@ func (g *globalQueue) close() {
 	g.closed = true
 	clear(g.buf) // drop the references
 	g.head, g.n = 0, 0
+	g.size.Store(0)
 	g.mu.Unlock()
 }
 

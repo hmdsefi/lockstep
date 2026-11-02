@@ -58,7 +58,9 @@ type worker struct {
 	schedtick uint32     // successful choices so far (SCH-070)
 	victims   *rand.Rand // this worker's own stream for the first steal victim (SCH-070 step 4)
 
-	parked bool // registered in s.park; guarded by s.park.mu
+	// parked is set while w is registered in s.park. It changes only under s.park.mu; w reads it
+	// without the lock to skip that lock after a waker unregistered it.
+	parked atomic.Bool
 
 	_ [64]byte // keeps the next worker's ring indexes off this worker's cache line
 }
@@ -229,8 +231,14 @@ func (w *worker) unlockLocal() {
 }
 
 // popLocal pops w's local queue under lockLocal. The ring's owner-side operations assume one
-// writer of its slots, so a pop must not overlap a push from another goroutine.
+// writer of its slots, so a pop must not overlap a push from another goroutine. An empty queue
+// returns false without taking the flag: a push that publishes its entry after that look then
+// reads the park count, so either it wakes a parked worker or w's next look finds the entry
+// (parkList).
 func (w *worker) popLocal() (engine.ActorRef, bool) {
+	if w.local.len() == 0 {
+		return nil, false
+	}
 	w.lockLocal()
 	a, ok := w.local.pop()
 	w.unlockLocal()
@@ -316,7 +324,8 @@ func (w *worker) steal() (engine.ActorRef, bool) {
 	}
 	v := w.victims.IntN(n)
 	for range n {
-		if v != w.index {
+		// An empty victim is skipped without taking w's flag; grabHalf would move nothing.
+		if v != w.index && ws[v].local.len() > 0 {
 			w.lockLocal()
 			moved := ws[v].local.grabHalf(&w.local)
 			w.unlockLocal()
@@ -415,20 +424,25 @@ type parkList struct {
 func (p *parkList) register(w *worker) {
 	p.mu.Lock()
 	p.stack = append(p.stack, w)
-	w.parked = true
+	w.parked.Store(true)
 	p.n.Add(1)
 	p.mu.Unlock()
 }
 
 // unregister removes w from the parked workers if it is still there, and reports whether it
-// was. It reports false when a waker already unregistered w.
+// was. It reports false when a waker already unregistered w. Only w's goroutine calls it, and only
+// w registers itself, so when parked is false without the lock, it stays false: unregister then
+// returns without taking the lock, as it does after every wakeup from wakeOne or wakeAll.
 func (p *parkList) unregister(w *worker) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !w.parked {
+	if !w.parked.Load() {
 		return false
 	}
-	w.parked = false
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !w.parked.Load() {
+		return false
+	}
+	w.parked.Store(false)
 	if i := slices.Index(p.stack, w); i >= 0 {
 		p.stack = slices.Delete(p.stack, i, i+1)
 	}
@@ -450,7 +464,7 @@ func (p *parkList) wakeOne() {
 	w := p.stack[len(p.stack)-1]
 	p.stack[len(p.stack)-1] = nil
 	p.stack = p.stack[:len(p.stack)-1]
-	w.parked = false
+	w.parked.Store(false)
 	p.n.Add(-1)
 	p.mu.Unlock()
 	signal(w.wake)
@@ -460,7 +474,7 @@ func (p *parkList) wakeOne() {
 func (p *parkList) wakeAll() {
 	p.mu.Lock()
 	for i, w := range p.stack {
-		w.parked = false
+		w.parked.Store(false)
 		signal(w.wake)
 		p.stack[i] = nil
 	}
