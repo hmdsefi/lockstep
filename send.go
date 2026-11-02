@@ -84,8 +84,10 @@ type senderInfo interface {
 	// nilSender reports whether the receiver is a nil pointer (ACT-200).
 	nilSender() bool
 	// sendOrigin returns the sender's system, the sender's address (ACT-210), and the cell whose
-	// turn sends, nil for a System. It panics for a Context outside its turn (ACT-120).
-	sendOrigin() (sys *System, from Address, ref engine.ActorRef)
+	// turn sends, nil for a System. The address is the System's or the cell's own field, which never
+	// changes, so a mailbox entry can point at it (entry). It panics for a Context outside its turn
+	// (ACT-120).
+	sendOrigin() (sys *System, from *Address, ref engine.ActorRef)
 }
 
 func (s *System) nilSender() bool { return s == nil }
@@ -93,17 +95,17 @@ func (s *System) nilSender() bool { return s == nil }
 // sendOrigin returns the user guardian as the sender's address; a System sends outside any turn.
 //
 //nolint:unparam // implements senderInfo, whose Context implementation returns the sending cell
-func (s *System) sendOrigin() (*System, Address, engine.ActorRef) { return s, s.user, nil }
+func (s *System) sendOrigin() (*System, *Address, engine.ActorRef) { return s, &s.user, nil }
 
 func (c *Context[M]) nilSender() bool { return c == nil }
 
-func (c *Context[M]) sendOrigin() (*System, Address, engine.ActorRef) {
+func (c *Context[M]) sendOrigin() (*System, *Address, engine.ActorRef) {
 	c.mustInTurn()
-	return c.cell.sys, c.cell.addr, c.cell
+	return c.cell.sys, &c.cell.addr, c.cell
 }
 
 // recordSend emits lockstep.send (MSG §8) before a message is routed.
-func (s *System) recordSend(from, to Address, msg any) {
+func (s *System) recordSend(from *Address, to Address, msg any) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
 		return
@@ -141,12 +143,12 @@ func (r deadReason) String() string { return deadReasons[r] }
 // routeRequest is one user message on its way to a mailbox: what Send routes, and what Ask and
 // Host.Inbound route the same way.
 type routeRequest struct {
-	from    Address         // the sender
+	from    *Address        // the sender; never nil (entry says where it points)
 	fromRef engine.ActorRef // the cell whose turn sends, or nil outside any turn
 	to      Address         // the target, as the sender named it
 	typ     reflect.Type    // the sender's message type M: a path address needs an actor of exactly this type; nil: any
 	msg     any             // the M value
-	ask     Address         // MBX-092's ask address of an Ask request, zero for every other message
+	ask     *Address        // MBX-092's ask address of an Ask request, nil for every other message
 	seq     uint64          // the inbound envelope's Seq (MBX-120), 0 for a local send
 	size    int64           // msg's bytes for the target's mailbox estimate (OVL-410), computed by the caller before routing
 	// wait is set only for an outside sender, a Send, SendContext or Ask from a *System: the context
@@ -155,6 +157,14 @@ type routeRequest struct {
 	// MSG-330). It is nil for every sender that never waits: an actor, an inbound envelope (MBX-120)
 	// and a message the interposer held, which the engine offers.
 	wait context.Context
+}
+
+// askAddr returns r's ask address, the zero Address for a message that is not an ask request.
+func (r *routeRequest) askAddr() Address {
+	if r.ask == nil {
+		return Address{}
+	}
+	return *r.ask
 }
 
 // routeKind is the kind of a routing outcome.
@@ -246,7 +256,7 @@ func (s *System) offer(r routeRequest) outcome {
 	if shed == nil && c.stuck() {
 		shed = errStuck // OVL-520: the stuck actor's mailbox is treated as full
 	}
-	tracked := !r.ask.IsZero() && s.asks.track(r.ask, c, r.ask.node == s.node)
+	tracked := r.ask != nil && s.asks.track(*r.ask, c, r.ask.node == s.node)
 	e := entry{msg: r.msg, from: r.from, ask: r.ask, seq: r.seq, size: r.size, kind: entrySent}
 	var out mailbox.Outcome
 	var evicted entry
@@ -259,7 +269,7 @@ func (s *System) offer(r routeRequest) outcome {
 			// askRefused (MBX-092). A tracked request was not enqueued, so its target does not
 			// track it.
 			if tracked {
-				s.untrack(r.ask)
+				s.untrack(*r.ask)
 			}
 			return outcome{kind: routeRefused, err: err}
 		}
@@ -290,12 +300,12 @@ func (s *System) offer(r routeRequest) outcome {
 		return outcome{kind: routeEnqueued, cell: c}
 	}
 	// The mailbox is closed.
-	if r.ask.IsZero() || tracked && s.untrack(r.ask) {
+	if r.ask == nil || tracked && s.untrack(*r.ask) {
 		return s.deadRequest(r, reasonStopped)
 	}
 	// The stop's sweep took the tracked entry and fails the ask; a request that was not tracked
 	// here (a duplicate, or an ask that already resolved) has nothing to fail.
-	s.deadLetter(r.from, r.to, reasonStopped, r.msg)
+	s.deadLetter(*r.from, r.to, reasonStopped, r.msg)
 	return outcome{kind: routeDead, reason: reasonStopped}
 }
 
@@ -372,7 +382,7 @@ func (s *System) sendRemote(r routeRequest) outcome {
 	err := tr.Deliver(engine.Envelope{
 		From:    r.from.engine(),
 		To:      r.to.engine(),
-		Payload: userPayload{msg: r.msg, ask: r.ask, typ: r.typ},
+		Payload: userPayload{msg: r.msg, ask: r.askAddr(), typ: r.typ},
 	})
 	if err != nil {
 		return outcome{kind: routeFailed, err: fmt.Errorf("lockstep: send to %s: %w", r.to, err)}
@@ -386,13 +396,13 @@ func (s *System) sendRemote(r routeRequest) outcome {
 // arrived from another node, the system issues Fail(ErrTerminated) from the target address,
 // which travels back to the asker like any reply attempt (MSG-350).
 func (s *System) deadRequest(r routeRequest, reason deadReason) outcome {
-	s.deadLetter(r.from, r.to, reason, r.msg)
+	s.deadLetter(*r.from, r.to, reason, r.msg)
 	switch {
-	case r.ask.IsZero():
+	case r.ask == nil:
 	case r.ask.node == s.node:
-		s.settle(r.ask, resolution{how: byRouting, from: r.to, err: fmt.Errorf("%w: %s", ErrTerminated, r.to)})
+		s.settle(*r.ask, resolution{how: byRouting, from: r.to, err: fmt.Errorf("%w: %s", ErrTerminated, r.to)})
 	default:
-		s.replyAttempt(r.ask, r.to, nil, fmt.Errorf("%w: %s", ErrTerminated, r.to))
+		s.replyAttempt(*r.ask, r.to, nil, fmt.Errorf("%w: %s", ErrTerminated, r.to))
 	}
 	return outcome{kind: routeDead, reason: reason}
 }
@@ -460,13 +470,13 @@ func (s *System) shedMessage(c actorCell, owner Address, r routeRequest, err err
 // removes it and issues the reply attempt Fail(err) for ask from target (MSG-345). For an asker on
 // this system the attempt is applied before askRefused returns; for an asker on another node it
 // goes through the transport. An ask that is not tracked has nothing to fail: the target's stop
-// has failed it already (MSG-340), or it is no longer pending. A zero ask is no request, and
+// has failed it already (MSG-340), or it is no longer pending. A nil ask is no request, and
 // nothing happens. The caller holds no cell lock.
-func (s *System) askRefused(ask, target Address, err error) {
-	if ask.IsZero() || !s.untrack(ask) {
+func (s *System) askRefused(ask *Address, target Address, err error) {
+	if ask == nil || !s.untrack(*ask) {
 		return
 	}
-	s.replyAttempt(ask, target, nil, err)
+	s.replyAttempt(*ask, target, nil, err)
 }
 
 // recordDeliver emits lockstep.deliver (MBX §8) for the entry of r that c's mailbox took. to is the

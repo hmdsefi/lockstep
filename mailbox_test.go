@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"unsafe"
 
 	"github.com/hmdsefi/lockstep/internal/engine/enginetest"
 	"github.com/hmdsefi/lockstep/internal/hooks"
@@ -256,5 +257,25 @@ func TestHoldExported(t *testing.T) {
 	v := mustPanic(t, func() { Hold(sys, Address{node: "local", path: "/user/none", uid: 7}) })
 	if want := "lockstep: Hold: lockstep://local/user/none#7 is not a registered actor"; v != want {
 		t.Errorf("Hold of an unknown address panicked with %v, want %q", v, want)
+	}
+}
+
+// TestEntrySize keeps a mailbox entry at 64 bytes: every send copies one into the mailbox's ring and
+// every pop copies it out, so it carries its two addresses as pointers.
+func TestEntrySize(t *testing.T) {
+	if n := unsafe.Sizeof(entry{}); n > 64 {
+		t.Errorf("unsafe.Sizeof(entry{}) = %d, want at most 64", n)
+	}
+}
+
+// TestEntrySender checks that an entry without a sender reports the zero Address, as a dead letter
+// of such an entry did when the sender was stored by value.
+func TestEntrySender(t *testing.T) {
+	if got := (&entry{msg: 1}).sender(); !got.IsZero() {
+		t.Errorf("sender() of an entry with no sender = %v, want the zero Address", got)
+	}
+	a := Address{node: "n", path: "/user/a", uid: 7}
+	if got := (&entry{msg: 1, from: &a}).sender(); got != a {
+		t.Errorf("sender() = %v, want %v", got, a)
 	}
 }

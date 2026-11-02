@@ -20,15 +20,20 @@ type host struct{ sys *System }
 func (h host) Inbound(env engine.Envelope) {
 	switch p := env.Payload.(type) {
 	case userPayload:
-		h.sys.deliverLocal(routeRequest{
-			from: addressOf(env.From),
+		from := addressOf(env.From) // the mailbox entry points at it (entry)
+		r := routeRequest{
+			from: &from,
 			to:   addressOf(env.To),
 			typ:  p.typ,
 			msg:  p.msg,
-			ask:  p.ask,
 			seq:  env.Seq,
 			size: h.sys.sizeOf(p.msg), // engine context, no lock held (OVL-410)
-		})
+		}
+		if !p.ask.IsZero() {
+			ask := p.ask
+			r.ask = &ask
+		}
+		h.sys.deliverLocal(r)
 	case replyPayload:
 		h.sys.settle(addressOf(env.To), resolution{how: byReply, from: addressOf(env.From), v: p.v, err: p.err})
 	}

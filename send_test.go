@@ -111,7 +111,7 @@ func TestATENG26DeliverError(t *testing.T) {
 	if err := Send(nsys, p, 3); err != nil {
 		t.Errorf("Send without a transport = %v, want nil", err)
 	}
-	o := nsys.route(routeRequest{from: nsys.user, to: p.Address(), msg: 3})
+	o := nsys.route(routeRequest{from: &nsys.user, to: p.Address(), msg: 3})
 	if o.kind != routeDead || o.reason != reasonUnreachable {
 		t.Errorf("route without a transport = %+v, want a dead letter %q", o, reasonUnreachable)
 	}
@@ -315,7 +315,7 @@ func TestSendPathAddress(t *testing.T) {
 		if err := Send(sys, to, msg); err != nil {
 			t.Errorf("Send(%v, %d) = %v, want nil", to, msg, err)
 		}
-		o := sys.route(routeRequest{from: sys.user, to: to.Address(), typ: typeOf[int](), msg: msg})
+		o := sys.route(routeRequest{from: &sys.user, to: to.Address(), typ: typeOf[int](), msg: msg})
 		if o.kind != routeDead || o.reason != reasonNotFound {
 			t.Errorf("route to %v = %+v, want a dead letter %q", to, o, reasonNotFound)
 		}
@@ -351,7 +351,7 @@ func TestSendPathAddress(t *testing.T) {
 	if !slices.Equal(*log, []int{2}) {
 		t.Errorf("log %v, want [2]: the earlier dead letters were not delivered, the path send was", *log)
 	}
-	o := sys.route(routeRequest{from: sys.user, to: p.Address(), typ: typeOf[int](), msg: 3})
+	o := sys.route(routeRequest{from: &sys.user, to: p.Address(), typ: typeOf[int](), msg: 3})
 	if o.kind != routeEnqueued || o.cell != actorCell(cellOf(t, sys, a)) {
 		t.Errorf("route to the int actor = %+v, want it enqueued at the actor's cell", o)
 	}
@@ -365,7 +365,7 @@ func TestRouteOutcomes(t *testing.T) {
 	gone := Address{node: "local", path: a.Address().Path(), uid: a.Address().UID() + 100}
 	nowhere := Address{node: "local", path: "/user/zz", uid: 99}
 	for name, to := range map[string]Address{"unknown uid": gone, "unregistered path": nowhere} {
-		o := sys.route(routeRequest{from: sys.user, to: to, typ: typeOf[int](), msg: 1})
+		o := sys.route(routeRequest{from: &sys.user, to: to, typ: typeOf[int](), msg: 1})
 		if o.kind != routeDead || o.reason != reasonStopped || o.cell != nil || o.err != nil {
 			t.Errorf("route to an %s = %+v, want a dead letter %q", name, o, reasonStopped)
 		}
@@ -377,12 +377,12 @@ func TestRouteOutcomes(t *testing.T) {
 	if len(*log) != 0 {
 		t.Errorf("a dead letter reached the live actor: %v", *log)
 	}
-	o := sys.route(routeRequest{from: sys.user, to: PIDAt[int]("n2", "/user/a").Address(), msg: 1})
+	o := sys.route(routeRequest{from: &sys.user, to: PIDAt[int]("n2", "/user/a").Address(), msg: 1})
 	if o.kind != routeHanded || o.err != nil {
 		t.Errorf("route to another node = %+v, want it handed to the transport", o)
 	}
 	eng.SetDeliverError(errX)
-	o = sys.route(routeRequest{from: sys.user, to: PIDAt[int]("n2", "/user/a").Address(), msg: 1})
+	o = sys.route(routeRequest{from: &sys.user, to: PIDAt[int]("n2", "/user/a").Address(), msg: 1})
 	if o.kind != routeFailed || !errors.Is(o.err, errX) {
 		t.Errorf("route to another node with a failing transport = %+v, want routeFailed wrapping errX", o)
 	}
@@ -393,7 +393,7 @@ func TestRouteOutcomes(t *testing.T) {
 func TestRouteHeld(t *testing.T) {
 	eng, sys, fake := interposedSystem(t, func(any) bool { return true })
 	a, log := logActor(t, sys, eng)
-	o := sys.route(routeRequest{from: sys.user, to: a.Address(), typ: typeOf[int](), msg: 1})
+	o := sys.route(routeRequest{from: &sys.user, to: a.Address(), typ: typeOf[int](), msg: 1})
 	if o.kind != routeHeld || o.cell != nil {
 		t.Fatalf("route of a held message = %+v, want routeHeld", o)
 	}

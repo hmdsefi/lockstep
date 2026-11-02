@@ -38,7 +38,7 @@ func (rt ReplyTo[R]) Fail(from Sender, err error) {
 // two checks: from nil and a Context outside its turn (both panics).
 func replier(from Sender) (*System, Address) {
 	sys, addr, _ := mustSender(from).sendOrigin()
-	return sys, addr
+	return sys, *addr
 }
 
 // Reply is the typed future of one ask.

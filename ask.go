@@ -70,7 +70,7 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 	// shard's lock, for a system that stopped since the check above (MSG-360).
 	r := newReply[R](sys)
 	p := &r.entry
-	if !sys.newAsk(p, r, fromAddr, to.addr, cfg.timeout) {
+	if !sys.newAsk(p, r, *fromAddr, to.addr, cfg.timeout) {
 		return resolvedReply[R](sys, sys.errStopped())
 	}
 	r.ask = p.addr // before Ask returns, so before any Pipe reads it
@@ -80,14 +80,14 @@ func Ask[M, R any](from Sender, to PID[M], build func(ReplyTo[R]) M, opts ...Ask
 
 	// 6. Timer, record, routing exactly as Send's, with the ask address in the mailbox entry.
 	sys.armTimeout(p)
-	sys.recordAsk(fromAddr, p, msg)
+	sys.recordAsk(*fromAddr, p, msg)
 	req := routeRequest{
 		from:    fromAddr,
 		fromRef: fromRef,
 		to:      to.addr,
 		typ:     reflect.TypeFor[M](),
 		msg:     msg,
-		ask:     p.addr,
+		ask:     &p.addr,
 		size:    size,
 	}
 	if _, outside := from.(*System); outside {
@@ -181,12 +181,12 @@ func NewReply[R any](from Sender, opts ...AskOption) (ReplyTo[R], *Reply[R]) {
 	// (MSG-390): it resolves by a reply attempt, its timeout or its system stopping.
 	r := newReply[R](sys)
 	p := &r.entry
-	if !sys.newAsk(p, r, fromAddr, Address{}, cfg.timeout) {
+	if !sys.newAsk(p, r, *fromAddr, Address{}, cfg.timeout) {
 		return ReplyTo[R]{}, resolvedReply[R](sys, sys.errStopped())
 	}
 	r.ask = p.addr
 	sys.armTimeout(p)
-	sys.recordAsk(fromAddr, p, nil)
+	sys.recordAsk(*fromAddr, p, nil)
 	return ReplyTo[R]{addr: p.addr}, r
 }
 

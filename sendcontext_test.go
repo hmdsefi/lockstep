@@ -374,7 +374,7 @@ func TestAskRefusedUntrackedAsk(t *testing.T) {
 	sys, rec := newRecordingSystem(t)
 	tp := spawnTarget(t, sys, "t", 1, FailSend)
 	rt, r := NewReply[int](sys, WithTimeout(time.Hour))
-	sys.askRefused(rt.addr, tp.Address(), mailboxFullError(tp.Address()))
+	sys.askRefused(&rt.addr, tp.Address(), mailboxFullError(tp.Address()))
 	if r.resolved.Load() {
 		t.Error("askRefused resolved an ask that no actor tracks")
 	}

@@ -386,7 +386,7 @@ func TestATACT34PIDAtLifecycle(t *testing.T) {
 	}
 	// Nothing is delivered after the stop: the path address resolves to no actor, a dead letter
 	// (MBX-150).
-	if o := sys.route(routeRequest{from: sys.user, to: p.Address(), typ: typeOf[int](), msg: 4}); o.kind != routeDead || o.reason != reasonNotFound {
+	if o := sys.route(routeRequest{from: &sys.user, to: p.Address(), typ: typeOf[int](), msg: 4}); o.kind != routeDead || o.reason != reasonNotFound {
 		t.Errorf("route to the path address after the stop = %+v, want a not-found dead letter", o)
 	}
 	select {

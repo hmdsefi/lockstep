@@ -244,7 +244,7 @@ func (c *cell[M]) finishStop() {
 func (c *cell[M]) drain() {
 	sent, self, notRunning := c.closeQueues()
 	for _, e := range sent {
-		c.sys.deadLetter(e.from, c.addr, reasonStopped, e.msg)
+		c.sys.deadLetter(e.sender(), c.addr, reasonStopped, e.msg)
 	}
 	for _, e := range self {
 		msg := e.msg
