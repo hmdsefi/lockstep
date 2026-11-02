@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,6 +53,41 @@ func TestATSCH24RunningTurns(t *testing.T) {
 	waitFor(t, time.Second, "an empty RunningTurns after the turn", func() bool {
 		return len(e.RunningTurns(nil)) == 0
 	})
+}
+
+// TestRunningTurnsStartIsStable covers SCH-270 and OVL-500's use of it: the watchdog identifies a
+// turn by its (Worker, Start) pair and measures it with time.Since, so two snapshots of one turn
+// must report equal starts that carry a monotonic reading.
+func TestRunningTurnsStartIsStable(t *testing.T) {
+	e := newEngine(t, Config{Node: "n", Workers: 1})
+	a := newFake(t, 0)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock) // runs before the engine's Stop, which waits for the turn
+	var entered atomic.Bool
+	a.onTurn = func(*fakeActor, int) {
+		entered.Store(true)
+		<-release
+	}
+	before := time.Now()
+	a.add()
+	e.s.Ready(a)
+	waitFor(t, time.Second, "the blocking turn", entered.Load)
+
+	first, second := e.RunningTurns(nil), e.RunningTurns(nil)
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("RunningTurns = %v, then %v, while one turn blocks; want one entry each", first, second)
+	}
+	start := first[0].Start
+	if !start.Equal(second[0].Start) {
+		t.Errorf("two snapshots of one turn: Start %v, then %v; want equal", start, second[0].Start)
+	}
+	if !strings.Contains(start.String(), " m=") { // String prints a monotonic reading as m=±<s>
+		t.Errorf("RunningTurns: Start %v has no monotonic reading", start)
+	}
+	if start.Before(before) || time.Since(start) > time.Second {
+		t.Errorf("RunningTurns: Start %v, want between %v and now", start, before)
+	}
 }
 
 // TestRunningTurnsSkipsCallbacks covers SCH-270: a worker running a callback is not reported.
