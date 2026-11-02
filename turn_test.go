@@ -60,6 +60,33 @@ func TestRunTurnBudget(t *testing.T) {
 	}
 }
 
+// ENG-320, ENG-350: a message queued after a turn's last pop, here by the test hook at the end of
+// the turn, still gets a turn. RunTurn reports no more work for the queues it found empty, and the
+// message's own Ready asks for the next turn.
+func TestRunTurnMessageAfterLastPop(t *testing.T) {
+	sys, eng := newManualSystem(t)
+	var got []int
+	pid, err := Spawn(sys, "a", actorOf[int](&fnActor[int]{
+		receive: func(_ *Context[int], m int) { got = append(got, m) },
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RunUntilIdle()
+	sent := false
+	sys.afterTurn = func(a Address, _, user int) {
+		if a == pid.Address() && user > 0 && !sent {
+			sent = true
+			send(t, sys, pid, 2)
+		}
+	}
+	send(t, sys, pid, 1)
+	eng.RunUntilIdle()
+	if want := []int{1, 2}; !slices.Equal(got, want) {
+		t.Errorf("received %v, want %v", got, want)
+	}
+}
+
 // ENG-330, SUP-150: a panic in Receive stays inside RunTurn, suspends the cell, and the cell pops
 // no further user message.
 func TestRunTurnRecoversPanic(t *testing.T) {
