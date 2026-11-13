@@ -14,7 +14,7 @@ import (
 )
 
 // refusedReq is a request whose ReplyTo the target never gets to use.
-type refusedReq struct{ rt lockstep.ReplyTo[int] }
+type refusedReq struct{ Rt lockstep.ReplyTo[int] }
 
 // refusedStep is the message of the asking actor: the first one, with to set, starts the ask, and
 // the piped resolution, with done set, carries its error.
@@ -43,7 +43,7 @@ func TestATMSG38RefusedAskOnAnotherNode(t *testing.T) {
 					return
 				}
 				started = time.Duration(w.Sim.Now())
-				r := lockstep.Ask(ctx, m.to, func(rt lockstep.ReplyTo[int]) refusedReq { return refusedReq{rt: rt} },
+				r := lockstep.Ask(ctx, m.to, func(rt lockstep.ReplyTo[int]) refusedReq { return refusedReq{Rt: rt} },
 					lockstep.WithTimeout(askTimeout))
 				lockstep.Pipe(ctx, r, func(_ int, err error) refusedStep { return refusedStep{done: true, err: err} })
 			}})

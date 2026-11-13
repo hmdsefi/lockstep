@@ -20,7 +20,7 @@ type waitKind int
 const (
 	waitStart waitKind = iota // the body starts the actor
 	waitAsk                   // a request to answer through ReplyTo
-	waitDone                  // the actor's own ask resolved; Err is its error
+	waitDone                  // the actor's own ask resolved; Failed says whether it failed
 	waitTick                  // a periodic timer tick
 )
 
@@ -28,7 +28,7 @@ const (
 type Wait struct {
 	Kind    waitKind
 	ReplyTo lockstep.ReplyTo[int] // waitAsk only
-	Err     error                 // waitDone only
+	Failed  bool                  // waitDone only
 }
 
 // askWait is the build function of an ask that sends a Wait request.
@@ -61,7 +61,7 @@ func (a *waiter) Receive(ctx *lockstep.Context[Wait], m Wait) {
 		}
 		a.ask(ctx)
 	case waitDone:
-		if m.Err != nil {
+		if m.Failed {
 			return
 		}
 		for _, r := range a.held {
@@ -79,7 +79,7 @@ func (a *waiter) ask(ctx *lockstep.Context[Wait]) {
 	}
 	a.asked = true
 	r := lockstep.Ask(ctx, *a.peer, askWait)
-	lockstep.Pipe(ctx, r, func(_ int, err error) Wait { return Wait{Kind: waitDone, Err: err} })
+	lockstep.Pipe(ctx, r, func(_ int, err error) Wait { return Wait{Kind: waitDone, Failed: err != nil} })
 }
 
 // spawnWait spawns a at /user/<name> and stores its PID in *pid.
