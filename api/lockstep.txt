@@ -202,6 +202,21 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/codec, func Default() *Registry
+pkg github.com/hmdsefi/lockstep/codec, func NewRegistry() *Registry
+pkg github.com/hmdsefi/lockstep/codec, func RegisterIn[T any](*Registry, string)
+pkg github.com/hmdsefi/lockstep/codec, func Register[T any](string)
+pkg github.com/hmdsefi/lockstep/codec, method (*Registry) NameOf(any) (string, error)
+pkg github.com/hmdsefi/lockstep/codec, method (*Registry) Names() []string
+pkg github.com/hmdsefi/lockstep/codec, method (*Registry) TypeOf(string) (reflect.Type, error)
+pkg github.com/hmdsefi/lockstep/codec, type Codec interface { Marshal, Name, Supports, Unmarshal }
+pkg github.com/hmdsefi/lockstep/codec, type Codec interface, Marshal(any) ([]byte, error)
+pkg github.com/hmdsefi/lockstep/codec, type Codec interface, Name() string
+pkg github.com/hmdsefi/lockstep/codec, type Codec interface, Supports(reflect.Type) error
+pkg github.com/hmdsefi/lockstep/codec, type Codec interface, Unmarshal([]byte, any) error
+pkg github.com/hmdsefi/lockstep/codec, type Registry struct
+pkg github.com/hmdsefi/lockstep/codec, var ErrNotRegistered error
+pkg github.com/hmdsefi/lockstep/codec, var ErrUnsupported error
 pkg github.com/hmdsefi/lockstep/dedup, func NewReplies[K comparable, R any](Config) *Replies[K, R]
 pkg github.com/hmdsefi/lockstep/dedup, func NewVersions[K comparable](Config) *Versions[K]
 pkg github.com/hmdsefi/lockstep/dedup, func NewWindow[K comparable](Config) *Window[K]
