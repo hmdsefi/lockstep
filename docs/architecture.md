@@ -836,7 +836,7 @@ The same analyzers run in golangci-lint as a module plugin.
 
 ## Modules and the production boundary
 
-The repository holds five Go modules:
+The repository holds six Go modules:
 
 - `github.com/hmdsefi/lockstep`, the root module: the runtime, `sim`, `persist`,
   `persist/filestore`, `dedup`, and internal packages for the engine seam, the production engine,
@@ -844,6 +844,8 @@ The repository holds five Go modules:
 - `github.com/hmdsefi/lockstep/analysis`: `lockstep-vet` and the golangci-lint plugin.
 - `github.com/hmdsefi/lockstep/bench`: the benchmark suite. It has its own `go.mod`, and the root
   module never imports it.
+- `github.com/hmdsefi/lockstep/codec/protobuf`: the protocol buffer codec. It requires
+  `google.golang.org/protobuf`, which the root module never imports.
 - `github.com/hmdsefi/lockstep/examples/raft`: the Raft example.
 - `github.com/hmdsefi/lockstep/examples/orders`: the order service example of
   [Message delivery](delivery.md).
