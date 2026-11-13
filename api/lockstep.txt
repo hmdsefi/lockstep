@@ -212,6 +212,9 @@ pkg github.com/hmdsefi/lockstep/codec, func Default() *Registry
 pkg github.com/hmdsefi/lockstep/codec, func NewRegistry() *Registry
 pkg github.com/hmdsefi/lockstep/codec, func RegisterIn[T any](*Registry, string)
 pkg github.com/hmdsefi/lockstep/codec, func Register[T any](string)
+pkg github.com/hmdsefi/lockstep/codec, method (*Registry) Check(Codec) error
+pkg github.com/hmdsefi/lockstep/codec, method (*Registry) Decode(Codec, string, []byte) (any, error)
+pkg github.com/hmdsefi/lockstep/codec, method (*Registry) Encode(Codec, any) (string, []byte, error)
 pkg github.com/hmdsefi/lockstep/codec, method (*Registry) NameOf(any) (string, error)
 pkg github.com/hmdsefi/lockstep/codec, method (*Registry) Names() []string
 pkg github.com/hmdsefi/lockstep/codec, method (*Registry) TypeOf(string) (reflect.Type, error)

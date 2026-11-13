@@ -22,15 +22,26 @@ const (
 	zeroRegistry = "codec: zero Registry; use NewRegistry"
 )
 
-// Registry maps wire names to Go types and back. It holds the built-in types from the start.
-// A Registry is safe for concurrent use. The zero Registry is not usable: its methods panic, as
-// RegisterIn with it does. Call NewRegistry.
+// Registry maps wire names to Go types and back, and encodes and decodes registered values with a
+// Codec. It holds the built-in types from the start. A Registry is safe for concurrent use. The
+// zero Registry is not usable: its methods panic, as RegisterIn with it does. Call NewRegistry.
 type Registry struct {
 	// mu guards byName and byType, which always hold the same pairs (COD-085). Lookups take the
 	// read lock, registrations the write lock.
 	mu     sync.RWMutex
 	byName map[string]reflect.Type
 	byType map[reflect.Type]string
+
+	// supportMu guards supports, the cache of Codec.Supports results (COD-085). An entry holds the
+	// error Supports returned, nil included; codecs with the same Name share entries.
+	supportMu sync.RWMutex
+	supports  map[supportKey]error
+}
+
+// supportKey identifies a cached Supports result: a codec, by name, and a type.
+type supportKey struct {
+	codec string
+	typ   reflect.Type
 }
 
 // mustInit panics unless r was made by NewRegistry. The maps are set only there and never
@@ -48,8 +59,9 @@ var defaultRegistry = NewRegistry()
 // are not visible in Default, nor the other way round.
 func NewRegistry() *Registry {
 	r := &Registry{
-		byName: make(map[string]reflect.Type, len(builtins)),
-		byType: make(map[reflect.Type]string, len(builtins)),
+		byName:   make(map[string]reflect.Type, len(builtins)),
+		byType:   make(map[reflect.Type]string, len(builtins)),
+		supports: make(map[supportKey]error),
 	}
 	for _, b := range builtins {
 		r.byName[b.name] = b.typ
@@ -160,4 +172,99 @@ func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Sorted(maps.Keys(r.byName))
+}
+
+// Encode returns the wire name of v's dynamic type and the bytes c makes of v. It fails if the
+// type is not registered (the error wraps ErrNotRegistered), if c does not support the type (the
+// error c.Supports returned, which wraps ErrUnsupported), or if c.Marshal fails (the error wraps
+// it and reads "codec: encode <name>: ..."). On error, name is "" and data is nil. Encode panics
+// if c is nil, and then if r is a zero Registry.
+//
+// The registry keeps the answer c.Supports gives for each type and reuses it for every codec with
+// the same name.
+func (r *Registry) Encode(c Codec, v any) (name string, data []byte, err error) {
+	mustCodec(c)
+	name, err = r.NameOf(v)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := r.supported(c, reflect.TypeOf(v)); err != nil {
+		return "", nil, err
+	}
+	data, err = c.Marshal(v)
+	if err != nil {
+		return "", nil, fmt.Errorf("codec: encode %s: %w", name, err)
+	}
+	return name, data, nil
+}
+
+// Decode decodes data into a new value of the type registered under the wire name name, and
+// returns that value. The value has the registered type itself: a struct type T comes back as a
+// T, not a *T, and a pointer type *T registered as such comes back as a *T. Decode fails if no
+// type is registered under name (the error wraps ErrNotRegistered), if c does not support the
+// type (the error c.Supports returned), or if c.Unmarshal fails (the error wraps it and reads
+// "codec: decode <name>: ..."). On error, the value is nil. Decode panics if c is nil, and then
+// if r is a zero Registry.
+func (r *Registry) Decode(c Codec, name string, data []byte) (any, error) {
+	mustCodec(c)
+	t, err := r.TypeOf(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.supported(c, t); err != nil {
+		return nil, err
+	}
+	p := reflect.New(t)
+	if err := c.Unmarshal(data, p.Interface()); err != nil {
+		return nil, fmt.Errorf("codec: decode %s: %w", name, err)
+	}
+	return p.Elem().Interface(), nil
+}
+
+// Check reports whether c supports every registered type, built-ins included. It asks about the
+// types in the order Names lists their names and returns the first error c.Supports returns,
+// unchanged, or nil. Call it when a system starts, so that a type c cannot encode is found before
+// the first message of that type is sent. Check panics if c is nil, and then if r is a zero
+// Registry.
+func (r *Registry) Check(c Codec) error {
+	mustCodec(c)
+	r.mustInit() // reading byName directly, a zero Registry would look empty and pass
+	r.mu.RLock()
+	names := slices.Sorted(maps.Keys(r.byName))
+	types := make([]reflect.Type, len(names))
+	for i, name := range names {
+		types[i] = r.byName[name]
+	}
+	r.mu.RUnlock()
+	for _, t := range types {
+		if err := r.supported(c, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mustCodec panics if c is nil (§4.1).
+func mustCodec(c Codec) {
+	if c == nil {
+		panic("codec: nil codec")
+	}
+}
+
+// supported returns c.Supports(t), asking c only the first time for each (c.Name(), t) pair
+// (COD-085). Supports runs outside the lock, so two concurrent first calls may both ask; a codec's
+// answer for a type never changes, so keeping either is right.
+func (r *Registry) supported(c Codec, t reflect.Type) error {
+	key := supportKey{codec: c.Name(), typ: t}
+	r.supportMu.RLock()
+	err, ok := r.supports[key]
+	r.supportMu.RUnlock()
+	if ok {
+		return err
+	}
+	err = c.Supports(t)
+	r.supportMu.Lock()
+	r.supports[key] = err
+	r.supportMu.Unlock()
+	return err
 }
