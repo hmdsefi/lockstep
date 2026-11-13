@@ -15,9 +15,9 @@
 //
 // # Supported types
 //
-// Codec supports pointer types that implement proto.Message, such as the *M of a generated
-// message M, and the 19 built-in types of package codec. A message type is registered as its
-// pointer type, *M, and decodes as a new *M.
+// Codec supports pointer types *M that implement proto.Message whose zero value M is a usable
+// message (any generated message type), and the 19 built-in types of package codec. A message
+// type is registered as its pointer type, *M, and decodes as a new *M.
 //
 // The built-in types travel as the well-known wrapper messages:
 //
@@ -185,8 +185,8 @@ func newMessage(t reflect.Type) (m proto.Message, ok bool) {
 	return m, true
 }
 
-// recoverInto turns a panic in the protobuf runtime into an error in *err. Only a message type
-// that Supports rejects can panic there, when Marshal or Unmarshal is called without asking it.
+// recoverInto turns a panic in the protobuf runtime into an error in *err. It is a second guard
+// behind Supports, so that a panic on a message that Supports accepts becomes an error.
 func recoverInto(err *error, op string, t reflect.Type) {
 	if r := recover(); r != nil {
 		*err = fmt.Errorf("protobuf: %s %v: %v", op, t, r)
