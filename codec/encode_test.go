@@ -681,26 +681,42 @@ func TestATCOD12Concurrent(t *testing.T) {
 	}
 
 	t.Run("re-entrant Supports", func(t *testing.T) {
-		r := codec.NewRegistry()
-		codec.RegisterIn[encMsg](r, "test.Msg")
-		inner := newFake("fake-inner")
-		c := &reentrantCodec{r: r, inner: inner}
-
-		// Each call would deadlock if the registry held a lock while c.Supports runs: Supports
-		// reads the registry, fills the support cache through inner, and registers a type.
-		within(t, "Check", func() error { return r.Check(c) })
-		within(t, "Encode", func() error {
-			_, _, err := r.Encode(c, encMsg{Name: "x"})
-			return err
-		})
-		within(t, "Decode", func() error {
-			_, err := r.Decode(c, "test.Msg", []byte(`{"Name":"x"}`))
-			return err
-		})
-		if !slices.Contains(r.Names(), "test.Reentrant") {
-			t.Errorf("Names lacks %q, which Supports registered", "test.Reentrant")
+		// Each of Check, Encode and Decode gets a fresh registry, so that its Supports call is a
+		// first call and not answered from the cache. Each would deadlock if the registry held a
+		// lock while c.Supports runs: Supports reads the registry, fills the support cache through
+		// inner, and registers a type.
+		fresh := func() (*codec.Registry, *reentrantCodec) {
+			r := codec.NewRegistry()
+			codec.RegisterIn[encMsg](r, "test.Msg")
+			return r, &reentrantCodec{r: r, inner: newFake("fake-inner")}
 		}
-		// The type registered during the first Check is asked about by the next one.
+		for _, tt := range []struct {
+			what string
+			call func(r *codec.Registry, c codec.Codec) error
+		}{
+			{"Check", func(r *codec.Registry, c codec.Codec) error { return r.Check(c) }},
+			{"Encode", func(r *codec.Registry, c codec.Codec) error {
+				_, _, err := r.Encode(c, encMsg{Name: "x"})
+				return err
+			}},
+			{"Decode", func(r *codec.Registry, c codec.Codec) error {
+				_, err := r.Decode(c, "test.Msg", []byte(`{"Name":"x"}`))
+				return err
+			}},
+		} {
+			r, c := fresh()
+			within(t, tt.what, func() error { return tt.call(r, c) })
+			if c.count() == 0 {
+				t.Errorf("%s did not call Supports", tt.what)
+			}
+			if !slices.Contains(r.Names(), "test.Reentrant") {
+				t.Errorf("after %s, Names lacks %q, which Supports registered", tt.what, "test.Reentrant")
+			}
+		}
+
+		// The type Supports registers during a Check is asked about by the next one.
+		r, c := fresh()
+		within(t, "Check", func() error { return r.Check(c) })
 		before := c.count()
 		within(t, "second Check", func() error { return r.Check(c) })
 		if after := c.count(); after != before+1 {

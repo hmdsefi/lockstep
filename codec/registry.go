@@ -180,8 +180,8 @@ func (r *Registry) Names() []string {
 // it and reads "codec: encode <name>: ..."). On error, name is "" and data is nil. Encode panics
 // if c is nil, and then if r is a zero Registry.
 //
-// The registry keeps the first answer c.Supports gives for each type and reuses it for every codec
-// with the same name.
+// The registry keeps the answer c.Supports gives for each type and reuses it for every codec with
+// the same name.
 func (r *Registry) Encode(c Codec, v any) (name string, data []byte, err error) {
 	mustCodec(c)
 	name, err = r.NameOf(v)
