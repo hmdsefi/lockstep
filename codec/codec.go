@@ -63,6 +63,14 @@
 // of a cluster uses the same codec. Not every codec can encode every type; a codec's Supports
 // method reports whether it can, so that a type it cannot encode is found when the system starts
 // rather than when the first message of that type is sent.
+//
+// Registry.Encode turns a registered value into its wire name and the codec's bytes, and
+// Registry.Decode turns them back into a value of the registered type. Registry.Check asks a codec
+// about every registered type at once, for use when a system starts:
+//
+//	name, data, err := codec.Default().Encode(codec.JSON{}, Ping{Seq: 1})
+//	// ... on the receiving node:
+//	v, err := codec.Default().Decode(codec.JSON{}, name, data) // v is a Ping
 package codec
 
 import (
