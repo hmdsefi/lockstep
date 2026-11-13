@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +20,8 @@ import (
 	"github.com/hmdsefi/lockstep/codec"
 )
 
-// Types for AT-COD-07. Each marshaler type also has a field that rule 2 would reject, so an
-// accepted one shows that the walk does not descend into it.
+// Types for AT-COD-07. Each marshaler type with only stub methods also has a field that rule 2
+// would reject, so an accepted one shows that the walk does not descend into it.
 type (
 	order struct{ Items []item }
 	item  struct{ Note error }
@@ -31,8 +33,41 @@ type (
 	jsonOverText struct{ C chan int } // MarshalJSON only, plus a full text pair
 	jsonAndText  struct{ C chan int } // a full JSON pair, plus MarshalText only
 
-	keyString string
-	keyInt    uint16
+	ptrJSON           struct{ N int } // MarshalJSON and UnmarshalJSON on the pointer
+	ptrText           struct{ N int } // MarshalText and UnmarshalText on the pointer
+	unmarshalJSONOnly struct{ N int }
+	unmarshalTextOnly string
+	textPlusUnmarshal string // a full text pair, plus UnmarshalJSON only
+
+	embTime struct {
+		time.Time
+		N int
+	}
+	embTimePtr struct {
+		*time.Time
+		N int
+	}
+	embAddr struct {
+		lockstep.Address
+		Extra int
+	}
+	embTimeOnly struct{ time.Time }
+	embTimeSkip struct {
+		time.Time
+		N int `json:"-"`
+	}
+	ownPairEmbedding struct { // its own JSON pair, and an embedded one
+		jsonPair
+		N int
+	}
+
+	keyString            string
+	keyInt               uint16
+	keyStringMarshalOnly string // written and read as it is
+	keyTextString        string // written as it is, read through UnmarshalText
+	keyIntPair           int
+	keyIntMarshalOnly    int
+	keyIntUnmarshalOnly  int
 
 	Inner     struct{ Note error }
 	inner     struct{ Note error }
@@ -41,10 +76,11 @@ type (
 		N int
 		Inner
 	}
-	withInnerPtr      struct{ *Inner }
-	withUnexported    struct{ inner }
-	withUnexportedPtr struct{ *inner }
-	withUnexportedInt struct{ innerInt }
+	withInnerPtr         struct{ *Inner }
+	withUnexported       struct{ inner }
+	withUnexportedPtr    struct{ *inner }
+	withUnexportedInt    struct{ innerInt }
+	withUnexportedIntPtr struct{ *innerInt }
 
 	skipped struct {
 		C      chan int `json:"-"`
@@ -58,6 +94,36 @@ type (
 		N      int
 		secret int
 	}
+
+	CA struct{ X int }
+	CB struct{ X int }
+	CT struct {
+		Y int `json:"X"`
+	}
+	Leaf     struct{ Z int }
+	DA       struct{ Leaf }
+	DB       struct{ Leaf }
+	conflict struct {
+		CA
+		CB
+	}
+	shadow struct {
+		X int
+		CA
+	}
+	taggedFirst struct {
+		CA
+		CT
+	}
+	diamond struct {
+		DA
+		DB
+	}
+	renamed struct {
+		X int `json:"y"`
+		CA
+	}
+	holdsConflict struct{ C conflict }
 
 	list struct {
 		Next   *list
@@ -95,6 +161,78 @@ func (jsonAndText) MarshalJSON() ([]byte, error)  { return []byte("0"), nil }
 func (*jsonAndText) UnmarshalJSON([]byte) error   { return nil }
 func (jsonAndText) MarshalText() ([]byte, error)  { return nil, nil }
 
+func (ownPairEmbedding) MarshalJSON() ([]byte, error) { return []byte("0"), nil }
+func (*ownPairEmbedding) UnmarshalJSON([]byte) error  { return nil }
+
+// The methods below really encode, so the round trips in TestATCOD07Supports show the loss.
+
+func (p *ptrJSON) MarshalJSON() ([]byte, error) { return []byte(strconv.Quote(strconv.Itoa(p.N))), nil }
+func (p *ptrJSON) UnmarshalJSON(b []byte) error {
+	s, err := strconv.Unquote(string(b))
+	if err == nil {
+		p.N, err = strconv.Atoi(s)
+	}
+	return err
+}
+func (p *ptrText) MarshalText() ([]byte, error) { return []byte(strconv.Itoa(p.N)), nil }
+func (p *ptrText) UnmarshalText(b []byte) (err error) {
+	p.N, err = strconv.Atoi(string(b))
+	return err
+}
+func (u *unmarshalJSONOnly) UnmarshalJSON([]byte) error { u.N = 99; return nil }
+func (s *unmarshalTextOnly) UnmarshalText(b []byte) error {
+	*s = unmarshalTextOnly(strings.ToUpper(string(b)))
+	return nil
+}
+func (s textPlusUnmarshal) MarshalText() ([]byte, error) { return []byte(s), nil }
+func (s *textPlusUnmarshal) UnmarshalText(b []byte) error {
+	*s = textPlusUnmarshal(b)
+	return nil
+}
+func (s *textPlusUnmarshal) UnmarshalJSON([]byte) error { *s = "json"; return nil }
+
+func (k keyStringMarshalOnly) MarshalText() ([]byte, error) { return []byte("k:" + k), nil }
+func (k keyTextString) MarshalText() ([]byte, error)        { return []byte("k:" + k), nil }
+func (k *keyTextString) UnmarshalText(b []byte) error {
+	s, ok := strings.CutPrefix(string(b), "k:")
+	if !ok {
+		return fmt.Errorf("bad key %q", b)
+	}
+	*k = keyTextString(s)
+	return nil
+}
+func (k keyIntPair) MarshalText() ([]byte, error) { return []byte("i" + strconv.Itoa(int(k))), nil }
+func (k *keyIntPair) UnmarshalText(b []byte) error {
+	n, err := strconv.Atoi(strings.TrimPrefix(string(b), "i"))
+	*k = keyIntPair(n)
+	return err
+}
+func (k keyIntMarshalOnly) MarshalText() ([]byte, error) {
+	return []byte("i" + strconv.Itoa(int(k))), nil
+}
+func (k *keyIntUnmarshalOnly) UnmarshalText(b []byte) error {
+	s, ok := strings.CutPrefix(string(b), "i")
+	if !ok {
+		return fmt.Errorf("bad key %q", b)
+	}
+	n, err := strconv.Atoi(s)
+	*k = keyIntUnmarshalOnly(n)
+	return err
+}
+
+// dupTag is struct{ A int `json:"x"`; B int `json:"x"` }, built at run time because go vet rejects
+// the repeated tag in source. dupTagValue is a value of it with A 1 and B 2.
+var dupTag, dupTagValue = func() (reflect.Type, any) {
+	typ := reflect.StructOf([]reflect.StructField{
+		{Name: "A", Type: reflect.TypeFor[int](), Tag: `json:"x"`},
+		{Name: "B", Type: reflect.TypeFor[int](), Tag: `json:"x"`},
+	})
+	v := reflect.New(typ).Elem()
+	v.Field(0).SetInt(1)
+	v.Field(1).SetInt(2)
+	return typ, v.Interface()
+}()
+
 // AT-COD-07, COD-090: each rule with its exact why text, in rule order, and recursive types.
 func TestATCOD07Supports(t *testing.T) {
 	if got := (codec.JSON{}).Name(); got != "json" {
@@ -117,12 +255,25 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[jsonAndText](), ""},
 		{reflect.TypeFor[time.Time](), ""},
 		{reflect.TypeFor[lockstep.Address](), ""},
-		// A pointer type finds the unmarshal method on itself.
+		{reflect.TypeFor[ptrJSON](), "codec_test.ptrJSON has MarshalJSON on its pointer only"},
+		{reflect.TypeFor[ptrText](), "codec_test.ptrText has MarshalText on its pointer only"},
+		{reflect.TypeFor[unmarshalJSONOnly](), "codec_test.unmarshalJSONOnly has UnmarshalJSON but no MarshalJSON"},
+		{reflect.TypeFor[unmarshalTextOnly](), "codec_test.unmarshalTextOnly has UnmarshalText but no MarshalText"},
+		{reflect.TypeFor[textPlusUnmarshal](), "codec_test.textPlusUnmarshal has UnmarshalJSON but no MarshalJSON"},
+		// A marshal method promoted from an embedded field hides the other fields.
+		{reflect.TypeFor[embTime](), "field Time: embedded MarshalJSON hides the other fields"},
+		{reflect.TypeFor[embTimePtr](), "field Time: embedded MarshalJSON hides the other fields"},
+		{reflect.TypeFor[embAddr](), "field Address: embedded MarshalText hides the other fields"},
+		{reflect.TypeFor[ownPairEmbedding](), "field jsonPair: embedded MarshalJSON hides the other fields"},
+		{reflect.TypeFor[embTimeOnly](), ""},
+		{reflect.TypeFor[embTimeSkip](), ""},
+		// Pointers go to rule 3, so rule 1 looks at the element type.
 		{reflect.TypeFor[*time.Time](), ""},
 		{reflect.TypeFor[*lockstep.Address](), ""},
 		{reflect.TypeFor[*jsonPair](), ""},
 		{reflect.TypeFor[**jsonPair](), ""},
-		{reflect.TypeFor[*jsonOnly](), "*codec_test.jsonOnly has MarshalJSON but no UnmarshalJSON"},
+		{reflect.TypeFor[*jsonOnly](), "codec_test.jsonOnly has MarshalJSON but no UnmarshalJSON"},
+		{reflect.TypeFor[*ptrJSON](), "codec_test.ptrJSON has MarshalJSON on its pointer only"},
 		{reflect.TypeFor[[]textOnly](), "codec_test.textOnly has MarshalText but no UnmarshalText"},
 		// An interface type with MarshalJSON meets rule 1 before rule 2.
 		{reflect.TypeFor[json.Marshaler](), "json.Marshaler has MarshalJSON but no UnmarshalJSON"},
@@ -147,8 +298,10 @@ func TestATCOD07Supports(t *testing.T) {
 		// Rule 4: map keys, then the value type without text.
 		{reflect.TypeFor[map[string]int](), ""},
 		{reflect.TypeFor[map[keyString][]int](), ""},
+		{reflect.TypeFor[map[keyStringMarshalOnly]int](), ""},
 		{reflect.TypeFor[map[int8]bool](), ""},
 		{reflect.TypeFor[map[keyInt]string](), ""},
+		{reflect.TypeFor[map[keyIntPair]string](), ""},
 		{reflect.TypeFor[map[uintptr]string](), ""},
 		{reflect.TypeFor[map[textPair]int](), ""},
 		{reflect.TypeFor[map[lockstep.Address]int](), ""},
@@ -157,6 +310,9 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[map[[2]int]int](), "map key type [2]int"},
 		{reflect.TypeFor[map[textOnly]int](), "map key type codec_test.textOnly"},
 		{reflect.TypeFor[map[*lockstep.Address]int](), "map key type *lockstep.Address"},
+		{reflect.TypeFor[map[keyTextString]int](), "map key type codec_test.keyTextString"},
+		{reflect.TypeFor[map[keyIntMarshalOnly]int](), "map key type codec_test.keyIntMarshalOnly"},
+		{reflect.TypeFor[map[keyIntUnmarshalOnly]int](), "map key type codec_test.keyIntUnmarshalOnly"},
 		{reflect.TypeFor[map[string]error](), "interface type error"},
 		{reflect.TypeFor[map[string][]chan int](), "chan type chan int"},
 
@@ -168,8 +324,17 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[withInnerPtr](), "field Inner: field Note: interface type error"},
 		{reflect.TypeFor[withUnexported](), "field inner: field Note: interface type error"},
 		{reflect.TypeFor[withUnexportedPtr](), "unexported embedded pointer field inner"},
-		{reflect.TypeFor[withUnexportedInt](), ""},
+		{reflect.TypeFor[withUnexportedInt](), "unexported field innerInt"},
+		{reflect.TypeFor[withUnexportedIntPtr](), "unexported field innerInt"},
 		{reflect.TypeFor[struct{}](), ""},
+		// JSON names that encoding/json gives to more than one field, so it drops some.
+		{reflect.TypeFor[conflict](), `fields CA.X and CB.X share the JSON name "X"`},
+		{dupTag, `fields A and B share the JSON name "x"`},
+		{reflect.TypeFor[shadow](), `fields X and CA.X share the JSON name "X"`},
+		{reflect.TypeFor[taggedFirst](), `fields CT.Y and CA.X share the JSON name "X"`},
+		{reflect.TypeFor[diamond](), `fields DA.Leaf.Z and DB.Leaf.Z share the JSON name "Z"`},
+		{reflect.TypeFor[holdsConflict](), `field C: fields CA.X and CB.X share the JSON name "X"`},
+		{reflect.TypeFor[renamed](), ""},
 
 		// Rule 6, and recursive types, which the visited set ends.
 		{reflect.TypeFor[uintptr](), ""},
@@ -177,7 +342,9 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[*list](), ""},
 		{reflect.TypeFor[badList](), "field F: func type func()"},
 		{reflect.TypeFor[ping2](), "field Pong: field C: chan type chan int"},
-		{reflect.TypeFor[[]pong2](), "field C: chan type chan int"}, // pong2 is visited when ping2 reaches it,
+		// The walk reaches pong2 first, then ping2, whose Pong field leads back to pong2: already
+		// visited, so accepted, and the walk goes on to pong2's field C.
+		{reflect.TypeFor[[]pong2](), "field C: chan type chan int"},
 	}
 	for _, tt := range tests {
 		err := codec.JSON{}.Supports(tt.typ)
@@ -208,6 +375,69 @@ func TestATCOD07Supports(t *testing.T) {
 			t.Errorf("Supports(%v), built-in %s: %v", typ, name, err)
 		}
 	}
+
+	// Against encoding/json itself: a value of a supported type round trips, and one of each
+	// rejected type does not. embTimePtr is left out: decoding into it calls UnmarshalJSON through
+	// its nil embedded pointer, which panics.
+	at := time.Unix(1, 0).UTC()
+	var addr lockstep.Address
+	fromText(t, &addr, "lockstep://n1/user/w#1f")
+	n := innerInt(3)
+	for _, v := range []any{
+		embTimeOnly{at},
+		embTimeSkip{Time: at},
+		renamed{X: 1, CA: CA{2}},
+		map[keyStringMarshalOnly]int{"x": 1},
+		map[keyIntPair]int{3: 1},
+		list{Next: &list{V: 2}, Kids: []list{{V: 3}}, ByName: map[string]*list{"a": {V: 4}}, V: 1},
+	} {
+		if err := roundTrip(v); err != nil {
+			t.Errorf("supported %T: %v", v, err)
+		}
+	}
+	for _, v := range []any{
+		ptrJSON{N: 5},
+		ptrText{N: 5},
+		unmarshalJSONOnly{N: 1},
+		unmarshalTextOnly("abc"),
+		textPlusUnmarshal("abc"),
+		embTime{Time: at, N: 7},
+		embAddr{Address: addr, Extra: 7},
+		map[keyTextString]int{"x": 1},
+		map[keyIntMarshalOnly]int{3: 1},
+		map[keyIntUnmarshalOnly]int{3: 1},
+		withUnexportedInt{innerInt: 3},
+		withUnexportedIntPtr{innerInt: &n},
+		conflict{CA{1}, CB{2}},
+		dupTagValue,
+		shadow{X: 1, CA: CA{2}},
+		taggedFirst{CA{1}, CT{2}},
+		diamond{DA{Leaf{1}}, DB{Leaf{2}}},
+	} {
+		if err := (codec.JSON{}).Supports(reflect.TypeOf(v)); err == nil {
+			t.Errorf("Supports(%T) = nil", v)
+		}
+		if err := roundTrip(v); err == nil {
+			t.Errorf("rejected %T round trips through encoding/json", v)
+		}
+	}
+}
+
+// roundTrip marshals v with JSON, unmarshals the bytes into a new value of v's type and returns
+// an error if that fails or gives a value that is not deeply equal to v.
+func roundTrip(v any) error {
+	data, err := codec.JSON{}.Marshal(v)
+	if err != nil {
+		return err
+	}
+	p := reflect.New(reflect.TypeOf(v))
+	if err := (codec.JSON{}).Unmarshal(data, p.Interface()); err != nil {
+		return fmt.Errorf("unmarshal %s: %w", data, err)
+	}
+	if got := p.Elem().Interface(); !reflect.DeepEqual(got, v) {
+		return fmt.Errorf("%s decodes as %#v", data, got)
+	}
+	return nil
 }
 
 type (
