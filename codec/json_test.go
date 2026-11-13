@@ -63,6 +63,11 @@ type (
 	}
 	embTimePtrOnly struct{ *time.Time }
 	embAddrPtrOnly struct{ *lockstep.Address }
+	// Pairs promoted through two levels of embedding.
+	nestedPtr  struct{ embTimePtrOnly }
+	nestedHide struct{ embTime }
+	nestedOK   struct{ embTimeOnly }
+	bigNested  struct{ bigEmb }
 
 	ptrMarshalOnly struct{ N int } // MarshalJSON on the pointer, no UnmarshalJSON
 	ptrHolder      struct {
@@ -95,6 +100,10 @@ type (
 	taggedUnexported struct {
 		tA `json:"a"`
 		tB `json:"b"`
+	}
+	plainIn     struct{ X int }
+	taggedPlain struct {
+		plainIn `json:"in"`
 	}
 
 	keyString            string
@@ -348,6 +357,10 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[embTimePtr](), "field Time: embedded pointer MarshalJSON panics when nil"},
 		{reflect.TypeFor[embTimePtrOnly](), "field Time: embedded pointer MarshalJSON panics when nil"},
 		{reflect.TypeFor[embAddrPtrOnly](), "field Address: embedded pointer MarshalText panics when nil"},
+		// The embedded-field checks apply at every level of embedding.
+		{reflect.TypeFor[nestedPtr](), "field embTimePtrOnly: field Time: embedded pointer MarshalJSON panics when nil"},
+		{reflect.TypeFor[nestedHide](), "field embTime: field Time: embedded MarshalJSON hides the other fields"},
+		{reflect.TypeFor[nestedOK](), ""},
 		// Pointers go to rule 3, so rule 1 looks at the element type...
 		{reflect.TypeFor[*time.Time](), ""},
 		{reflect.TypeFor[*lockstep.Address](), ""},
@@ -364,6 +377,7 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[bigHolder](), ""},
 		{reflect.TypeFor[*ptrMarshalOnly](), "*codec_test.ptrMarshalOnly has MarshalJSON but no UnmarshalJSON"},
 		{reflect.TypeFor[*bigEmb](), "field Int: embedded MarshalJSON hides the other fields"},
+		{reflect.TypeFor[*bigNested](), "field bigEmb: field Int: embedded MarshalJSON hides the other fields"},
 		{reflect.TypeFor[bigEmb](), "codec_test.bigEmb has MarshalJSON on its pointer only"},
 		{reflect.TypeFor[map[string]ptrJSON](), "codec_test.ptrJSON has MarshalJSON on its pointer only"},
 		{reflect.TypeFor[**ptrJSON](), ""},
@@ -424,8 +438,12 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[ambig](), "field JA: embedded MarshalJSON is ignored"},
 		{reflect.TypeFor[ambigText](), "field tA: embedded MarshalText is ignored"},
 		{reflect.TypeFor[ambigTagged](), ""},
-		// ...so a tagged unexported one is an unexported field.
+		// ...so a tagged unexported one is an unexported field. For a plain struct, as in
+		// taggedPlain, that is deliberately conservative: encoding/json round trips it. It is
+		// not for a pointer, which panics on Unmarshal, or for a type with marshal methods,
+		// as in taggedUnexported, which Go 1.26 panics on.
 		{reflect.TypeFor[taggedUnexported](), "unexported field tA"},
+		{reflect.TypeFor[taggedPlain](), "unexported field plainIn"},
 		// JSON names that encoding/json gives to more than one field, so it drops some.
 		{reflect.TypeFor[conflict](), `fields CA.X and CB.X share the JSON name "X"`},
 		{dupTag, `fields A and B share the JSON name "x"`},
@@ -499,6 +517,7 @@ func TestATCOD07Supports(t *testing.T) {
 		big.NewInt(42),
 		bigHolder{V: big.NewInt(42)},
 		ambigTagged{JA{1}, JB{2}},
+		nestedOK{embTimeOnly{at}},
 	} {
 		if err := roundTrip(v); err != nil {
 			t.Errorf("supported %T: %v", v, err)
@@ -534,6 +553,10 @@ func TestATCOD07Supports(t *testing.T) {
 		twoDepths{Base{1}, Other{Base{2}, "n"}},
 		deepDiamond{A4{C4{D4{1}}}, B4{C4{D4{2}}}},
 		Node{&Node{V: 2}, 1},
+		nestedPtr{},
+		nestedPtr{embTimePtrOnly{&at}},
+		nestedHide{embTime{Time: at, N: 7}},
+		&bigNested{bigEmb{*big.NewInt(4), 7}},
 	} {
 		if err := (codec.JSON{}).Supports(reflect.TypeOf(v)); err == nil {
 			t.Errorf("Supports(%T) = nil", v)
@@ -541,6 +564,56 @@ func TestATCOD07Supports(t *testing.T) {
 		if err := roundTrip(v); err == nil {
 			t.Errorf("rejected %T round trips through encoding/json", v)
 		}
+	}
+}
+
+// diamondChain returns Dn for Dk = struct{ Ak; Bk }, Ak = struct{ D(k-1) }, Bk = struct{ *D(k-1) },
+// built with reflect.StructOf: Dk reaches D0 along 2^k embedding paths. D0 is empty, or has one int
+// field X if withField. The type strings double with each level, so depth stays moderate.
+func diamondChain(depth int, withField bool) reflect.Type {
+	var leaf []reflect.StructField
+	if withField {
+		leaf = []reflect.StructField{{Name: "X", Type: reflect.TypeFor[int]()}}
+	}
+	d := reflect.StructOf(leaf)
+	for k := 1; k <= depth; k++ {
+		prev := "D" + strconv.Itoa(k-1)
+		a := reflect.StructOf([]reflect.StructField{{Name: prev, Type: d, Anonymous: true}})
+		b := reflect.StructOf([]reflect.StructField{{Name: prev, Type: reflect.PointerTo(d), Anonymous: true}})
+		d = reflect.StructOf([]reflect.StructField{
+			{Name: "A" + strconv.Itoa(k), Type: a, Anonymous: true},
+			{Name: "B" + strconv.Itoa(k), Type: b, Anonymous: true},
+		})
+	}
+	return d
+}
+
+// AT-COD-07, COD-090: the name check expands each embedded struct type once, so nested diamonds
+// take time linear in the size of the type, not in the number of embedding paths.
+func TestATCOD07SupportsDeepDiamond(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		typ   reflect.Type
+		field bool
+	}{
+		{"depth-20 diamond, empty", diamondChain(20, false), false},
+		{"depth-20 diamond over X", diamondChain(20, true), true},
+	} {
+		start := time.Now()
+		err := codec.JSON{}.Supports(tt.typ)
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("Supports(%s) took %v", tt.name, d)
+		}
+		switch {
+		case !tt.field && err != nil:
+			t.Errorf("Supports(%s) = %v, want nil", tt.name, err)
+		case tt.field && (err == nil || !strings.Contains(err.Error(), `share the JSON name "X"`)):
+			t.Errorf("Supports(%s) = %v, want X reported twice", tt.name, err)
+		}
+	}
+	const want = `: field A2: field D1: fields A1.D0.X and B1.D0.X share the JSON name "X"`
+	if err := (codec.JSON{}).Supports(diamondChain(2, true)); err == nil || !strings.HasSuffix(err.Error(), want) {
+		t.Errorf("Supports(depth-2 diamond over X) = %v, want it to end in %q", err, want)
 	}
 }
 
