@@ -75,6 +75,7 @@ pkg github.com/hmdsefi/lockstep, func WithThroughput(int) Option
 pkg github.com/hmdsefi/lockstep, func WithTimeout(time.Duration) AskOption
 pkg github.com/hmdsefi/lockstep, func WithWatchdog(time.Duration) Option
 pkg github.com/hmdsefi/lockstep, func WithWorkers(int) Option
+pkg github.com/hmdsefi/lockstep, method (*Address) UnmarshalText([]byte) error
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) After(time.Duration, M) TimerID
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelEffect(EffectID) bool
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) CancelTimer(TimerID) bool
@@ -90,14 +91,17 @@ pkg github.com/hmdsefi/lockstep, method (*Context[M]) Self() PID[M]
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) Stop()
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) SubscribeOverload()
 pkg github.com/hmdsefi/lockstep, method (*Context[M]) UnsubscribeOverload()
+pkg github.com/hmdsefi/lockstep, method (*PID[M]) UnmarshalText([]byte) error
 pkg github.com/hmdsefi/lockstep, method (*PanicError) Error() string
 pkg github.com/hmdsefi/lockstep, method (*PanicError) Unwrap() error
+pkg github.com/hmdsefi/lockstep, method (*ReplyTo[R]) UnmarshalText([]byte) error
 pkg github.com/hmdsefi/lockstep, method (*Reply[R]) Await(context.Context) (R, error)
 pkg github.com/hmdsefi/lockstep, method (*System) Estimates(int) []ActorEstimate
 pkg github.com/hmdsefi/lockstep, method (*System) Incarnation() uint32
 pkg github.com/hmdsefi/lockstep, method (*System) Node() string
 pkg github.com/hmdsefi/lockstep, method (*System) Shutdown(context.Context) error
 pkg github.com/hmdsefi/lockstep, method (Address) IsZero() bool
+pkg github.com/hmdsefi/lockstep, method (Address) MarshalText() ([]byte, error)
 pkg github.com/hmdsefi/lockstep, method (Address) Node() string
 pkg github.com/hmdsefi/lockstep, method (Address) Path() string
 pkg github.com/hmdsefi/lockstep, method (Address) String() string
@@ -107,8 +111,10 @@ pkg github.com/hmdsefi/lockstep, method (MailboxPolicy) String() string
 pkg github.com/hmdsefi/lockstep, method (OverloadReason) String() string
 pkg github.com/hmdsefi/lockstep, method (PID[M]) Address() Address
 pkg github.com/hmdsefi/lockstep, method (PID[M]) IsZero() bool
+pkg github.com/hmdsefi/lockstep, method (PID[M]) MarshalText() ([]byte, error)
 pkg github.com/hmdsefi/lockstep, method (PID[M]) String() string
 pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) Fail(Sender, error)
+pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) MarshalText() ([]byte, error)
 pkg github.com/hmdsefi/lockstep, method (ReplyTo[R]) Send(Sender, R)
 pkg github.com/hmdsefi/lockstep, method (StopKind) String() string
 pkg github.com/hmdsefi/lockstep, method (StopReason) String() string
