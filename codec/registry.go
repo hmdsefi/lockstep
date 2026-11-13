@@ -17,16 +17,28 @@ const (
 	maxNameLen = 255
 	// reservedPrefix starts the names of the built-in types; RegisterIn rejects it (COD-010).
 	reservedPrefix = "lockstep."
+	// zeroRegistry is the panic of every method called on a zero Registry, which has no maps and
+	// no built-ins. RegisterIn checks it right after its nil-registry row.
+	zeroRegistry = "codec: zero Registry; use NewRegistry"
 )
 
 // Registry maps wire names to Go types and back. It holds the built-in types from the start.
-// A Registry is safe for concurrent use. The zero Registry is not usable; call NewRegistry.
+// A Registry is safe for concurrent use. The zero Registry is not usable: its methods panic, as
+// RegisterIn with it does. Call NewRegistry.
 type Registry struct {
 	// mu guards byName and byType, which always hold the same pairs (COD-085). Lookups take the
 	// read lock, registrations the write lock.
 	mu     sync.RWMutex
 	byName map[string]reflect.Type
 	byType map[reflect.Type]string
+}
+
+// mustInit panics unless r was made by NewRegistry. The maps are set only there and never
+// replaced, so reading the field needs no lock.
+func (r *Registry) mustInit() {
+	if r.byName == nil {
+		panic(zeroRegistry)
+	}
 }
 
 // defaultRegistry is the process registry that Register adds to.
@@ -55,16 +67,18 @@ func Register[T any](name string) { RegisterIn[T](defaultRegistry, name) }
 
 // RegisterIn registers type T under the wire name name in r. Registering a name and type that r
 // already holds together does nothing. RegisterIn panics, checking in this order, if r is nil,
-// if name is not a valid wire name, if name starts with the reserved "lockstep.", if T is an
+// if r is a zero Registry rather than one from NewRegistry, if name is not a valid wire name, if name starts with the reserved "lockstep.", if T is an
 // interface type, if name is held by another type, or if T is held under another name.
 func RegisterIn[T any](r *Registry, name string) {
 	if r == nil {
 		panic("codec: RegisterIn with nil registry")
 	}
+	r.mustInit()
 	r.register(name, reflect.TypeFor[T]())
 }
 
-// register adds the pair (name, t), panicking with COD-020's rows 2 to 6 in order; an existing
+// register adds the pair (name, t) to an initialised r, panicking with COD-020's rows 2 to 6 in
+// order; an existing
 // identical pair is a no-op, checked after row 4 (COD-030).
 func (r *Registry) register(name string, t reflect.Type) {
 	if !validName(name) {
@@ -115,6 +129,7 @@ func isLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 // NameOf returns the wire name of v's dynamic type. If the type is not registered, or v is nil,
 // the error wraps ErrNotRegistered.
 func (r *Registry) NameOf(v any) (string, error) {
+	r.mustInit()
 	t := reflect.TypeOf(v)
 	r.mu.RLock()
 	name, ok := r.byType[t]
@@ -128,6 +143,7 @@ func (r *Registry) NameOf(v any) (string, error) {
 // TypeOf returns the type registered under the wire name name. If no type is, the error wraps
 // ErrNotRegistered.
 func (r *Registry) TypeOf(name string) (reflect.Type, error) {
+	r.mustInit()
 	r.mu.RLock()
 	t, ok := r.byName[name]
 	r.mu.RUnlock()
@@ -140,6 +156,7 @@ func (r *Registry) TypeOf(name string) (reflect.Type, error) {
 // Names returns the registered wire names, built-ins included, in increasing byte order. The
 // slice is new on each call; the caller may change it.
 func (r *Registry) Names() []string {
+	r.mustInit()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Sorted(maps.Keys(r.byName))
