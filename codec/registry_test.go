@@ -17,11 +17,12 @@ import (
 )
 
 type (
-	ping      struct{ Seq int }
-	namedPing ping
-	pong      struct{ Seq int }
-	celsius   float64
-	unknown   struct{}
+	ping       struct{ Seq int }
+	namedPing  ping
+	pong       struct{ Seq int }
+	celsius    float64
+	unknown    struct{}
+	box[T any] struct{ V T }
 	// defaultOnly is registered in the process registry only.
 	defaultOnly struct{ N int }
 )
@@ -70,16 +71,21 @@ func TestATCOD01Register(t *testing.T) {
 	codec.RegisterIn[ping](r, "test.Ping")
 	codec.RegisterIn[*ping](r, "test/PingPtr")
 	codec.RegisterIn[namedPing](r, "test.Named_Ping-2")
+	codec.RegisterIn[box[int]](r, "test.BoxInt")
 
 	wantName(t, r, ping{Seq: 1}, "test.Ping")
 	wantName(t, r, &ping{Seq: 1}, "test/PingPtr")
 	wantName(t, r, namedPing{Seq: 1}, "test.Named_Ping-2")
+	wantName(t, r, box[int]{V: 1}, "test.BoxInt")
+	wantName(t, r, (*ping)(nil), "test/PingPtr") // a typed nil pointer has its pointer type's name
 
 	// A type with the same structure is still another type, as is a named type over a built-in.
 	_, err := r.NameOf(pong{})
 	wantNotRegistered(t, "NameOf(pong)", err, "codec: type not registered: codec_test.pong")
 	_, err = r.NameOf(celsius(21))
 	wantNotRegistered(t, "NameOf(celsius)", err, "codec: type not registered: codec_test.celsius")
+	_, err = r.NameOf(box[string]{}) // each instantiation of a generic type is its own type
+	wantNotRegistered(t, "NameOf(box[string])", err, "codec: type not registered: codec_test.box[string]")
 	_, err = r.NameOf(&pong{})
 	wantNotRegistered(t, "NameOf(*pong)", err, "codec: type not registered: *codec_test.pong")
 
@@ -135,6 +141,11 @@ func TestATCOD02Panics(t *testing.T) {
 			"codec: RegisterIn with nil registry"},
 		{"1 before 2", func(*codec.Registry) { codec.RegisterIn[error](nil, "") },
 			"codec: RegisterIn with nil registry"},
+		// A zero Registry, checked right after row 1.
+		{"zero registry", func(*codec.Registry) { codec.RegisterIn[ping](&codec.Registry{}, "c") },
+			"codec: zero Registry; use NewRegistry"},
+		{"zero registry before 2", func(*codec.Registry) { codec.RegisterIn[error](&codec.Registry{}, "") },
+			"codec: zero Registry; use NewRegistry"},
 		{"2 invalid name", func(r *codec.Registry) { codec.RegisterIn[unknown](r, "1x") },
 			`codec: invalid wire name "1x"`},
 		{"2 before 4", func(r *codec.Registry) { codec.RegisterIn[error](r, "x y") },
@@ -176,6 +187,21 @@ func TestATCOD02Panics(t *testing.T) {
 		})
 	}
 
+	// Every lookup on a zero Registry panics too, rather than report the built-ins missing.
+	for _, tc := range []struct {
+		what string
+		f    func(r *codec.Registry)
+	}{
+		{"NameOf", func(r *codec.Registry) { _, _ = r.NameOf(int64(1)) }},
+		{"TypeOf", func(r *codec.Registry) { _, _ = r.TypeOf("lockstep.int64") }},
+		{"Names", func(r *codec.Registry) { _ = r.Names() }},
+	} {
+		const want = "codec: zero Registry; use NewRegistry"
+		if got := panicText(t, func() { tc.f(&codec.Registry{}) }); got != want {
+			t.Errorf("zero Registry %s: panic %q, want %q", tc.what, got, want)
+		}
+	}
+
 	// COD-030: the same pair again is a no-op.
 	r := setup()
 	before := r.Names()
@@ -209,6 +235,10 @@ func TestATCOD03Names(t *testing.T) {
 		{"/a", "invalid"},
 		{"-a", "invalid"},
 		{" a", "invalid"},
+		{"@a", "invalid"}, // the neighbours of 'A'..'Z' and 'a'..'z'
+		{"[a", "invalid"},
+		{"`a", "invalid"},
+		{"{a", "invalid"},
 		{"éa", "invalid"},
 		// Later bytes: every class that is allowed, at both ends of each range.
 		{"aazAZ09._/-", ""},
