@@ -433,6 +433,27 @@ func TestATCOD06Errors(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("zero registry", func(t *testing.T) {
+		const want = "codec: zero Registry; use NewRegistry"
+		for _, tt := range []struct {
+			what string
+			f    func(r *codec.Registry, c codec.Codec)
+		}{
+			{"Encode", func(r *codec.Registry, c codec.Codec) { _, _, _ = r.Encode(c, int64(1)) }},
+			{"Decode", func(r *codec.Registry, c codec.Codec) { _, _ = r.Decode(c, "lockstep.int64", []byte("1")) }},
+			{"Check", func(r *codec.Registry, c codec.Codec) { _ = r.Check(c) }},
+		} {
+			if got := panicText(t, func() { tt.f(&codec.Registry{}, codec.JSON{}) }); got != want {
+				t.Errorf("%s on a zero Registry: panic %q, want %q", tt.what, got, want)
+			}
+			// The nil codec is checked first.
+			if got := panicText(t, func() { tt.f(&codec.Registry{}, nil) }); got != "codec: nil codec" {
+				t.Errorf("%s on a zero Registry with a nil codec: panic %q, want %q", tt.what, got,
+					"codec: nil codec")
+			}
+		}
+	})
 }
 
 // AT-COD-09, COD-080, COD-085: Check asks the codec about every registered type in Names order and
@@ -657,5 +678,91 @@ func TestATCOD12Concurrent(t *testing.T) {
 		if err := r.Check(c); err != nil {
 			t.Errorf("Check(%s) after the goroutines: %v", c.Name(), err)
 		}
+	}
+
+	t.Run("re-entrant Supports", func(t *testing.T) {
+		r := codec.NewRegistry()
+		codec.RegisterIn[encMsg](r, "test.Msg")
+		inner := newFake("fake-inner")
+		c := &reentrantCodec{r: r, inner: inner}
+
+		// Each call would deadlock if the registry held a lock while c.Supports runs: Supports
+		// reads the registry, fills the support cache through inner, and registers a type.
+		within(t, "Check", func() error { return r.Check(c) })
+		within(t, "Encode", func() error {
+			_, _, err := r.Encode(c, encMsg{Name: "x"})
+			return err
+		})
+		within(t, "Decode", func() error {
+			_, err := r.Decode(c, "test.Msg", []byte(`{"Name":"x"}`))
+			return err
+		})
+		if !slices.Contains(r.Names(), "test.Reentrant") {
+			t.Errorf("Names lacks %q, which Supports registered", "test.Reentrant")
+		}
+		// The type registered during the first Check is asked about by the next one.
+		before := c.count()
+		within(t, "second Check", func() error { return r.Check(c) })
+		if after := c.count(); after != before+1 {
+			t.Errorf("second Check asked %d times, want 1 (the type registered meanwhile)", after-before)
+		}
+	})
+}
+
+type reentrantMsg struct{ N int }
+
+// reentrantCodec is a JSON codec whose Supports calls back into its registry: it lists the names,
+// checks and encodes with inner, and registers reentrantMsg on its first call.
+type reentrantCodec struct {
+	codec.JSON
+	r     *codec.Registry
+	inner *fakeCodec
+
+	mu sync.Mutex
+	n  int
+}
+
+func (c *reentrantCodec) Name() string { return "reentrant" }
+
+func (c *reentrantCodec) Supports(t reflect.Type) error {
+	c.mu.Lock()
+	c.n++
+	first := c.n == 1
+	c.mu.Unlock()
+	if names := c.r.Names(); len(names) == 0 {
+		return errors.New("Names is empty")
+	}
+	if err := c.r.Check(c.inner); err != nil {
+		return err
+	}
+	if _, _, err := c.r.Encode(c.inner, int64(1)); err != nil {
+		return err
+	}
+	if first {
+		codec.RegisterIn[reentrantMsg](c.r, "test.Reentrant")
+	}
+	return codec.JSON{}.Supports(t)
+}
+
+// count returns how many times Supports was called.
+func (c *reentrantCodec) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+// within runs f in a goroutine and fails the test if it returns an error or does not return within
+// ten seconds, which here means a deadlock.
+func within(t *testing.T, what string, f func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- f() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("%s: %v", what, err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not return: a lock is held while Supports runs", what)
 	}
 }

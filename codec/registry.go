@@ -178,10 +178,10 @@ func (r *Registry) Names() []string {
 // type is not registered (the error wraps ErrNotRegistered), if c does not support the type (the
 // error c.Supports returned, which wraps ErrUnsupported), or if c.Marshal fails (the error wraps
 // it and reads "codec: encode <name>: ..."). On error, name is "" and data is nil. Encode panics
-// if c is nil.
+// if c is nil, and then if r is a zero Registry.
 //
-// The registry asks c.Supports about each type once and keeps the answer for every codec with the
-// same name.
+// The registry keeps the first answer c.Supports gives for each type and reuses it for every codec
+// with the same name.
 func (r *Registry) Encode(c Codec, v any) (name string, data []byte, err error) {
 	mustCodec(c)
 	name, err = r.NameOf(v)
@@ -203,7 +203,8 @@ func (r *Registry) Encode(c Codec, v any) (name string, data []byte, err error) 
 // T, not a *T, and a pointer type *T registered as such comes back as a *T. Decode fails if no
 // type is registered under name (the error wraps ErrNotRegistered), if c does not support the
 // type (the error c.Supports returned), or if c.Unmarshal fails (the error wraps it and reads
-// "codec: decode <name>: ..."). On error, the value is nil. Decode panics if c is nil.
+// "codec: decode <name>: ..."). On error, the value is nil. Decode panics if c is nil, and then
+// if r is a zero Registry.
 func (r *Registry) Decode(c Codec, name string, data []byte) (any, error) {
 	mustCodec(c)
 	t, err := r.TypeOf(name)
@@ -223,9 +224,11 @@ func (r *Registry) Decode(c Codec, name string, data []byte) (any, error) {
 // Check reports whether c supports every registered type, built-ins included. It asks about the
 // types in the order Names lists their names and returns the first error c.Supports returns,
 // unchanged, or nil. Call it when a system starts, so that a type c cannot encode is found before
-// the first message of that type is sent. Check panics if c is nil.
+// the first message of that type is sent. Check panics if c is nil, and then if r is a zero
+// Registry.
 func (r *Registry) Check(c Codec) error {
 	mustCodec(c)
+	r.mustInit() // reading byName directly, a zero Registry would look empty and pass
 	r.mu.RLock()
 	names := slices.Sorted(maps.Keys(r.byName))
 	types := make([]reflect.Type, len(names))
