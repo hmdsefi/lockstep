@@ -64,6 +64,13 @@ import (
 // proto.MarshalOptions{Deterministic: true}, which writes map entries in key order. Unmarshal
 // takes a **M for a message type *M and stores a newly allocated message there, and takes a
 // pointer to the value for a built-in type.
+//
+// A nil message pointer encodes as empty bytes, the same bytes as an empty message, and so
+// decodes as a new empty message, not as nil.
+//
+// The bytes do not say which Go type they hold: the codec trusts the wire name to pick the type.
+// Bytes of one wrapper message decoded as another built-in type, such as an Int32Value decoded as
+// a bool, are not detected as an error.
 type Codec struct{}
 
 var _ codec.Codec = Codec{}
@@ -71,12 +78,13 @@ var _ codec.Codec = Codec{}
 // Name returns "protobuf".
 func (Codec) Name() string { return "protobuf" }
 
-// Supports returns nil for a pointer type that implements proto.Message and for the built-in types
-// of package codec, and otherwise an error wrapping codec.ErrUnsupported that reads
+// Supports returns nil for a pointer type *M that implements proto.Message, where M is a struct
+// whose zero value is a usable message, such as a generated message type, and for the built-in
+// types of package codec. Otherwise it returns an error wrapping codec.ErrUnsupported that reads
 //
 //	codec: unsupported type: protobuf cannot encode <type>: not a proto.Message or built-in type
 func (Codec) Supports(t reflect.Type) error {
-	if isMessage(t) || slices.Contains(builtins, t) {
+	if _, ok := newMessage(t); ok || slices.Contains(builtins, t) {
 		return nil
 	}
 	return unsupported(t)
@@ -84,11 +92,12 @@ func (Codec) Supports(t reflect.Type) error {
 
 // Marshal returns the protocol buffer encoding of v, a proto.Message or a value of a built-in
 // type. For any other value it returns the error of Supports.
-func (Codec) Marshal(v any) ([]byte, error) {
+func (Codec) Marshal(v any) (data []byte, err error) {
 	m, err := toMessage(v)
 	if err != nil {
 		return nil, err
 	}
+	defer recoverInto(&err, "marshal", reflect.TypeOf(v))
 	return proto.MarshalOptions{Deterministic: true}.Marshal(m)
 }
 
@@ -98,7 +107,7 @@ func (Codec) Marshal(v any) ([]byte, error) {
 // "protobuf: value <n> out of range for <type>", and a Timestamp or Duration that is not valid
 // returns the error of its CheckValid method. A target of any other type returns the error of
 // Supports for that type.
-func (Codec) Unmarshal(data []byte, v any) error {
+func (Codec) Unmarshal(data []byte, v any) (err error) {
 	rv := reflect.ValueOf(v)
 	switch {
 	case !rv.IsValid():
@@ -108,15 +117,13 @@ func (Codec) Unmarshal(data []byte, v any) error {
 	case rv.IsNil():
 		return fmt.Errorf("protobuf: Unmarshal(nil %s)", rv.Type())
 	}
-	if t := rv.Type().Elem(); isMessage(t) {
-		p := reflect.New(t.Elem()) // a new M, as a *M
-		if m, ok := p.Interface().(proto.Message); ok {
-			if err := proto.Unmarshal(data, m); err != nil {
-				return err
-			}
-			rv.Elem().Set(p)
-			return nil
+	if m, ok := newMessage(rv.Type().Elem()); ok {
+		defer recoverInto(&err, "unmarshal", rv.Type().Elem())
+		if err := proto.Unmarshal(data, m); err != nil {
+			return err
 		}
+		rv.Elem().Set(reflect.ValueOf(m))
+		return nil
 	}
 	return unmarshalBuiltin(data, v)
 }
@@ -147,9 +154,43 @@ var builtins = []reflect.Type{
 
 var messageType = reflect.TypeFor[proto.Message]()
 
-// isMessage reports whether t is a pointer type implementing proto.Message.
+// isMessage reports whether t has the shape of a supported message type: a pointer to a struct,
+// implementing proto.Message. newMessage also checks that the struct's zero value is usable.
 func isMessage(t reflect.Type) bool {
-	return t != nil && t.Kind() == reflect.Pointer && t.Implements(messageType)
+	return t != nil && t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct &&
+		t.Implements(messageType)
+}
+
+// newMessage returns a new M for a message type t = *M whose zero M is a usable message, or false.
+// A struct that embeds a message pointer, or a *dynamicpb.Message, implements proto.Message, but
+// its zero value has no valid message behind it, and decoding into it panics. A new M of a
+// generated message type reflects as a valid message of type *M with a descriptor.
+func newMessage(t reflect.Type) (m proto.Message, ok bool) {
+	if !isMessage(t) {
+		return nil, false
+	}
+	defer func() {
+		if recover() != nil {
+			m, ok = nil, false
+		}
+	}()
+	m, ok = reflect.New(t.Elem()).Interface().(proto.Message)
+	if !ok {
+		return nil, false
+	}
+	r := m.ProtoReflect()
+	if !r.IsValid() || r.Descriptor() == nil || reflect.TypeOf(r.Interface()) != t {
+		return nil, false
+	}
+	return m, true
+}
+
+// recoverInto turns a panic in the protobuf runtime into an error in *err. Only a message type
+// that Supports rejects can panic there, when Marshal or Unmarshal is called without asking it.
+func recoverInto(err *error, op string, t reflect.Type) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("protobuf: %s %v: %v", op, t, r)
+	}
 }
 
 // unsupported returns the error of Supports for t (COD-170).
@@ -209,8 +250,10 @@ func toMessage(v any) (proto.Message, error) {
 		}
 		return wrapperspb.String(string(text)), nil
 	}
-	if m, ok := v.(proto.Message); ok && isMessage(reflect.TypeOf(v)) {
-		return m, nil
+	if m, ok := v.(proto.Message); ok {
+		if _, ok := newMessage(reflect.TypeOf(v)); ok { // the type Supports accepts
+			return m, nil
+		}
 	}
 	return nil, unsupported(reflect.TypeOf(v))
 }

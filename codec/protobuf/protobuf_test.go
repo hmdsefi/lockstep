@@ -13,12 +13,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -34,7 +35,16 @@ const rootModule = "github.com/hmdsefi/lockstep"
 type (
 	plain    struct{ N int }
 	namedInt int
+
+	// wrappedMsg implements proto.Message through its embedded pointer, which is nil in a new
+	// wrappedMsg, so the protobuf runtime cannot decode into one.
+	wrappedMsg struct{ *wrapperspb.Int32Value }
 )
+
+// namedBytesMessage is a message type that is not a struct.
+type namedBytesMessage []byte
+
+func (*namedBytesMessage) ProtoReflect() protoreflect.Message { return nil }
 
 // wantErr checks that err reads want and, when target is non-nil, wraps it.
 func wantErr(t *testing.T, what string, err error, want string, target error) {
@@ -198,9 +208,6 @@ func TestATCOD17Protobuf(t *testing.T) {
 	})
 
 	t.Run("built-ins", func(t *testing.T) {
-		if strconv.IntSize != 64 {
-			t.Skip("the int and uint cases assume a 64-bit int")
-		}
 		var addr lockstep.Address
 		if err := addr.UnmarshalText([]byte("lockstep://n1/user/worker#1f")); err != nil {
 			t.Fatal(err)
@@ -213,12 +220,12 @@ func TestATCOD17Protobuf(t *testing.T) {
 		}{
 			{true, "lockstep.bool", wrapperspb.Bool(true)},
 			{"s<&>", "lockstep.string", wrapperspb.String("s<&>")},
-			{int(math.MinInt64), "lockstep.int", wrapperspb.Int64(math.MinInt64)},
+			{int(math.MinInt), "lockstep.int", wrapperspb.Int64(math.MinInt)},
 			{int8(math.MinInt8), "lockstep.int8", wrapperspb.Int32(math.MinInt8)},
 			{int16(math.MaxInt16), "lockstep.int16", wrapperspb.Int32(math.MaxInt16)},
 			{int32(math.MinInt32), "lockstep.int32", wrapperspb.Int32(math.MinInt32)},
 			{int64(math.MaxInt64), "lockstep.int64", wrapperspb.Int64(math.MaxInt64)},
-			{uint(math.MaxUint64), "lockstep.uint", wrapperspb.UInt64(math.MaxUint64)},
+			{uint(math.MaxUint), "lockstep.uint", wrapperspb.UInt64(math.MaxUint)},
 			{uint8(math.MaxUint8), "lockstep.uint8", wrapperspb.UInt32(math.MaxUint8)},
 			{uint16(math.MaxUint16), "lockstep.uint16", wrapperspb.UInt32(math.MaxUint16)},
 			{uint32(math.MaxUint32), "lockstep.uint32", wrapperspb.UInt32(math.MaxUint32)},
@@ -377,6 +384,9 @@ func TestATCOD17Protobuf(t *testing.T) {
 			reflect.TypeFor[map[string]int](),
 			reflect.TypeFor[complex128](),
 			reflect.TypeFor[lockstep.PID[int]](),
+			reflect.TypeFor[*wrappedMsg](),        // implements proto.Message through a nil embedded pointer
+			reflect.TypeFor[*dynamicpb.Message](), // its zero value has no descriptor
+			reflect.TypeFor[*namedBytesMessage](), // a pointer to a non-struct type
 			nil,
 		}
 		for _, typ := range rejected {
@@ -407,6 +417,40 @@ func TestATCOD17Protobuf(t *testing.T) {
 		_, err = r.Decode(c, "test.Plain", nil)
 		wantErr(t, "Decode(test.Plain)", err, want, codec.ErrUnsupported)
 		wantErr(t, "Check", r.Check(c), want, codec.ErrUnsupported)
+
+		// Message types whose zero value is unusable return the Supports error rather than panic.
+		wantWrapped := "codec: unsupported type: protobuf cannot encode *protobuf.wrappedMsg: not a proto.Message or built-in type"
+		var wm *wrappedMsg
+		wantErr(t, "Unmarshal(**wrappedMsg)", c.Unmarshal(mustMarshal(t, wrapperspb.Int32(1)), &wm), wantWrapped, codec.ErrUnsupported)
+		_, err = c.Marshal(&wrappedMsg{wrapperspb.Int32(1)})
+		wantErr(t, "Marshal(*wrappedMsg)", err, wantWrapped, codec.ErrUnsupported)
+		wantDynamic := "codec: unsupported type: protobuf cannot encode *dynamicpb.Message: not a proto.Message or built-in type"
+		var dm *dynamicpb.Message
+		wantErr(t, "Unmarshal(**dynamicpb.Message)", c.Unmarshal([]byte{8, 1}, &dm), wantDynamic, codec.ErrUnsupported)
+		_, err = c.Marshal(&dynamicpb.Message{})
+		wantErr(t, "Marshal(*dynamicpb.Message)", err, wantDynamic, codec.ErrUnsupported)
+		if wm != nil || dm != nil {
+			t.Errorf("targets changed: %v, %v", wm, dm)
+		}
+		r = codec.NewRegistry()
+		codec.RegisterIn[*wrappedMsg](r, "test.Wrapped")
+		_, err = r.Decode(c, "test.Wrapped", mustMarshal(t, wrapperspb.Int32(1)))
+		wantErr(t, "Decode(test.Wrapped)", err, wantWrapped, codec.ErrUnsupported)
+		wantErr(t, "Check(test.Wrapped)", r.Check(c), wantWrapped, codec.ErrUnsupported)
+	})
+
+	t.Run("nil message", func(t *testing.T) {
+		r := codec.NewRegistry()
+		codec.RegisterIn[*wrapperspb.StringValue](r, "test.String")
+		name, data, err := r.Encode(c, (*wrapperspb.StringValue)(nil))
+		if err != nil || len(data) != 0 {
+			t.Fatalf("Encode(nil message) = %q, %x, %v; want empty bytes", name, data, err)
+		}
+		got, err := r.Decode(c, name, data)
+		m, ok := got.(*wrapperspb.StringValue)
+		if err != nil || !ok || m == nil || m.GetValue() != "" {
+			t.Errorf("Decode(empty bytes) = %#v, %v; want a new empty message", got, err)
+		}
 	})
 
 	t.Run("unmarshal needs a non-nil pointer", func(t *testing.T) {
