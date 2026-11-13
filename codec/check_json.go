@@ -96,8 +96,11 @@ func (w *jsonWalk) walkStruct(u reflect.Type) (why string, ok bool) {
 		}
 		if !f.IsExported() {
 			if !f.Anonymous || jsonTagName(f) != "" {
-				// A tagged embedded field is an ordinary field: encoding/json neither inlines
-				// it nor can it call its methods through the unexported field.
+				// A tagged embedded field is an ordinary field, and an unexported one is
+				// rejected like any other. For a plain struct type this is conservative, as
+				// encoding/json round trips it; it is not for a pointer, which panics on
+				// Unmarshal, or for a type with marshal methods, which encoding/json cannot
+				// call through the unexported field (Go 1.26 panics).
 				return fmt.Sprintf("unexported field %s", f.Name), false
 			}
 			if ft.Kind() != reflect.Struct {
@@ -174,6 +177,12 @@ func marshalerPair(u reflect.Type) (why string, decided bool) {
 // unless T is neither a pointer nor an interface, T has no marshal method and u has one: then
 // encoding/json always uses u's methods (nil encodes as null, and decoding allocates a T), so u
 // needs both methods of the pair, and T's embedded fields are checked as for a non-pointer type.
+//
+// The exception is deliberately narrow. A T with a marshal method of its own does not get it, even
+// when u has a full JSON pair that encoding/json would use for a static *T: for example a T with
+// MarshalText on the value and MarshalJSON and UnmarshalJSON on the pointer is rejected, through
+// rule 3, as having MarshalJSON on its pointer only. Telling the cases apart is not worth the
+// risk of accepting a type whose value and pointer encode differently.
 func pointerPair(u reflect.Type) (why string, decided bool) {
 	t := u.Elem()
 	if t.Kind() == reflect.Pointer || t.Kind() == reflect.Interface ||
@@ -198,7 +207,8 @@ func pointerPair(u reflect.Type) (why string, decided bool) {
 // embeddedMarshaler returns "" unless u is a struct with an embedded field F that has m's marshal
 // method (on F's type or its pointer), so that u's pair comes from, or is also had by, F. Then, if
 // F is a pointer, encoding/json calls the method through it and panics when it is nil; else, if u
-// has another field not tagged `json:"-"`, F's method hides that field.
+// has another field not tagged `json:"-"`, F's method hides that field; else F is u's only field
+// and the pair comes from F's type, which is checked the same way, level by level.
 func embeddedMarshaler(u reflect.Type, m methodPair) string {
 	if u.Kind() != reflect.Struct {
 		return ""
@@ -227,6 +237,9 @@ func embeddedMarshaler(u reflect.Type, m methodPair) string {
 			return fmt.Sprintf("field %s: embedded %s hides the other fields", f.Name, m.marshalName)
 		}
 	}
+	if why := embeddedMarshaler(f.Type, m); why != "" {
+		return fmt.Sprintf("field %s: %s", f.Name, why)
+	}
 	return ""
 }
 
@@ -253,6 +266,24 @@ type jsonField struct {
 	index  []int  // the field's index sequence from the outer struct
 }
 
+// compareJSONFields orders fields as encoding/json does before it drops the hidden ones: by
+// name, then depth, then tagged first, then index sequence.
+func compareJSONFields(a, b jsonField) int {
+	if c := cmp.Compare(a.name, b.name); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(len(a.index), len(b.index)); c != 0 {
+		return c
+	}
+	if a.tagged != b.tagged {
+		if a.tagged {
+			return -1
+		}
+		return 1
+	}
+	return slices.Compare(a.index, b.index)
+}
+
 // jsonTagName returns the name in f's json tag, or "" if the tag gives no valid name.
 func jsonTagName(f reflect.StructField) string {
 	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
@@ -265,44 +296,54 @@ func jsonTagName(f reflect.StructField) string {
 // jsonNameConflict returns the why text for the first JSON name that more than one field of the
 // struct u gets, promoted fields included: encoding/json encodes at most one of them and drops
 // the others. Names are given as encoding/json gives them (from the tag, else the Go name), but
-// over the full embedding tree: every embedded struct is expanded along every path that reaches
-// it, which also finds the fields encoding/json drops without a name clash (a struct embedded at
-// two depths, a diamond at any depth). The two fields named are the first two in encoding/json's
-// order: by depth, then tagged first, then by index sequence.
+// over the full embedding tree, which also finds the fields encoding/json drops without a name
+// clash (a struct embedded at two depths, a diamond at any depth). The two fields named are in
+// encoding/json's order: by depth, then tagged first, then by index sequence.
 func jsonNameConflict(u reflect.Type) (why string, ok bool) {
-	var fields []jsonField
-	if why, ok := expandFields(u, nil, []reflect.Type{u}, &fields); !ok {
+	e := fieldExpander{u: u, expanded: make(map[reflect.Type]expansion)}
+	if why, ok := e.expand(u, nil, []reflect.Type{u}); !ok {
 		return why, false
 	}
-	slices.SortStableFunc(fields, func(a, b jsonField) int {
-		if c := cmp.Compare(a.name, b.name); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(len(a.index), len(b.index)); c != 0 {
-			return c
-		}
-		if a.tagged != b.tagged {
-			if a.tagged {
-				return -1
-			}
-			return 1
-		}
-		return slices.Compare(a.index, b.index)
-	})
-	for i := 1; i < len(fields); i++ {
-		if fields[i].name == fields[i-1].name {
-			return fmt.Sprintf("fields %s and %s share the JSON name %q",
-				fieldPath(u, fields[i-1].index), fieldPath(u, fields[i].index), fields[i].name), false
+	slices.SortStableFunc(e.fields, compareJSONFields)
+	for i := 1; i < len(e.fields); i++ {
+		if a, b := e.fields[i-1], e.fields[i]; a.name == b.name {
+			return sharedName(u, a, b), false
 		}
 	}
 	return "", true
 }
 
-// expandFields appends to fields the JSON fields of the struct t, reached from the outer struct
-// through the index sequence prefix, expanding untagged embedded structs as encoding/json does.
-// path holds the struct types being expanded; an embedded struct already on it is a cycle, whose
-// fields encoding/json drops.
-func expandFields(t reflect.Type, prefix []int, path []reflect.Type, fields *[]jsonField) (why string, ok bool) {
+// sharedName returns the why text for the fields a and b of u, which have the same JSON name.
+func sharedName(u reflect.Type, a, b jsonField) string {
+	if compareJSONFields(b, a) < 0 {
+		a, b = b, a
+	}
+	return fmt.Sprintf("fields %s and %s share the JSON name %q", fieldPath(u, a.index), fieldPath(u, b.index), a.name)
+}
+
+// fieldExpander lists the JSON fields of the struct u for jsonNameConflict.
+type fieldExpander struct {
+	u        reflect.Type
+	fields   []jsonField
+	expanded map[reflect.Type]expansion // each embedded struct type expanded so far
+}
+
+// expansion is the first expansion of an embedded struct type: the index sequence that reached it
+// and the range of fieldExpander.fields it added.
+type expansion struct {
+	index    []int
+	from, to int
+}
+
+// expand appends the JSON fields of the struct t, reached from u through the index sequence
+// prefix, expanding untagged embedded structs as encoding/json does. path holds the struct types
+// being expanded; an embedded struct already on it is a cycle, whose fields encoding/json drops.
+//
+// Each embedded struct type is expanded once. Reached again by another path, a type that added
+// fields the first time adds them again under the new path, so the first of them is reported
+// at once with its copy; a type that added none is skipped. This keeps the check linear in the
+// size of the type, where expanding every path is exponential in the depth of nested diamonds.
+func (e *fieldExpander) expand(t reflect.Type, prefix []int, path []reflect.Type) (why string, ok bool) {
 	for i := range t.NumField() {
 		sf := t.Field(i)
 		if sf.Anonymous {
@@ -330,15 +371,26 @@ func expandFields(t reflect.Type, prefix []int, path []reflect.Type, fields *[]j
 			if name == "" {
 				name = sf.Name
 			}
-			*fields = append(*fields, jsonField{name: name, tagged: tagged, index: index})
+			e.fields = append(e.fields, jsonField{name: name, tagged: tagged, index: index})
 			continue
 		}
 		if slices.Contains(path, ft) {
 			return fmt.Sprintf("field %s: recursive embedding hides its fields", sf.Name), false
 		}
-		if why, ok := expandFields(ft, index, append(path[:len(path):len(path)], ft), fields); !ok {
+		if first, ok := e.expanded[ft]; ok {
+			if first.from == first.to {
+				continue
+			}
+			a := slices.MinFunc(e.fields[first.from:first.to], compareJSONFields)
+			b := a
+			b.index = append(slices.Clone(index), a.index[len(first.index):]...)
+			return sharedName(e.u, a, b), false
+		}
+		from := len(e.fields)
+		if why, ok := e.expand(ft, index, append(path[:len(path):len(path)], ft)); !ok {
 			return why, false
 		}
+		e.expanded[ft] = expansion{index: index, from: from, to: len(e.fields)}
 	}
 	return "", true
 }
