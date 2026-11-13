@@ -36,6 +36,11 @@ jobs:
         with:
           version: v2.14.0
           working-directory: bench
+      - name: golangci-lint (codec/protobuf)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          working-directory: codec/protobuf
       - name: golangci-lint (examples/orders)
         uses: golangci/golangci-lint-action@v9
         with:
