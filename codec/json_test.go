@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -59,6 +60,41 @@ type (
 	ownPairEmbedding struct { // its own JSON pair, and an embedded one
 		jsonPair
 		N int
+	}
+	embTimePtrOnly struct{ *time.Time }
+	embAddrPtrOnly struct{ *lockstep.Address }
+
+	ptrMarshalOnly struct{ N int } // MarshalJSON on the pointer, no UnmarshalJSON
+	ptrHolder      struct {
+		A *ptrJSON
+		L []*ptrJSON
+		M map[string]*ptrJSON
+	}
+	bigHolder struct{ V *big.Int }
+	bigEmb    struct {
+		big.Int
+		N int
+	}
+
+	JA    struct{ a int } // a JSON pair
+	JB    struct{ b int } // a JSON pair
+	tA    struct{ a int } // a text pair
+	tB    struct{ b int } // a text pair
+	ambig struct {
+		JA
+		JB
+	}
+	ambigText struct {
+		tA
+		tB
+	}
+	ambigTagged struct {
+		JA `json:"a"`
+		JB `json:"b"`
+	}
+	taggedUnexported struct {
+		tA `json:"a"`
+		tB `json:"b"`
 	}
 
 	keyString            string
@@ -124,6 +160,27 @@ type (
 		CA
 	}
 	holdsConflict struct{ C conflict }
+	Base          struct{ ID int }
+	Other         struct {
+		Base
+		Name string
+	}
+	twoDepths struct {
+		Base
+		Other
+	} // Base embedded at depths 1 and 2
+	D4          struct{ X int }
+	C4          struct{ D4 }
+	A4          struct{ C4 }
+	B4          struct{ C4 }
+	deepDiamond struct {
+		A4
+		B4
+	}
+	Node struct {
+		*Node
+		V int
+	}
 
 	list struct {
 		Next   *list
@@ -177,6 +234,27 @@ func (p *ptrJSON) UnmarshalJSON(b []byte) error {
 func (p *ptrText) MarshalText() ([]byte, error) { return []byte(strconv.Itoa(p.N)), nil }
 func (p *ptrText) UnmarshalText(b []byte) (err error) {
 	p.N, err = strconv.Atoi(string(b))
+	return err
+}
+func (p *ptrMarshalOnly) MarshalJSON() ([]byte, error) { return []byte(strconv.Itoa(p.N)), nil }
+func (x JA) MarshalJSON() ([]byte, error)              { return []byte(strconv.Itoa(x.a)), nil }
+func (x *JA) UnmarshalJSON(b []byte) (err error) {
+	x.a, err = strconv.Atoi(string(b))
+	return err
+}
+func (x JB) MarshalJSON() ([]byte, error) { return []byte(strconv.Itoa(x.b)), nil }
+func (x *JB) UnmarshalJSON(b []byte) (err error) {
+	x.b, err = strconv.Atoi(string(b))
+	return err
+}
+func (x tA) MarshalText() ([]byte, error) { return []byte(strconv.Itoa(x.a)), nil }
+func (x *tA) UnmarshalText(b []byte) (err error) {
+	x.a, err = strconv.Atoi(string(b))
+	return err
+}
+func (x tB) MarshalText() ([]byte, error) { return []byte(strconv.Itoa(x.b)), nil }
+func (x *tB) UnmarshalText(b []byte) (err error) {
+	x.b, err = strconv.Atoi(string(b))
 	return err
 }
 func (u *unmarshalJSONOnly) UnmarshalJSON([]byte) error { u.N = 99; return nil }
@@ -262,19 +340,33 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[textPlusUnmarshal](), "codec_test.textPlusUnmarshal has UnmarshalJSON but no MarshalJSON"},
 		// A marshal method promoted from an embedded field hides the other fields.
 		{reflect.TypeFor[embTime](), "field Time: embedded MarshalJSON hides the other fields"},
-		{reflect.TypeFor[embTimePtr](), "field Time: embedded MarshalJSON hides the other fields"},
 		{reflect.TypeFor[embAddr](), "field Address: embedded MarshalText hides the other fields"},
 		{reflect.TypeFor[ownPairEmbedding](), "field jsonPair: embedded MarshalJSON hides the other fields"},
 		{reflect.TypeFor[embTimeOnly](), ""},
 		{reflect.TypeFor[embTimeSkip](), ""},
-		// Pointers go to rule 3, so rule 1 looks at the element type.
+		// A marshal method promoted through an embedded pointer panics when it is nil.
+		{reflect.TypeFor[embTimePtr](), "field Time: embedded pointer MarshalJSON panics when nil"},
+		{reflect.TypeFor[embTimePtrOnly](), "field Time: embedded pointer MarshalJSON panics when nil"},
+		{reflect.TypeFor[embAddrPtrOnly](), "field Address: embedded pointer MarshalText panics when nil"},
+		// Pointers go to rule 3, so rule 1 looks at the element type...
 		{reflect.TypeFor[*time.Time](), ""},
 		{reflect.TypeFor[*lockstep.Address](), ""},
 		{reflect.TypeFor[*jsonPair](), ""},
 		{reflect.TypeFor[**jsonPair](), ""},
 		{reflect.TypeFor[*jsonOnly](), "codec_test.jsonOnly has MarshalJSON but no UnmarshalJSON"},
-		{reflect.TypeFor[*ptrJSON](), "codec_test.ptrJSON has MarshalJSON on its pointer only"},
 		{reflect.TypeFor[[]textOnly](), "codec_test.textOnly has MarshalText but no UnmarshalText"},
+		// ...except a pointer whose element has its methods on the pointer only: encoding/json
+		// always uses them there.
+		{reflect.TypeFor[*ptrJSON](), ""},
+		{reflect.TypeFor[*ptrText](), ""},
+		{reflect.TypeFor[ptrHolder](), ""},
+		{reflect.TypeFor[*big.Int](), ""},
+		{reflect.TypeFor[bigHolder](), ""},
+		{reflect.TypeFor[*ptrMarshalOnly](), "*codec_test.ptrMarshalOnly has MarshalJSON but no UnmarshalJSON"},
+		{reflect.TypeFor[*bigEmb](), "field Int: embedded MarshalJSON hides the other fields"},
+		{reflect.TypeFor[bigEmb](), "codec_test.bigEmb has MarshalJSON on its pointer only"},
+		{reflect.TypeFor[map[string]ptrJSON](), "codec_test.ptrJSON has MarshalJSON on its pointer only"},
+		{reflect.TypeFor[**ptrJSON](), ""},
 		// An interface type with MarshalJSON meets rule 1 before rule 2.
 		{reflect.TypeFor[json.Marshaler](), "json.Marshaler has MarshalJSON but no UnmarshalJSON"},
 
@@ -327,6 +419,13 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[withUnexportedInt](), "unexported field innerInt"},
 		{reflect.TypeFor[withUnexportedIntPtr](), "unexported field innerInt"},
 		{reflect.TypeFor[struct{}](), ""},
+		// encoding/json ignores the methods of an untagged embedded struct; a tagged one is an
+		// ordinary field.
+		{reflect.TypeFor[ambig](), "field JA: embedded MarshalJSON is ignored"},
+		{reflect.TypeFor[ambigText](), "field tA: embedded MarshalText is ignored"},
+		{reflect.TypeFor[ambigTagged](), ""},
+		// ...so a tagged unexported one is an unexported field.
+		{reflect.TypeFor[taggedUnexported](), "unexported field tA"},
 		// JSON names that encoding/json gives to more than one field, so it drops some.
 		{reflect.TypeFor[conflict](), `fields CA.X and CB.X share the JSON name "X"`},
 		{dupTag, `fields A and B share the JSON name "x"`},
@@ -335,6 +434,11 @@ func TestATCOD07Supports(t *testing.T) {
 		{reflect.TypeFor[diamond](), `fields DA.Leaf.Z and DB.Leaf.Z share the JSON name "Z"`},
 		{reflect.TypeFor[holdsConflict](), `field C: fields CA.X and CB.X share the JSON name "X"`},
 		{reflect.TypeFor[renamed](), ""},
+		// Every embedding path is expanded, so fields encoding/json drops without a clash in its
+		// own field list are found too.
+		{reflect.TypeFor[twoDepths](), `fields Base.ID and Other.Base.ID share the JSON name "ID"`},
+		{reflect.TypeFor[deepDiamond](), `fields A4.C4.D4.X and B4.C4.D4.X share the JSON name "X"`},
+		{reflect.TypeFor[Node](), "field Node: recursive embedding hides its fields"},
 
 		// Rule 6, and recursive types, which the visited set ends.
 		{reflect.TypeFor[uintptr](), ""},
@@ -377,8 +481,7 @@ func TestATCOD07Supports(t *testing.T) {
 	}
 
 	// Against encoding/json itself: a value of a supported type round trips, and one of each
-	// rejected type does not. embTimePtr is left out: decoding into it calls UnmarshalJSON through
-	// its nil embedded pointer, which panics.
+	// rejected type does not, or panics.
 	at := time.Unix(1, 0).UTC()
 	var addr lockstep.Address
 	fromText(t, &addr, "lockstep://n1/user/w#1f")
@@ -390,6 +493,12 @@ func TestATCOD07Supports(t *testing.T) {
 		map[keyStringMarshalOnly]int{"x": 1},
 		map[keyIntPair]int{3: 1},
 		list{Next: &list{V: 2}, Kids: []list{{V: 3}}, ByName: map[string]*list{"a": {V: 4}}, V: 1},
+		&ptrJSON{N: 5},
+		&ptrText{N: 5},
+		ptrHolder{A: &ptrJSON{N: 5}, L: []*ptrJSON{{N: 6}}, M: map[string]*ptrJSON{"k": {N: 7}}},
+		big.NewInt(42),
+		bigHolder{V: big.NewInt(42)},
+		ambigTagged{JA{1}, JB{2}},
 	} {
 		if err := roundTrip(v); err != nil {
 			t.Errorf("supported %T: %v", v, err)
@@ -413,6 +522,18 @@ func TestATCOD07Supports(t *testing.T) {
 		shadow{X: 1, CA: CA{2}},
 		taggedFirst{CA{1}, CT{2}},
 		diamond{DA{Leaf{1}}, DB{Leaf{2}}},
+		embTimePtr{Time: &at, N: 7},
+		embTimePtrOnly{},
+		embTimePtrOnly{&at},
+		embAddrPtrOnly{},
+		&bigEmb{*big.NewInt(4), 7},
+		map[string]ptrJSON{"k": {N: 5}},
+		ambig{JA{1}, JB{2}},
+		taggedUnexported{tA{1}, tB{2}},
+		ambigText{tA{1}, tB{2}},
+		twoDepths{Base{1}, Other{Base{2}, "n"}},
+		deepDiamond{A4{C4{D4{1}}}, B4{C4{D4{2}}}},
+		Node{&Node{V: 2}, 1},
 	} {
 		if err := (codec.JSON{}).Supports(reflect.TypeOf(v)); err == nil {
 			t.Errorf("Supports(%T) = nil", v)
@@ -424,8 +545,13 @@ func TestATCOD07Supports(t *testing.T) {
 }
 
 // roundTrip marshals v with JSON, unmarshals the bytes into a new value of v's type and returns
-// an error if that fails or gives a value that is not deeply equal to v.
-func roundTrip(v any) error {
+// an error if that fails, panics or gives a value that is not deeply equal to v.
+func roundTrip(v any) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic: %v", p)
+		}
+	}()
 	data, err := codec.JSON{}.Marshal(v)
 	if err != nil {
 		return err

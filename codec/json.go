@@ -25,17 +25,23 @@ import (
 //   - A MarshalJSON or MarshalText method without the matching UnmarshalJSON or UnmarshalText
 //     method on the pointer, an unmarshal method without the marshal method, and a marshal method
 //     on the pointer only. A type with a JSON pair, or else a text pair, is accepted as it is: its
-//     fields are not checked. A struct that gets its pair from an embedded field is rejected when
-//     it has other fields, which the pair would hide.
+//     fields are not checked. A pointer type *T whose methods are all on the pointer, such as
+//     *big.Int, is accepted when it has both methods of a pair, since encoding/json always uses
+//     them there; T itself, as a value, is not.
+//   - A struct that gets its pair from an embedded field, when it has other fields, which the pair
+//     would hide, or when the embedded field is a pointer, whose methods panic when it is nil.
 //   - Interface, channel, function, complex and unsafe.Pointer types, anywhere in the type.
 //   - A map whose keys encoding/json would not write and read alike: a string key type is accepted
 //     when its pointer has no UnmarshalText method, an integer key type when it has both
 //     MarshalText and UnmarshalText or neither, and any other key type only with both.
 //   - A struct with an unexported field, an unexported embedded field of a type that is not a
-//     struct, or an embedded field that is a pointer to an unexported struct type. A field tagged
-//     `json:"-"` is never encoded and is not checked.
-//   - A struct in which two fields, promoted ones included, get the same JSON name, so that
-//     encoding/json drops one of them.
+//     struct or that has a json tag, or an embedded field that is a pointer to an unexported
+//     struct type. A field tagged `json:"-"` is never encoded and is not checked.
+//   - A struct with an untagged embedded struct that has a marshal method: encoding/json ignores
+//     the method and encodes the embedded struct's fields in its place.
+//   - A struct in which two fields, promoted ones included, get the same JSON name along any of
+//     the paths that embed them, so that encoding/json drops one of them, and a struct that embeds
+//     itself through a pointer.
 //
 // The error names the field path to the rejected part, outermost field first, for example
 //
