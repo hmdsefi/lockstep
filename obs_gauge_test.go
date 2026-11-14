@@ -75,9 +75,9 @@ func TestATOBS07RegistrationOrder(t *testing.T) {
 		want = append(want, wantSeries{s.String(), g.help})
 	}
 	regs := rec.registered()
-	if len(want) != 30 || len(regs) != len(want) {
-		t.Fatalf("%d registrations, want %d (%d counter series, then %d gauges; 30 in all)",
-			len(regs), len(want), counters, len(gaugeRows))
+	if all := 27 + len(lockstep.DeadLetterReasons()); len(want) != all || len(regs) != len(want) {
+		t.Fatalf("%d registrations, want %d (%d counter series, then %d gauges; 27 + D = %d in all)",
+			len(regs), len(want), counters, len(gaugeRows), all)
 	}
 	for i, w := range want {
 		s := regs[i]

@@ -18,8 +18,10 @@ type host struct{ sys *System }
 // system's own node is malformed: only the asker's system allocates an ask address, and its own
 // requests never arrive inbound. It is a dead letter with reason not-found, is not tracked, and
 // fails no ask of this system. A reply attempt is
-// applied to the system's table (MSG-410, MSG-420). Remote watches (ACT-602, Phase 3) and any other
-// payload are dropped.
+// applied to the system's table (MSG-410, MSG-420). A RemoteTerminated reaches the watcher once,
+// unless the watch ended first (remoteTerminated: REM-282, ACT-630). A RemoteWatch or RemoteUnwatch
+// is dropped, as is any other payload: the transport registers the watches of other nodes'
+// actors itself, through hooks.WatchFor.
 func (h host) Inbound(env engine.Envelope) {
 	switch p := env.Payload.(type) {
 	case userPayload:
@@ -43,5 +45,7 @@ func (h host) Inbound(env engine.Envelope) {
 		h.sys.deliverLocal(r)
 	case replyPayload:
 		h.sys.settle(addressOf(env.To), resolution{how: byReply, from: addressOf(env.From), v: p.v, err: p.err})
+	case terminatedPayload:
+		h.sys.remoteTerminated(addressOf(env.To), addressOf(env.From), p.reason)
 	}
 }

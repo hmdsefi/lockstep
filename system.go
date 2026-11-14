@@ -5,6 +5,7 @@ package lockstep
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -96,6 +97,16 @@ type System struct {
 	adm     admissionState // whether the engine's admission sheds (OVL-150)
 	ovl     overloadSubs   // the incarnations subscribed to Overloaded, in order (OVL-170)
 	prodOvl prodOverload   // the production overload machinery; empty unless New built the system
+
+	// transport is the system's transport (ENG-080): the engine's own Transport, which newSystem
+	// stores, or the one attachTransport stores; nil while there is none. The send paths read it
+	// through the pointer, so a transport attached while actors run is seen by every later send.
+	// trMu makes attachTransport's checks atomic with its store, and stopEngine's take of the
+	// transport's stop atomic with the end of attaching (trDone, guarded by trMu).
+	transport atomic.Pointer[transportSlot]
+	trMu      sync.Mutex
+	trDone    bool
+	rwatch    remoteWatches // the watches across nodes, both ways (ACT-602, ACT-605)
 
 	// afterRegister, when set, is called by Spawn with the new cell between its registration and
 	// the push of its begin. It is a test hook; production code never sets it.
@@ -217,6 +228,9 @@ func newSystem(eng engine.Engine, opts []Option) (*System, error) {
 		epochs:      []uint32{eng.Epoch},
 		shut:        shutdownState{done: make(chan struct{})},
 	}
+	if eng.Transport != nil {
+		s.transport.Store(&transportSlot{t: eng.Transport}) // counts as attached (hooks.AttachTransport)
+	}
 	s.guardians.init(s, cfg.guardian)
 	// ACT-030: the user guardian first, then the system guardian, with uids 1 and 2 of the epoch.
 	s.user = Address{node: s.node, path: "/user", uid: s.allocUID()}
@@ -327,12 +341,21 @@ func (s *System) completeShutdown() {
 	go s.stopEngine()
 }
 
-// stopEngine stops the production overload machinery and then calls Engine.Stop, when the engine
-// has one, at most once (ENG-140, OVL-700). A concurrent call returns after that Stop has
-// returned.
+// stopEngine stops the production overload machinery, runs the stop of an attached transport and
+// then calls Engine.Stop, when the engine has one, at most once (ENG-140, OVL-700,
+// hooks.AttachTransport). A concurrent call returns after that Stop has returned. Every call but
+// New's own clean-up, which runs before a transport can attach, comes after the shutdown
+// completed, so the transport stops after the last actor stopped; from then on none attaches.
 func (s *System) stopEngine() {
 	s.shut.engOnce.Do(func() {
 		s.stopOverload()
+		s.trMu.Lock()
+		s.trDone = true
+		slot := s.transport.Load()
+		s.trMu.Unlock()
+		if slot != nil && slot.stop != nil {
+			slot.stop()
+		}
 		if s.eng.Stop != nil {
 			s.eng.Stop()
 		}
@@ -350,4 +373,39 @@ func (s *System) recordShutdown(phase string) {
 		engine.Attr{Key: "node", Value: s.node},
 		engine.Attr{Key: "phase", Value: phase},
 	)
+}
+
+// errTransportAttached is attachTransport's error for a system that has a transport.
+var errTransportAttached = errors.New("lockstep: transport already attached")
+
+// transportSlot is the system's transport and the function that stops it; stop is nil for the
+// engine's own Transport, which the engine stops.
+type transportSlot struct {
+	t    engine.Transport
+	stop func()
+}
+
+// transportOf returns the system's transport, or nil when it has none.
+func (s *System) transportOf() engine.Transport {
+	if slot := s.transport.Load(); slot != nil {
+		return slot.t
+	}
+	return nil
+}
+
+// attachTransport makes t the system's transport, which stopEngine stops with stop (nil: nothing
+// to run) before Engine.Stop (hooks.AttachTransport). It returns an error wrapping ErrStopped once
+// Shutdown has started or Discard has run, as Spawn does (ACT-050), and errTransportAttached when
+// the system has a transport, the engine's own included.
+func (s *System) attachTransport(t engine.Transport, stop func()) error {
+	s.trMu.Lock()
+	defer s.trMu.Unlock()
+	if s.trDone || s.closing.Load() || s.discarded.Load() {
+		return s.errStopped()
+	}
+	if s.transport.Load() != nil {
+		return errTransportAttached
+	}
+	s.transport.Store(&transportSlot{t: t, stop: stop})
+	return nil
 }

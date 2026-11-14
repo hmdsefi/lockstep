@@ -92,7 +92,8 @@ func (c *cell[M]) startStop(reason StopReason) {
 
 // endIncarnationWork is step 1 of SUP-060 and SUP-190 for a live incarnation: its timers are
 // cancelled (TMR-080), its watches leave every watcher list and its watched set (SUP-340,
-// ACT-640), and its Overloaded subscription ends (OVL-170). The cell keeps the emptied set as
+// ACT-640), a watch of an address on another node with a RemoteUnwatch to the transport, in
+// insertion order, and its Overloaded subscription ends (OVL-170). The cell keeps the emptied set as
 // endedWatched, so a Terminated that arrives while the incarnation ends is judged against the
 // watches the incarnation had (watchedSet.skips). Its pending effects are cancelled in
 // ID order after the timers and before the watches, the order of SUP-060 and SUP-190 step 1
@@ -109,6 +110,7 @@ func (c *cell[M]) endIncarnationWork(cancelEffects bool) {
 		c.cancelEffects()
 	}
 	c.sys.reg.DropWatcher(registry.Watcher{Addr: registryAddr(c.addr), Inc: c.ctx.inc})
+	c.sys.unwatchAllRemote(c.addr, &c.ctx.watched)
 	c.endedWatched, c.ctx.watched = c.ctx.watched, watchedSet{}
 	if c.ctx.overloadSub {
 		c.ctx.overloadSub = false
@@ -296,8 +298,13 @@ func (c *cell[M]) failCleanup(err error) {
 
 // pushTerminated pushes Terminated{key, reason} to the watcher of one entry of a stopped actor's
 // watcher list (SUP-330), if that watcher is still registered, with the entry's sequence number.
-// Its delivery skips a key the watcher no longer watches under that number (ACT-630).
+// Its delivery skips a key the watcher no longer watches under that number (ACT-630). A watcher on
+// another node registered through hooks.WatchFor gets its function run instead (ACT-605).
 func (s *System) pushTerminated(w registry.Watch, reason StopReason, from engine.ActorRef) {
+	if w.Watcher.Addr.Node != s.node {
+		s.endRemoteWatch(w, reason)
+		return
+	}
 	c, ok := s.lookupCell(w.Watcher.Addr)
 	if !ok {
 		return // the watcher completed its own stop

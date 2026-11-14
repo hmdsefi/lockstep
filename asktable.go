@@ -467,7 +467,7 @@ func (s *System) replyAttempt(ask, from Address, v any, err error) {
 // dropped: ReplyTo.Send and Fail have no result, and REM-266 decides what happens to such a reply.
 func (s *System) replyRemote(ask, from Address, v any, err error) {
 	p := replyPayload{v: v, err: err}
-	tr := s.eng.Transport
+	tr := s.transportOf()
 	if tr == nil {
 		if err != nil {
 			s.deadLetter(from, ask, reasonUnreachable, err)

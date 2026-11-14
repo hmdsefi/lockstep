@@ -66,9 +66,18 @@ func TestATACT26WatchInvalidAndNotAlive(t *testing.T) {
 		}
 	})
 
+	// ACT-602: with a transport, which the manual engine has, the watch goes through it
+	// (TestATACT37RemoteWatch); without one it is ErrNotLocal.
 	t.Run("other node", func(t *testing.T) {
+		eng := enginetest.New("local", 1)
+		b := eng.Engine()
+		b.Transport = nil
+		sys, err := newSystem(b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, _ := spawnRunner(t, sys, eng, "w")
 		other := PIDAt[any]("other", "/user/x").Address()
-		var err error
 		inTurn(t, sys, eng, pid, func(ctx *Context[any]) { err = Watch(ctx, other) })
 		if want := "lockstep: address not local: " + other.String(); !errors.Is(err, ErrNotLocal) || err.Error() != want {
 			t.Errorf("Watch(other node) = %v, want ErrNotLocal with text %q", err, want)
