@@ -133,6 +133,7 @@ func (c *Core) sessionUp(s *session, h *Hello) {
 		s.dialTimeout = nil
 	}
 	s.up = true
+	c.countUp(s)
 	s.peerInc = h.Incarnation
 	s.peerLimit = h.FrameLimit
 	if p := s.peer; p.inc != 0 && p.inc != h.Incarnation {

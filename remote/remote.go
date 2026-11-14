@@ -136,6 +136,7 @@ func Enable(sys *lockstep.System, c Config) error {
 		System:      sys,
 		Driver:      d,
 		Errors:      coreErrors{},
+		Metrics:     counters(sys),
 		DeadLetter:  att.DeadLetter,
 		Settings:    settings(&c, advertise, listenAddr),
 	})
@@ -152,6 +153,7 @@ func Enable(sys *lockstep.System, c Config) error {
 		remoting.Unregister(sys)
 		return failed(fmt.Errorf("remote: %w", lockstep.ErrStopped))
 	}
+	hooks.MetricGauge(sys, remoting.MetricSessions, remoting.HelpSessions, core.Sessions)
 	core.Start()
 	tr.core = core
 	close(tr.ready)
@@ -208,6 +210,20 @@ func enableSimulated(core *remoting.Core, c Config) error {
 // discarded with its node's crash.
 func errSimStopped(sys *lockstep.System) error {
 	return fmt.Errorf("remote: %w: node %q", lockstep.ErrStopped, sys.Node())
+}
+
+// counters registers the remote counters on sys's metrics backend, in the order of OBS-150, and
+// returns them; every function is nil when sys has metrics off.
+func counters(sys *lockstep.System) remoting.Metrics {
+	c := func(name, help string) func(uint64) { return hooks.MetricCounter(sys, name, help) }
+	return remoting.Metrics{
+		FramesSent:     c(remoting.MetricFramesSent, remoting.HelpFramesSent),
+		FramesReceived: c(remoting.MetricFramesRecv, remoting.HelpFramesRecv),
+		BytesSent:      c(remoting.MetricBytesSent, remoting.HelpBytesSent),
+		BytesReceived:  c(remoting.MetricBytesRecv, remoting.HelpBytesRecv),
+		Reconnects:     c(remoting.MetricReconnects, remoting.HelpReconnects),
+		Gaps:           c(remoting.MetricGaps, remoting.HelpGaps),
+	}
 }
 
 // wildcard reports whether a is a TCP address on every interface (0.0.0.0 or [::]), which peers

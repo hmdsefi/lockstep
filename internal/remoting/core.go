@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hmdsefi/lockstep/codec"
@@ -119,6 +120,9 @@ type Config struct {
 	// Simulated marks the core of a simulated system, which has one from its boot: package
 	// remote's Enable then replaces its settings once with SetSettings instead of building a core.
 	Simulated bool
+
+	// Metrics are the counters the core increments; the zero value counts nothing.
+	Metrics Metrics
 }
 
 // Core is the remoting protocol of one node, shared by the production and the simulation
@@ -167,6 +171,9 @@ type Core struct {
 	// maxWatchers bounds the watches of one peer's actors on local actors (REM-280): maxWatchers,
 	// lowered by tests.
 	maxWatchers int
+	// met are the counters, nil functions being off; up is the number of up sessions.
+	met Metrics
+	up  atomic.Int64
 }
 
 // New checks cfg and returns a Core that has not started. Every error text starts with
@@ -217,6 +224,7 @@ func New(cfg Config) (*Core, error) {
 		simulated: cfg.Simulated,
 
 		maxWatchers: maxWatchers,
+		met:         cfg.Metrics,
 	}
 	if cfg.Tracer != nil && cfg.Tracer.Enabled() {
 		c.tracer = cfg.Tracer
@@ -461,6 +469,7 @@ func (c *Core) Frame(link Link, b []byte) {
 		}
 		return
 	}
+	c.received(len(b))
 	s.lastRecv = c.clock.Now()
 	if s.dir == dirIn && s.peer == nil {
 		c.acceptHello(s, b)
