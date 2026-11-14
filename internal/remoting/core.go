@@ -92,14 +92,18 @@ type Config struct {
 	Entropy engine.Entropy
 	// Tracer receives the core's records. Nil, or a tracer that is not enabled, means none.
 	Tracer engine.Tracer
-	// Failer reports failures that end a simulation seed. Nil means none. The core does not use
-	// it yet: the receive path will.
+	// Failer receives the frames the core could not apply as they were: one that does not decode,
+	// a value its recipient does not take, and a reply whose answer could not be sent. The
+	// simulation fails the seed with them; production ignores them. Nil means none.
 	Failer engine.Failer
 	// Log receives the core's warnings. Nil means none.
 	Log *slog.Logger
-	// Host is the system the core belongs to: the core fails asks whose requests it could not
-	// send through Host.Inbound. Required.
+	// Host is the system the core belongs to: the core hands it the envelopes it receives, and
+	// fails asks whose requests it could not send, through Host.Inbound. Required.
 	Host engine.Host
+	// System is the *lockstep.System that Host belongs to, which the core passes to the runtime
+	// hooks to check what it receives against the system's actors and asks. Required.
+	System any
 	// Driver opens the core's connections. Required.
 	Driver Driver
 	// Errors builds the errors the core returns and fails asks with. Required.
@@ -129,6 +133,8 @@ type Core struct {
 	tracer    engine.Tracer // nil when records are off
 	log       *slog.Logger
 	host      engine.Host
+	sys       any
+	failer    engine.Failer // nil when none
 	driver    Driver
 	errs      Errors
 	dead      func(from, to engine.Address, reason string, msg any)
@@ -138,6 +144,9 @@ type Core struct {
 	peers   map[string]*peer
 	links   map[Link]*session
 	serial  uint64 // sessions created so far
+	// closed holds the last up incoming session of each peer that went down, by link, until the
+	// driver reports the link closed: frames still handed over for it are discarded (REM-250).
+	closed map[Link]*session
 
 	// deferred holds the calls that must run after the lock is released, in order: dead letters,
 	// which may send and so call Deliver again, and log calls, whose handlers may block.
@@ -163,6 +172,8 @@ func New(cfg Config) (*Core, error) {
 		return nil, errors.New(p + "no entropy")
 	case cfg.Host == nil:
 		return nil, errors.New(p + "no host")
+	case cfg.System == nil:
+		return nil, errors.New(p + "no system")
 	case cfg.Driver == nil:
 		return nil, errors.New(p + "no driver")
 	case cfg.Errors == nil:
@@ -197,11 +208,14 @@ func New(cfg Config) (*Core, error) {
 		rand:      cfg.Entropy.Rand("lockstep/" + cfg.Node + "/" + strconv.FormatUint(uint64(cfg.Incarnation), 10) + "/$remote"),
 		log:       cfg.Log,
 		host:      cfg.Host,
+		sys:       cfg.System,
+		failer:    cfg.Failer,
 		driver:    cfg.Driver,
 		errs:      cfg.Errors,
 		dead:      cfg.DeadLetter,
 		peers:     make(map[string]*peer),
 		links:     make(map[Link]*session),
+		closed:    make(map[Link]*session),
 	}
 	if cfg.Tracer != nil && cfg.Tracer.Enabled() {
 		c.tracer = cfg.Tracer
@@ -288,6 +302,7 @@ func (c *Core) Accepted(link Link) {
 	if _, ok := c.links[link]; ok {
 		return
 	}
+	c.forgetClosed(link)
 	s := c.newSession(link, dirIn, nil)
 	if c.tracer != nil {
 		c.tracer.Record(recordAccept, engine.Attr{Key: "conn", Value: s.connText()})
@@ -313,13 +328,27 @@ func (c *Core) Writable(link Link) {
 // Frame hands the core one frame, length prefix included, that arrived on link. A driver that
 // cannot cut a frame out of its stream, because the length prefix is out of range, passes the
 // bytes it has, and the core closes the session as a protocol error. The core does not keep b
-// after Frame returns. Frames on a link the core does not know, or no longer knows, are ignored.
-// Call it in engine context.
+// after Frame returns.
+//
+// The envelopes a session receives go to the Host, in the order their frames arrived, after
+// Frame has released the core's lock. A frame that arrives on the link of an incoming session the
+// core closed, before the driver reports the link closed, is discarded with a record; frames on
+// any other link the core does not know, or no longer knows, are ignored. Call it in engine
+// context.
 func (c *Core) Frame(link Link, b []byte) {
+	// Parsing and decoding read only settings that do not change, so they run without the lock.
+	f, err := ParseFrame(b, c.set.MaxFrame)
+	var in *inbound
+	if err == nil {
+		in = c.decodeFrame(&f)
+	}
 	c.mu.Lock()
 	defer c.unlock()
 	s := c.links[link]
 	if s == nil {
+		if old := c.closed[link]; old != nil && err == nil {
+			c.discard(old, &f, DiscardClosedSession)
+		}
 		return
 	}
 	s.lastRecv = c.clock.Now()
@@ -327,7 +356,6 @@ func (c *Core) Frame(link Link, b []byte) {
 		c.acceptHello(s, b)
 		return
 	}
-	f, err := ParseFrame(b, c.set.MaxFrame)
 	if err != nil {
 		c.protocolError(s, err)
 		return
@@ -336,7 +364,7 @@ func (c *Core) Frame(link Link, b []byte) {
 		c.handshakeReply(s, &f)
 		return
 	}
-	c.sessionFrame(s, &f)
+	c.sessionFrame(s, &f, in)
 }
 
 // Closed tells the core that link ended: a read or write failed, the peer closed it, or a dial
@@ -347,12 +375,15 @@ func (c *Core) Closed(link Link, err error) {
 	defer c.unlock()
 	s := c.links[link]
 	if s == nil {
+		c.forgetClosed(link)
 		return
 	}
 	if err != nil {
 		c.info("remoting: link closed", "node", c.node, "peer", s.peerName(), "conn", s.conn, "err", err)
 	}
 	c.down(s, DownIO)
+	// The driver hands over no more frames for link.
+	c.forgetClosed(link)
 }
 
 // tidy forgets p when it holds nothing: no session, no queued frame, no armed redial, nothing

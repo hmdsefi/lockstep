@@ -118,7 +118,9 @@ func (c *Core) Deliver(env engine.Envelope) error {
 }
 
 // encode builds env's data frame (REM-110, REM-115, REM-120). It runs without the lock: it reads
-// only settings that do not change.
+// only settings that do not change. A reply attempt always becomes a frame: a nil answer is a
+// REPLY with an empty type and payload, and an answer that does not encode, or whose frame exceeds
+// MaxFrame, is sent as a FAIL in its place (REM-266).
 func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 	p, ok := hooks.Payload(env.Payload)
 	if !ok {
@@ -129,8 +131,16 @@ func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 	f := Frame{Kind: k, Sender: addrText(env.From), Recipient: addrText(env.To)}
 	switch k {
 	case KindMsg, KindAsk, KindReply:
-		name, data, err := c.set.Registry.Encode(c.set.Codec, p.Value)
+		var name string
+		var data []byte
+		var err error
+		if k != KindReply || p.Value != nil {
+			name, data, err = c.set.Registry.Encode(c.set.Codec, p.Value)
+		}
 		if err != nil {
+			if k == KindReply {
+				return c.replyFailed(env, p.Value, err), nil
+			}
 			return nil, err
 		}
 		f.Type, f.Payload = name, data
@@ -159,7 +169,11 @@ func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 	// The sequence number stays 0 until flush writes the frame.
 	out.b = AppendFrame(nil, &f)
 	if n := out.size(); n > c.set.MaxFrame {
-		return nil, c.errs.FrameTooLarge(n, c.set.MaxFrame)
+		err := c.errs.FrameTooLarge(n, c.set.MaxFrame)
+		if k == KindReply {
+			return c.replyFailed(env, p.Value, err), nil
+		}
+		return nil, err
 	}
 	return out, nil
 }
