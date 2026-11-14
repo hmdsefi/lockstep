@@ -197,6 +197,7 @@ func (s *Sim) attachCore(e *simEngine, sys *lockstep.System) {
 		Errors:      errorsOf{},
 		DeadLetter:  att.DeadLetter,
 		Settings:    s.remote,
+		Simulated:   true, // remote.Enable replaces the settings (REM-040)
 	})
 	if err != nil {
 		panic(fmt.Sprintf("lockstep: sim: %v", err)) // unreachable: Simulate validated the settings

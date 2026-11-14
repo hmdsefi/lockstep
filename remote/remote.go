@@ -40,14 +40,27 @@ var enableMu sync.Mutex
 // set c.Advertise. c.Resolve is called while remoting holds a lock that every send to another
 // node takes, so it must return quickly, must not block and must never send to sys. Enable panics
 // if sys is nil.
+//
+// On a system of a simulated node (package sim), whose messages to other nodes always travel
+// through remoting, Enable only replaces the node's protocol settings: it checks that it was not
+// called for this boot of the node already (ErrAlreadyEnabled), then c with Validate, ignoring
+// the network fields Listen, Advertise, Peers, Resolve and TLS. It neither requires c.Listen nor
+// listens, and does not check c.Codec against c.Registry, which the simulation does for its
+// own options. Connections already up keep the frame limits announced when they opened, so call
+// Enable from the node's setup function, before the system sends to other nodes.
 func Enable(sys *lockstep.System, c Config) error {
 	if sys == nil {
 		panic("remote: Enable with nil System")
 	}
 	enableMu.Lock()
 	defer enableMu.Unlock()
-	if remoting.CoreOf(sys) != nil {
-		return ErrAlreadyEnabled
+	if core := remoting.CoreOf(sys); core != nil {
+		// A simulated system has its core from its boot, marked simulated, and may still have
+		// its settings replaced once; any other core means Enable ran already.
+		if !core.Settable() {
+			return ErrAlreadyEnabled
+		}
+		return enableSimulated(core, c)
 	}
 	if err := c.Validate(); err != nil {
 		return err
@@ -113,19 +126,7 @@ func Enable(sys *lockstep.System, c Config) error {
 		Driver:      d,
 		Errors:      coreErrors{},
 		DeadLetter:  att.DeadLetter,
-		Settings: remoting.Settings{
-			Registry:      c.Registry,
-			Codec:         c.Codec,
-			MaxFrame:      c.MaxFrame,
-			OutboundQueue: c.OutboundQueue,
-			Heartbeat:     c.Heartbeat,
-			IdleTimeout:   c.IdleTimeout,
-			DialTimeout:   c.DialTimeout,
-			RedialMin:     c.RedialMin,
-			RedialMax:     c.RedialMax,
-			Advertise:     advertise,
-			Listen:        listenAddr,
-		},
+		Settings:    settings(&c, advertise, listenAddr),
 	})
 	if err != nil {
 		// Unreachable: Validate and the checks above cover every check of remoting.New.
@@ -145,6 +146,46 @@ func Enable(sys *lockstep.System, c Config) error {
 	close(tr.ready)
 	d.log.Info("remote: listening", "node", att.Node, "addr", listenAddr)
 	d.startAccepting()
+	return nil
+}
+
+// settings returns the protocol settings of c, which Validate has filled in, with the advertise
+// and listen addresses given.
+func settings(c *Config, advertise, listen string) remoting.Settings {
+	return remoting.Settings{
+		Registry:      c.Registry,
+		Codec:         c.Codec,
+		MaxFrame:      c.MaxFrame,
+		OutboundQueue: c.OutboundQueue,
+		Heartbeat:     c.Heartbeat,
+		IdleTimeout:   c.IdleTimeout,
+		DialTimeout:   c.DialTimeout,
+		RedialMin:     c.RedialMin,
+		RedialMax:     c.RedialMax,
+		Advertise:     advertise,
+		Listen:        listen,
+	}
+}
+
+// enableSimulated is Enable on a simulated system, whose core the simulation built at the node's
+// boot and marked simulated (REM-040): it ignores the network fields, as the simulation does with
+// its own options (REM-300), checks the rest with Validate, and replaces the core's protocol
+// settings. It neither requires Listen nor listens, and does not check the codec against the
+// registry: the simulation checked its own options once per run (REM-030). The caller holds
+// enableMu and has checked that the core's settings were not replaced yet.
+func enableSimulated(core *remoting.Core, c Config) error {
+	c.Listen, c.Advertise, c.Peers, c.Resolve, c.TLS = "", "", nil, nil, nil
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if n := len(c.Codec.Name()); n < 1 || n > remoting.MaxCodecName {
+		return fmt.Errorf("remote: codec name %q is not 1 to %d bytes", c.Codec.Name(), remoting.MaxCodecName)
+	}
+	if err := core.SetSettings(settings(&c, "", "")); err != nil {
+		// Only after the system's shutdown: Validate and the check above cover SetSettings's
+		// checks, and enableMu keeps a second Enable out.
+		return fmt.Errorf("remote: %w", err)
+	}
 	return nil
 }
 

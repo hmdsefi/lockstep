@@ -19,7 +19,9 @@
 // protocol, and its frames travel as simnet datagrams, so every message between nodes is encoded
 // with the codec of Options.Remote and its type must be registered. Loss, delay and partitions on
 // a link apply to the datagrams; duplicates are not made, and each link keeps its datagrams in
-// order.
+// order. A node's setup may call remote.Enable as production code does: it replaces that node's
+// protocol settings and ignores the network fields. A system's Shutdown closes its remoting
+// sessions, as in production, before its engine stops.
 //
 // Run the tests with LOCKSTEP_CHECK_DETERMINISM=1 to run every seed twice and compare the traces.
 package sim
