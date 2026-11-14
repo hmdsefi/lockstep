@@ -118,3 +118,8 @@ var WatchFor func(sys any, watcher, watched engine.Address, fn func(reason any))
 // watcher gets Terminated{watched, Failed(err)}, in ascending (watched, watcher) text order.
 // Implemented by ACT.
 var WatchesDown func(sys any, node string, err error)
+
+// ShuttingDown reports whether Shutdown has begun on sys, so that sys is shutting down or
+// stopped, or whether sys was discarded (REM-040: remote.Enable on a simulated system then
+// returns an error wrapping lockstep.ErrStopped). Implemented by ACT.
+var ShuttingDown func(sys any) bool

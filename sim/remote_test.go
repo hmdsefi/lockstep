@@ -81,9 +81,10 @@ func TestATREM31EncodedDelivery(t *testing.T) {
 	})
 }
 
-// SIM-040, REM-335: every system's remoting core is registered for the system while the run
-// lasts, and none is left in the table once Simulate returns, whether its node crashed, shut down
-// or was still up at the end, so no run's world outlives it.
+// SIM-040, REM-335, REM-040: every system's remoting core is registered for the system while the
+// run lasts; a crashed or shut-down system has a stopped marker instead; and no core or marker is
+// left in the table once Simulate returns, whether its node crashed, shut down or was still up at
+// the end, so no run's world outlives it.
 func TestSimulateUnregistersCores(t *testing.T) {
 	var systems []*lockstep.System
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
@@ -107,6 +108,9 @@ func TestSimulateUnregistersCores(t *testing.T) {
 		if remoting.CoreOf(first) != nil {
 			tt.Error("the crashed system still has a remoting core")
 		}
+		if !remoting.Stopped(first) || !remoting.Stopped(s.System("n3")) || remoting.Stopped(s.System("n1")) {
+			tt.Error("stopped markers: want one for the crashed and the shut-down system only")
+		}
 		if remoting.CoreOf(s.System("n3")) != nil {
 			tt.Error("the shut-down system still has a remoting core")
 		}
@@ -117,6 +121,9 @@ func TestSimulateUnregistersCores(t *testing.T) {
 	for i, sys := range systems {
 		if c := remoting.CoreOf(sys); c != nil {
 			t.Errorf("system %d (%s, incarnation %d) still has its remoting core after Simulate", i, sys.Node(), sys.Incarnation())
+		}
+		if remoting.Stopped(sys) {
+			t.Errorf("system %d (%s, incarnation %d) still has a stopped marker after Simulate", i, sys.Node(), sys.Incarnation())
 		}
 	}
 }

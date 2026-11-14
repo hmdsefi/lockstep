@@ -116,6 +116,9 @@ type Config struct {
 	DeadLetter func(from, to engine.Address, reason string, msg any)
 	// Settings are the protocol settings.
 	Settings Settings
+	// Simulated marks the core of a simulated system, which has one from its boot: package
+	// remote's Enable then replaces its settings once with SetSettings instead of building a core.
+	Simulated bool
 }
 
 // Core is the remoting protocol of one node, shared by the production and the simulation
@@ -143,12 +146,14 @@ type Core struct {
 	errs      Errors
 	dead      func(from, to engine.Address, reason string, msg any)
 
-	started bool
-	shut    bool          // Shutdown ran
-	tick    engine.Cancel // the armed heartbeat tick; nil before Start and after Shutdown
-	peers   map[string]*peer
-	links   map[Link]*session
-	serial  uint64 // sessions created so far
+	simulated bool // Config.Simulated
+	replaced  bool // SetSettings replaced the settings
+	started   bool
+	shut      bool          // Shutdown ran
+	tick      engine.Cancel // the armed heartbeat tick; nil before Start and after Shutdown
+	peers     map[string]*peer
+	links     map[Link]*session
+	serial    uint64 // sessions created so far
 	// closed holds the last up incoming session of each peer that went down, by link, until the
 	// driver reports the link closed: frames still handed over for it are discarded (REM-250).
 	closed map[Link]*session
@@ -188,24 +193,9 @@ func New(cfg Config) (*Core, error) {
 		return nil, errors.New(p + "no errors")
 	case cfg.DeadLetter == nil:
 		return nil, errors.New(p + "no dead-letter function")
-	case s.Registry == nil:
-		return nil, errors.New(p + "no registry")
-	case s.Codec == nil:
-		return nil, errors.New(p + "no codec")
-	case len(s.Codec.Name()) < 1 || len(s.Codec.Name()) > MaxCodecName:
-		return nil, fmt.Errorf(p+"codec name %q is not 1 to %d bytes", s.Codec.Name(), MaxCodecName)
-	case s.MaxFrame < MinFrameLimit || s.MaxFrame > MaxFrameLimit:
-		return nil, fmt.Errorf(p+"MaxFrame %d out of range [%d, %d]", s.MaxFrame, MinFrameLimit, MaxFrameLimit)
-	case s.OutboundQueue < 1:
-		return nil, fmt.Errorf(p+"OutboundQueue %d is less than 1", s.OutboundQueue)
-	case s.Heartbeat <= 0 || s.IdleTimeout <= 0 || s.DialTimeout <= 0 || s.RedialMin <= 0:
-		return nil, errors.New(p + "Heartbeat, IdleTimeout, DialTimeout and RedialMin must be positive")
-	case s.IdleTimeout/2 < s.Heartbeat: // IdleTimeout < 2*Heartbeat without overflow
-		return nil, fmt.Errorf(p+"IdleTimeout %s is less than twice Heartbeat %s", s.IdleTimeout, s.Heartbeat)
-	case s.RedialMax < s.RedialMin:
-		return nil, fmt.Errorf(p+"RedialMax %s is less than RedialMin %s", s.RedialMax, s.RedialMin)
-	case len(s.Advertise) > MaxAdvertise:
-		return nil, fmt.Errorf(p+"advertise address of %d bytes exceeds %d", len(s.Advertise), MaxAdvertise)
+	}
+	if err := checkSettings(s); err != nil {
+		return nil, err
 	}
 	c := &Core{
 		node:      cfg.Node,
@@ -224,6 +214,7 @@ func New(cfg Config) (*Core, error) {
 		peers:     make(map[string]*peer),
 		links:     make(map[Link]*session),
 		closed:    make(map[Link]*session),
+		simulated: cfg.Simulated,
 
 		maxWatchers: maxWatchers,
 	}
@@ -234,6 +225,105 @@ func New(cfg Config) (*Core, error) {
 		c.log = slog.New(slog.DiscardHandler)
 	}
 	return c, nil
+}
+
+// checkSettings checks the protocol settings s for New and SetSettings. Every error text starts
+// with "remoting: invalid config: ".
+func checkSettings(s Settings) error {
+	const p = "remoting: invalid config: "
+	switch {
+	case s.Registry == nil:
+		return errors.New(p + "no registry")
+	case s.Codec == nil:
+		return errors.New(p + "no codec")
+	case len(s.Codec.Name()) < 1 || len(s.Codec.Name()) > MaxCodecName:
+		return fmt.Errorf(p+"codec name %q is not 1 to %d bytes", s.Codec.Name(), MaxCodecName)
+	case s.MaxFrame < MinFrameLimit || s.MaxFrame > MaxFrameLimit:
+		return fmt.Errorf(p+"MaxFrame %d out of range [%d, %d]", s.MaxFrame, MinFrameLimit, MaxFrameLimit)
+	case s.OutboundQueue < 1:
+		return fmt.Errorf(p+"OutboundQueue %d is less than 1", s.OutboundQueue)
+	case s.Heartbeat <= 0 || s.IdleTimeout <= 0 || s.DialTimeout <= 0 || s.RedialMin <= 0:
+		return errors.New(p + "Heartbeat, IdleTimeout, DialTimeout and RedialMin must be positive")
+	case s.IdleTimeout/2 < s.Heartbeat: // IdleTimeout < 2*Heartbeat without overflow
+		return fmt.Errorf(p+"IdleTimeout %s is less than twice Heartbeat %s", s.IdleTimeout, s.Heartbeat)
+	case s.RedialMax < s.RedialMin:
+		return fmt.Errorf(p+"RedialMax %s is less than RedialMin %s", s.RedialMax, s.RedialMin)
+	case len(s.Advertise) > MaxAdvertise:
+		return fmt.Errorf(p+"advertise address of %d bytes exceeds %d", len(s.Advertise), MaxAdvertise)
+	}
+	return nil
+}
+
+// ErrCodecInUse is SetSettings's error for settings that change the codec or the registry while
+// the core has a connection or a queued frame.
+var ErrCodecInUse = errors.New("remoting: the codec and registry cannot change while connections are open or frames are queued")
+
+// Simulated reports whether the core was built with Config.Simulated.
+func (c *Core) Simulated() bool { return c.simulated }
+
+// Settable reports whether SetSettings may replace the core's settings: the core is simulated
+// (Config.Simulated) and its settings have not been replaced yet.
+func (c *Core) Settable() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.simulated && !c.replaced
+}
+
+// SetSettings replaces the protocol settings of a simulated core, once: package
+// remote's Enable on a simulated system calls it. From then on the core announces s in the
+// handshakes it writes and applies s to the frames it builds, queues and receives, to its timers
+// and to its redials. Sessions already up are not handshaken again: they keep the frame limit
+// their peer announced, and their peer keeps the one this core announced then, so a lower MaxFrame
+// can make the peer's next large frame a protocol error. They also keep the codec agreed at their
+// handshake: s may name a codec of another name or another registry only while the core has no
+// connection, up or in its handshake, and no frame queued, which was encoded with the old codec.
+// A started core's heartbeat tick is armed again, one new Heartbeat from now. The start record is
+// not repeated.
+//
+// It returns an error and changes nothing when s fails New's checks, when the core is not
+// simulated or its settings were replaced already, when s changes the codec or registry while a
+// connection is open or a frame queued, and, wrapping lockstep.ErrStopped, after Shutdown. The
+// send and receive paths read the settings without the lock, so SetSettings is only for a
+// simulated core, whose calls all come from the simulation's one goroutine. Call it in engine
+// context or from that goroutine.
+func (c *Core) SetSettings(s Settings) error {
+	if err := checkSettings(s); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.unlock()
+	switch {
+	case !c.simulated:
+		return errors.New("remoting: the settings of a core that is not simulated cannot be replaced")
+	case c.replaced:
+		return errors.New("remoting: the settings were replaced already")
+	case c.shut:
+		return errShutDown
+	case (s.Codec.Name() != c.codecName || s.Registry != c.set.Registry) && c.open():
+		return ErrCodecInUse
+	}
+	c.replaced = true
+	c.set = s
+	c.codecName = s.Codec.Name()
+	if c.tick != nil {
+		c.tick()
+		c.armTick()
+	}
+	return nil
+}
+
+// open reports whether the core has a connection, up or in its handshake, or a frame queued for a
+// peer.
+func (c *Core) open() bool {
+	if len(c.links) > 0 {
+		return true
+	}
+	for _, p := range c.peers { //lockstep:maporder the result is the same in any order
+		if len(p.queue) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Start records the start of remoting on this node and arms the first heartbeat tick. Calls

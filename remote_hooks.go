@@ -305,3 +305,10 @@ func watchesDownHook(sys any, node string, err error) {
 	}
 	s.watchesDown(node, err)
 }
+
+// shuttingDownHook is hooks.ShuttingDown (REM-040): whether Shutdown has begun on sys, so that it
+// is closing or stopped (ACT-050), or sys was discarded (SUP-360).
+func shuttingDownHook(sys any) bool {
+	s := hookSystem("ShuttingDown", sys)
+	return s.closing.Load() || s.discarded.Load()
+}

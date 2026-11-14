@@ -21,7 +21,8 @@ import (
 //  5. every timer of the core is stopped (the heartbeat tick, the redials, the dial timeouts and
 //     the timers that fail asks), the watches of other nodes' actors on local actors are
 //     cancelled, and the outgoing watches and pending lookups are forgotten;
-//  6. the core leaves the table of CoreOf.
+//  6. the core leaves the table of CoreOf; a simulated core leaves a stopped marker for its
+//     system (Stopped).
 //
 // The dead letters, the cancels and the table update run once the lock is released, so the
 // dead-letter records follow the down records. Afterwards the core opens and accepts no session,

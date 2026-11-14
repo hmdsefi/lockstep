@@ -155,15 +155,14 @@ func (r *runner) end() {
 	}
 }
 
-// end ends the run of s (SIM-040) and takes the remoting core of every node's current system out
-// of the table of remoting.CoreOf, which would otherwise keep the run's world alive for the rest
-// of the test binary. A crash and a shutdown have taken out the cores of the earlier systems.
-// Calls after the first do nothing more.
+// end ends the run of s (SIM-040) and takes every system of the run out of the table of
+// remoting.CoreOf, which would otherwise keep the run's world alive for the rest of the test
+// binary: the cores of the live systems and the stopped markers that the crashes and shutdowns
+// left (REM-040). Calls after the first do nothing more.
 func (s *Sim) end() {
 	s.ended = true
-	for _, ln := range s.nodes {
-		if ln.sys != nil {
-			remoting.Unregister(ln.sys)
-		}
+	for _, sys := range s.registered {
+		remoting.Unregister(sys)
 	}
+	s.registered = nil
 }

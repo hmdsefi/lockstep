@@ -308,8 +308,11 @@ func (s *Sim) settleWorld(ev *pendingEvent) {
 // kill marks the engine dead, so it ignores every seam call from now on (SIM-120). It is the one
 // way an engine dies: the crash hook calls it when the node crashes, before the system is
 // discarded (SIM-110), and it is the bundle's Stop, which System.Shutdown calls after every actor
-// stopped (ENG-140, SIM-195). After a Stop the node stays up, and System keeps returning the
-// stopped system until the next boot.
+// stopped (ENG-140, SIM-195). Just before that Stop, the shutdown runs the transport's stop
+// function, the remoting core's Shutdown (REM-296), while the engine is still alive: each session
+// gets CLOSE shutdown, the frames still queued become dead letters and each session's down is
+// recorded, so those datagrams leave and those records are kept. After a Stop the node stays up,
+// and System keeps returning the stopped system until the next boot.
 func (e *simEngine) kill() { e.dead = true }
 
 // InTurn reports whether the caller runs inside a kernel callback (SIM-195, ENG-055).

@@ -22,6 +22,9 @@ type Sim struct {
 	system []lockstep.Option // Options.System, applied at every boot (SIM-070)
 	budget Budget            // Options.Budget, for every node system (SFT-140)
 	remote remoting.Settings // Options.Remote, the protocol settings of every node's core (REM-300)
+	// registered holds every system of the run that has an entry in remoting's table, a core or
+	// a stopped marker, in boot order; the run's end removes them all (REM-040).
+	registered []*lockstep.System
 
 	// slots holds the first failure stored for each named check, indexed like checkNames.
 	slots [len(checkNames)]error
@@ -197,6 +200,7 @@ func (s *Sim) attachCore(e *simEngine, sys *lockstep.System) {
 		Errors:      errorsOf{},
 		DeadLetter:  att.DeadLetter,
 		Settings:    s.remote,
+		Simulated:   true, // remote.Enable replaces the settings (REM-040)
 	})
 	if err != nil {
 		panic(fmt.Sprintf("lockstep: sim: %v", err)) // unreachable: Simulate validated the settings
@@ -204,6 +208,7 @@ func (s *Sim) attachCore(e *simEngine, sys *lockstep.System) {
 	if !remoting.Register(core) {
 		panic("lockstep: sim: the system of a new boot has a remoting core") // unreachable
 	}
+	s.registered = append(s.registered, sys)
 	tr.core, d.core = core, core
 	e.core, e.driver = core, d
 }
@@ -227,7 +232,9 @@ func (s *Sim) crashed(n *kernel.Node) {
 		ln.eng.kill()
 	}
 	if ln.sys != nil {
-		remoting.Unregister(ln.sys) // the core goes with the system, silently (REM-335)
+		// The core goes with the system, silently (REM-335); remote.Enable on the system now
+		// reports it stopped (REM-040).
+		remoting.MarkStopped(ln.sys)
 		hooks.Discard(ln.sys)
 		ln.sys = nil
 	}

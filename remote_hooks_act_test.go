@@ -159,6 +159,7 @@ func TestRemoteActorHooksSet(t *testing.T) {
 		"LookupPath":      hooks.LookupPath != nil,
 		"WatchFor":        hooks.WatchFor != nil,
 		"WatchesDown":     hooks.WatchesDown != nil,
+		"ShuttingDown":    hooks.ShuttingDown != nil,
 	} {
 		if !set {
 			t.Errorf("hooks.%s is nil", name)
