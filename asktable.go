@@ -98,6 +98,9 @@ type resolver interface {
 	// wrongType returns MSG-420's ErrWrongType error for an answer v that is not an R, and nil
 	// for an R or a nil v (the zero R). It runs no user code.
 	wrongType(ask Address, v any) error
+	// assignable reports whether v is assignable to R, a nil v only for an interface R
+	// (hooks.Assignable). It runs no user code.
+	assignable(v any) bool
 }
 
 // trackList is the asks one actor tracks, in tracking order (MSG-340): a list threaded through
@@ -164,7 +167,7 @@ type how uint8
 
 const (
 	byReply   how = iota + 1 // a reply attempt (MSG-420): lockstep.reply resolved, or late when not pending
-	byRouting                // Ask's routing outcome (MSG-310): lockstep.reply resolved; nothing when not pending
+	byRouting                // Ask's routing outcome (MSG-310), or hooks.FailAsks: lockstep.reply resolved; nothing when not pending
 	byTimeout                // the timer (MSG-320): lockstep.timeout; nothing when not pending
 	byStop                   // the system stopped (MSG-360): lockstep.reply resolved; nothing when not pending
 )

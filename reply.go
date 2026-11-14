@@ -149,6 +149,16 @@ func (r *Reply[R]) wrongType(ask Address, v any) error {
 		ErrWrongType, ask, reflect.TypeOf(v).String(), reflect.TypeFor[R]().String())
 }
 
+// assignable reports whether v is assignable to R: an R, or a nil v for an interface R, whose
+// zero value is nil (hooks.Assignable).
+func (r *Reply[R]) assignable(v any) bool {
+	if v == nil {
+		return reflect.TypeFor[R]().Kind() == reflect.Interface
+	}
+	_, ok := v.(R)
+	return ok
+}
+
 // Await waits for the ask to resolve and returns its value or error. If ctx ends first it returns
 // the zero R and ctx.Err(), and the ask stays pending. Called during a turn it returns
 // ErrAwaitInActor at once. In simulation Await never waits and never drives the run: on a pending
