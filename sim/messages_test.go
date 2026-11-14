@@ -6,6 +6,8 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/hmdsefi/faultline/kernel/fault"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/hooks"
+	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -72,10 +75,10 @@ func askFromN1(s *sim.Sim, to lockstep.PID[Ping], n int, timeout time.Duration) 
 // box is a message that a test compares by identity.
 type box struct{ N int }
 
-// AT-MSG-02 (sim clause), MSG-010, MSG-030: a message sent across nodes is not copied. The
-// receiver on n2 holds the sender's pointer, its slice with the same backing array and capacity,
-// and its map.
-func TestATMSG02NoCopyAcrossNodes(t *testing.T) {
+// AT-MSG-02 (sim clause), MSG-010, MSG-030, REM-345: a message sent across nodes is encoded, so
+// the receiver on n2 gets a decoded copy: an equal value behind another pointer, a slice with the
+// same elements in another array, and a map of its own.
+func TestATMSG02DecodedCopyAcrossNodes(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []any
@@ -86,7 +89,7 @@ func TestATMSG02NoCopyAcrossNodes(t *testing.T) {
 		w.RunFor(time.Millisecond)
 
 		p := &box{N: 1}
-		sl := make([]int, 2, 4)
+		sl := append(make([]int, 0, 4), 5, 6)
 		mp := map[string]int{"a": 1}
 		store := lockstep.PIDAt[any]("n2", "/user/store")
 		for _, m := range []any{p, sl, mp} {
@@ -99,19 +102,19 @@ func TestATMSG02NoCopyAcrossNodes(t *testing.T) {
 		if len(got) != 3 {
 			tt.Fatalf("n2 received %d messages, want 3", len(got))
 		}
-		if gp, ok := got[0].(*box); !ok || gp != p {
-			tt.Errorf("received pointer %v, want the sent %p", got[0], p)
+		if gp, ok := got[0].(*box); !ok || gp == p || *gp != *p {
+			tt.Errorf("received pointer %v, want a copy of %v behind another pointer", got[0], *p)
 		}
-		if gs, ok := got[1].([]int); !ok || len(gs) != 2 || cap(gs) != 4 || &gs[0] != &sl[0] {
-			tt.Errorf("received slice %v, want the sent one: length 2, capacity 4, the same array", got[1])
+		if gs, ok := got[1].([]int); !ok || !slices.Equal(gs, sl) || &gs[0] == &sl[0] {
+			tt.Errorf("received slice %v, want a copy of %v in another array", got[1], sl)
 		}
 		gm, ok := got[2].(map[string]int)
-		if !ok {
-			tt.Fatalf("received %T, want a map", got[2])
+		if !ok || !maps.Equal(gm, mp) {
+			tt.Fatalf("received %v, want a copy of %v", got[2], mp)
 		}
 		gm["b"] = 2
-		if mp["b"] != 2 {
-			tt.Error("a write through the received map is not visible in the sender's map")
+		if _, ok := mp["b"]; ok {
+			tt.Error("a write through the received map is visible in the sender's map")
 		}
 	})
 }
@@ -223,11 +226,13 @@ func TestATMSG29CrossNodeAsk(t *testing.T) {
 				tt.Fatalf("StopActor: %v", err)
 			}
 			w.RunFor(time.Second)
-			// MSG-340 names kv by its full address, with the uid of the incarnation that stopped.
-			want := "lockstep: actor terminated: " + real.Address().String()
+			// MSG-340 names kv by its full address, with the uid of the incarnation that stopped;
+			// n2 sends the failure back as FAIL terminated, which n1 reports as a *remote.Error.
+			want := "remote: n2: lockstep: actor terminated: " + real.Address().String()
+			var re *remote.Error
 			if len(got) != 1 || got[0].v != 0 || !errors.Is(got[0].err, lockstep.ErrTerminated) ||
-				got[0].err.Error() != want {
-				tt.Fatalf("c got %+v, want 0 and an error wrapping ErrTerminated with text %q", got, want)
+				!errors.As(got[0].err, &re) || re.Code != remote.CodeTerminated || got[0].err.Error() != want {
+				tt.Fatalf("c got %+v, want 0 and a *remote.Error with code terminated and text %q", got, want)
 			}
 			if d := got[0].at; d > kernel.Time(time.Second) {
 				tt.Errorf("c got the error at %v, want soon after the stop at about 101ms, not the 5s timeout", d)
@@ -362,8 +367,11 @@ func TestATMSG34AskBlockSenderInSimulation(t *testing.T) {
 	})
 }
 
-// AT-MSG-36 (sim clause), MSG-110, MSG-350: c on n1 asks PIDAt("n2", "/user/kv"). After n2 crashes
-// and restarts and its setup respawns kv, an ask through the same PID reaches the new kv.
+// AT-MSG-36 (sim clause), MSG-110, MSG-350, REM-294: c on n1 asks PIDAt("n2", "/user/kv"). After
+// n2 crashes and restarts and its setup respawns kv, an ask through the same PID reaches the new
+// kv. The asks between are lost on n1's session to n2's old incarnation, or fail with
+// remote.ErrPeerRestarted once n1 sees the restart; c asks again, with a timeout, until one is
+// answered.
 func TestATMSG36PathAddressAcrossRestart(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -385,11 +393,19 @@ func TestATMSG36PathAddressAcrossRestart(t *testing.T) {
 		w.RunFor(100 * time.Millisecond)
 		n2.Restart()
 		w.RunFor(100 * time.Millisecond)
-		askFromN1(s, kv, 2, 0)
-		w.RunFor(100 * time.Millisecond)
+		for i := 0; i < 5 && got[len(got)-1].v != 2; i++ {
+			askFromN1(s, kv, 2, 50*time.Millisecond)
+			w.RunFor(100 * time.Millisecond)
+		}
 
-		if len(got) != 2 || got[0].v != 1 || got[0].err != nil || got[1].v != 2 || got[1].err != nil {
-			tt.Errorf("c got %+v, want the answer of boot 1, then of boot 2", got)
+		last := len(got) - 1
+		if len(got) < 2 || got[0].v != 1 || got[0].err != nil || got[last].v != 2 || got[last].err != nil {
+			tt.Fatalf("c got %+v, want the answer of boot 1, then failures, then the answer of boot 2", got)
+		}
+		for _, g := range got[1:last] {
+			if !errors.Is(g.err, lockstep.ErrTimeout) && !errors.Is(g.err, remote.ErrPeerRestarted) {
+				tt.Errorf("c got %+v between the answers, want a timeout or remote.ErrPeerRestarted", g)
+			}
 		}
 	})
 }

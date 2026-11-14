@@ -37,6 +37,19 @@ func (s *Sim) Engine(name string) engine.Engine {
 	return engine.Engine{}
 }
 
+// Transport returns the transport that the boot of the engine bundle b attached to its system:
+// the remoting core, behind the engine's checks (SIM-120).
+func (s *Sim) Transport(b engine.Engine) engine.Transport {
+	e, ok := b.Scheduler.(*simEngine)
+	if !ok {
+		panic("Transport: not a simulation engine bundle")
+	}
+	return &transport{e: e, core: e.core}
+}
+
+// Connect has the remoting core of node from's current system dial node to, as a send would.
+func (s *Sim) Connect(from, to string) error { return s.lookup(from).eng.core.Connect(to) }
+
 // CloseUnderlying closes the simdisk handle behind f, a File of a Volume, without the Volume
 // seeing it, so that f's own Close returns an error.
 func CloseUnderlying(f filestore.File) error {

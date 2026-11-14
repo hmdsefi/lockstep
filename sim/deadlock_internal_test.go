@@ -179,11 +179,12 @@ func TestSIM250CrashSettlesEachEventOnce(t *testing.T) {
 			tt.Fatalf("n1's counts before the crash %+v, want 4 asks and some activity", e.events)
 		}
 		w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: "n1"})
+		n2 := s.lookup("n2").eng // n2's own events, such as its remoting tick, are still pending
 		for _, label := range e.labels {
 			if n := e.events.byLabel[label]; n != 0 {
 				tt.Errorf("n1 still counts %d %s events after the crash", n, label)
 			}
-			if n := s.events.byLabel[label]; n != 0 {
+			if n := s.events.byLabel[label] - n2.events.byLabel[label]; n != 0 {
 				tt.Errorf("the Sim still counts %d %s events after the crash", n, label)
 			}
 		}

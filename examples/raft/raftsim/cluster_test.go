@@ -15,6 +15,7 @@ import (
 	"github.com/hmdsefi/faultline/kernel/simnet"
 
 	"github.com/hmdsefi/lockstep/examples/raft/raft"
+	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -95,7 +96,11 @@ func TestDefaultCluster(t *testing.T) {
 	if got := DefaultCluster(); !reflect.DeepEqual(got, want) {
 		t.Errorf("DefaultCluster() = %+v, want %+v", got, want)
 	}
-	if got, want := Options(7), (sim.Options{Options: faultline.Options{Seeds: 7, Duration: 20 * time.Second, BaseSeed: 1}}); !reflect.DeepEqual(got, want) {
+	wantOpts := sim.Options{
+		Options: faultline.Options{Seeds: 7, Duration: 20 * time.Second, BaseSeed: 1},
+		Remote:  remote.Config{DialTimeout: 100 * time.Millisecond, RedialMin: 10 * time.Millisecond, RedialMax: 100 * time.Millisecond},
+	}
+	if got, want := Options(7), wantOpts; !reflect.DeepEqual(got, want) {
 		t.Errorf("Options(7) = %+v, want %+v", got, want)
 	}
 }

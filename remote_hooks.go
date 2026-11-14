@@ -15,7 +15,7 @@ import (
 // requests, replies and failures, and the ask table's answers to the remoting core. The runtime
 // already hands these payloads to the transport (sendRemote, replyRemote) and applies them on
 // arrival (host.Inbound); the hooks only translate between them and hooks.RemotePayload, so a
-// payload built by NewPayload takes exactly the path of one that crossed by reference. The actor
+// payload built by NewPayload takes the path a local one would. The actor
 // side, below the message side: the payloads of remote death watch (Watch, Unwatch and
 // remoteTerminated in watch.go), the transport's attachment, path lookups without a type, the
 // watches of other nodes' actors on local ones, and the end of the watches of a node's actors.
@@ -52,11 +52,12 @@ func remotePayloadHook(p any) (hooks.RemotePayload, bool) {
 // (MSG-340) or deadRequest fails it with ErrTerminated (MSG-350); a reply attempt is applied by
 // settle (MSG-420). It panics for a RemoteAsk without an ask address and a RemoteFail without an
 // error, which the core never builds, and returns nil, which host.Inbound drops, for a kind it does
-// not cover. The watch kinds are newWatchPayload's.
+// not cover, RemoteWatch and RemoteUnwatch among them: the core registers other nodes' watches
+// with hooks.WatchFor. RemoteTerminated is newTerminatedPayload's.
 func newRemotePayloadHook(p hooks.RemotePayload) any {
 	switch p.Kind {
-	case hooks.RemoteWatch, hooks.RemoteUnwatch, hooks.RemoteTerminated:
-		return newWatchPayload(p)
+	case hooks.RemoteTerminated:
+		return newTerminatedPayload(p)
 	case hooks.RemoteMsg:
 		return userPayload{msg: p.Value}
 	case hooks.RemoteAsk:
@@ -163,16 +164,10 @@ func watchPayloadOf(p any) (hooks.RemotePayload, bool) {
 	return hooks.RemotePayload{}, false
 }
 
-// newWatchPayload is hooks.NewPayload for the watch kinds, each with its watch number. A
-// RemoteTerminated becomes the payload host.Inbound pushes to the watcher as a Terminated
-// (remoteTerminated); it panics if its Reason is not a StopReason, which the core never builds. A
-// RemoteWatch or RemoteUnwatch becomes a watchPayload, which host.Inbound applies itself
-// (inboundWatch); the core never hands one over, since it registers other nodes' watches with
-// WatchFor.
-func newWatchPayload(p hooks.RemotePayload) any {
-	if p.Kind != hooks.RemoteTerminated {
-		return watchPayload{kind: p.Kind, seq: p.Seq}
-	}
+// newTerminatedPayload is hooks.NewPayload for RemoteTerminated, with its watch number: the
+// payload host.Inbound pushes to the watcher as a Terminated (remoteTerminated). It panics if the
+// Reason is not a StopReason, which the core never builds.
+func newTerminatedPayload(p hooks.RemotePayload) any {
 	r, ok := p.Reason.(StopReason)
 	if !ok {
 		panic(fmt.Sprintf("lockstep: hooks.NewPayload: RemoteTerminated with a reason of type %T, want lockstep.StopReason", p.Reason))

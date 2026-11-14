@@ -18,6 +18,7 @@ import (
 	"github.com/hmdsefi/faultline/kernel/simdisk"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/hooks"
+	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -136,6 +137,9 @@ func atper16Sweep(t *testing.T, lat simdisk.LatencyConfig) (crashes, lost int, c
 	opts.Duration = 250 * time.Millisecond
 	opts.Disk.Crash = simdisk.CrashAny
 	opts.Disk.Latency = lat
+	// n1 crashes every 20 ms or so, and a HELLO lost to a crash would hold c's dial for the default
+	// 5 s DialTimeout: c gives up after 15 ms and dials again 5 ms later.
+	opts.Remote = remote.Config{DialTimeout: 15 * time.Millisecond, RedialMin: 5 * time.Millisecond, RedialMax: 5 * time.Millisecond}
 	sim.SimulateSeeds(t, opts, func(s *sim.Sim) {
 		w := s.World()
 		r := newCounterRun(s)
@@ -157,6 +161,14 @@ func atper16Sweep(t *testing.T, lat simdisk.LatencyConfig) (crashes, lost int, c
 				adds[i] = lockstep.Ask(s.System("c"), r.pid, addCmd(int64(1)<<i))
 			})
 		}
+		// n1, up again by then, dials c, so that c's core sees n1's latest incarnation and closes
+		// its session to an older one (REM-294) before the Get: a request on that session would be
+		// lost, and one queued for the older incarnation would fail with remote.ErrPeerRestarted.
+		w.Sim.At(w.RecoveryStart().Add(10*time.Millisecond), "test/connect", func() {
+			if err := s.Connect("n1", "c"); err != nil {
+				w.T().Errorf("Connect(n1, c): %v", err)
+			}
+		})
 		var get *lockstep.Reply[int64]
 		w.Sim.At(w.RecoveryStart().Add(20*time.Millisecond), "test/get", func() {
 			get = lockstep.Ask(s.System("c"), r.pid, getCmd)

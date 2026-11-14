@@ -299,7 +299,8 @@ func TestSequenceRule(t *testing.T) {
 }
 
 // TestSequenceRuleLast checks that a frame numbered math.MaxUint64 is the last one a session
-// takes: any data frame after it closes the session with CLOSE protocol.
+// takes: any data frame after it closes the session with CLOSE protocol, and the protocol error
+// goes to the Failer (REM-340).
 func TestSequenceRuleLast(t *testing.T) {
 	h := newRecvHarness(t)
 	h.msg(math.MaxUint64, aY.String(), ping{1})
@@ -309,7 +310,42 @@ func TestSequenceRuleLast(t *testing.T) {
 		"down peer=b conn=3 dir=in reason=protocol",
 	})
 	same(t, "frames", h.in.kinds(), []string{"WELCOME", "CLOSE protocol"})
-	same(t, "host", h.takeEvents(), []string{"inbound 1 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#2 {1}"})
+	same(t, "host", h.takeEvents(), []string{
+		"inbound 1 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#2 {1}",
+		`fail lockstep: remote: a: protocol error on incoming conn 3 from "b": remoting: protocol error: seq: MSG frame after sequence number 18446744073709551615, the last`,
+	})
+}
+
+// TestProtocolErrorFails checks REM-340: a first frame answered with REJECT version, kind or
+// payload goes to the Failer after the REJECT; REJECT self, wrong-node and codec, which a
+// well-formed HELLO gets, do not.
+func TestProtocolErrorFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+		want  []string
+	}{
+		{"kind", AppendFrame(nil, &Frame{Kind: KindPing}), []string{
+			`fail lockstep: remote: a: protocol error on incoming conn 7 from "": remoting: protocol error: kind: PING frame before HELLO`,
+		}},
+		{"version", func() []byte {
+			b := hello("b", "a", 1, "json", "")
+			b[4] = 9
+			return b
+		}(), []string{
+			`fail lockstep: remote: a: protocol error on incoming conn 7 from "": remoting: protocol error: version: version 9 is not 1`,
+		}},
+		{"codec", hello("b", "a", 1, "protobuf", ""), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRecvHarness(t)
+			h.takeEvents()
+			l := &fakeLink{t: t, id: 7}
+			h.core.Accepted(l)
+			h.core.Frame(l, tc.frame)
+			same(t, "host", h.takeEvents(), tc.want)
+		})
+	}
 }
 
 // TestMisrouted checks REM-210 and REM-220: a recipient on another node, or one that is not an

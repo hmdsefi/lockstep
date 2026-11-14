@@ -19,10 +19,8 @@ type host struct{ sys *System }
 // requests never arrive inbound. It is a dead letter with reason not-found, is not tracked, and
 // fails no ask of this system. A reply attempt is
 // applied to the system's table (MSG-410, MSG-420). A RemoteTerminated reaches the watcher once,
-// unless the watch it names by number ended first (remoteTerminated: REM-282, ACT-630). A
-// RemoteWatch or RemoteUnwatch, which only a transport that passes runtime payloads by reference
-// hands over (the remoting core registers watches with hooks.WatchFor), is applied as the core
-// applies WATCH and UNWATCH (inboundWatch). Any other payload is dropped.
+// unless the watch it names by number ended first (remoteTerminated: REM-282, ACT-630). Any other
+// payload is dropped: the remoting core registers other nodes' watches with hooks.WatchFor.
 func (h host) Inbound(env engine.Envelope) {
 	switch p := env.Payload.(type) {
 	case userPayload:
@@ -48,7 +46,5 @@ func (h host) Inbound(env engine.Envelope) {
 		h.sys.settle(addressOf(env.To), resolution{how: byReply, from: addressOf(env.From), v: p.v, err: p.err})
 	case terminatedPayload:
 		h.sys.remoteTerminated(addressOf(env.To), addressOf(env.From), p.reason, p.seq)
-	case watchPayload:
-		h.sys.inboundWatch(addressOf(env.From), addressOf(env.To), p)
 	}
 }

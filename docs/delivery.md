@@ -301,9 +301,9 @@ FAIL
 ```
 
 The trace in the artifacts directory shows what happened, in virtual time. The first Create
-reaches Orders at 38.5 ms, with sequence number 1, and Orders starts a charge. The charge takes
-171 ms. Checkout's ask times out at 136.4 ms, and Checkout asks again. The second Create arrives
-at 138.5 ms with sequence number 2, in send order, and Orders starts a second charge. Both
+reaches Orders at 50.0 ms, with sequence number 1, and Orders starts a charge. The charge takes
+171 ms. Checkout's ask times out at 143.8 ms, and Checkout asks again. The second Create arrives
+at 148.0 ms with sequence number 2, in send order, and Orders starts a second charge. Both
 charges succeed.
 
 To replay it, keep `ORDERS_BUG` set and add the seed from the `replay` line:
@@ -315,7 +315,7 @@ ORDERS_BUG=no-dedup FAULTLINE_SEED=0x56247cd01be260d5 go test -v -run '^TestRetr
 ### A Cancel lost before its Create
 
 `TestCancelBeforeCreate` submits order `o1` to Checkout and, 20 ms later, sends a Cancel straight
-to Orders. With tombstones turned off, the second seed fails:
+to Orders. With tombstones turned off, the first seed fails:
 
 ```sh
 ORDERS_BUG=drop-early-cancel go test -run '^TestCancelBeforeCreate$' .
@@ -324,23 +324,24 @@ ORDERS_BUG=drop-early-cancel go test -run '^TestCancelBeforeCreate$' .
 ```text
 --- FAIL: TestCancelBeforeCreate (0.01s)
     sim_test.go:48: faultline: running 200 seeds from base 0x2a6be864d313f470 (test name)
-    --- FAIL: TestCancelBeforeCreate/seed=0x144668b471a38445 (0.01s)
+    --- FAIL: TestCancelBeforeCreate/seed=0x3d470289e0ec6675 (0.01s)
         faultline: final check "a cancelled order ends up not charged" failed after the run at t=2.000000000s
           order o1 was cancelled but is still charged: charges=1 refunds=0
-        replay:    FAULTLINE_SEED=0x144668b471a38445 go test -v -run '^TestCancelBeforeCreate$' github.com/hmdsefi/lockstep/examples/orders
-        artifacts: $TMPDIR/faultline-501/github.com_hmdsefi_lockstep_examples_orders/TestCancelBeforeCreate/144668b471a38445/
-    sim_test.go:48: faultline: stopping after failing seed 0x144668b471a38445; 198 of 200 seeds not run (set Options.KeepGoing to run all)
+        replay:    FAULTLINE_SEED=0x3d470289e0ec6675 go test -v -run '^TestCancelBeforeCreate$' github.com/hmdsefi/lockstep/examples/orders
+        artifacts: $TMPDIR/faultline-501/github.com_hmdsefi_lockstep_examples_orders/TestCancelBeforeCreate/3d470289e0ec6675/
+    sim_test.go:48: faultline: stopping after failing seed 0x3d470289e0ec6675; 199 of 200 seeds not run (set Options.KeepGoing to run all)
 FAIL
 FAIL	github.com/hmdsefi/lockstep/examples/orders	0.308s
 FAIL
 ```
 
-On this seed the fraud check runs from 13.7 ms to 49.5 ms. The shopper's Cancel reaches Orders at
-31.5 ms, while the check still runs. The Create reaches Orders at 54.3 ms. Both messages carry
-sequence number 1, because each is the first message of its own pair. Orders had not seen `o1`
-when the Cancel came, so it dropped the Cancel and then charged the order. The ask also timed out
-on this seed. The retry reached Orders at 152.4 ms, while the charge was still in flight, found
-the order's record, and waited for that charge instead of starting another.
+On this seed the fraud check runs from 20.4 ms to 33.8 ms. The shopper's Cancel reaches Orders at
+40.4 ms, and the Create, sent when the check ended, reaches Orders at 44.1 ms. Both messages carry
+sequence number 1, because each is the first message Orders receives from its sender's node.
+Orders had not seen `o1` when the Cancel came, so it dropped the Cancel and then charged the
+order. The ask also timed out on this seed. The retry reached Orders at 138.7 ms, while the charge
+was still in flight, found the order's record, and waited for that charge instead of starting
+another.
 
 ### Pin the seeds
 

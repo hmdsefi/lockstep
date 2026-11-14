@@ -93,8 +93,10 @@ type Config struct {
 	// Tracer receives the core's records. Nil, or a tracer that is not enabled, means none.
 	Tracer engine.Tracer
 	// Failer receives the frames the core could not apply as they were: one that does not decode,
-	// a value its recipient does not take, and a reply whose answer could not be sent. The
-	// simulation fails the seed with them; production ignores them. Nil means none.
+	// a value its recipient does not take, a reply whose answer could not be sent, and one that
+	// breaks the protocol (the session closes with CLOSE protocol, or a first frame is answered
+	// with REJECT version, kind or payload). The simulation fails the seed with them; production
+	// ignores them. Nil means none.
 	Failer engine.Failer
 	// Log receives the core's warnings. Nil means none.
 	Log *slog.Logger

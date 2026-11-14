@@ -68,6 +68,12 @@ func (c *Core) acceptHello(s *session, b []byte) {
 		c.write(s, &Frame{Kind: KindReject, Payload: []byte(reason)})
 		c.recordReject(s, reason)
 		c.down(s, DownRejected)
+		if err != nil || reason == RejectKind {
+			if err == nil {
+				err = &ProtocolError{Field: FieldKind, Kind: f.Kind, Detail: f.Kind.String() + " frame before HELLO"}
+			}
+			c.failProtocol(s, err)
+		}
 		return
 	}
 

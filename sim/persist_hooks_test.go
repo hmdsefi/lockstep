@@ -278,8 +278,9 @@ func TestHooksSignal(t *testing.T) {
 			tt.Error("hooks.Signal to an address with no actor reported true")
 		}
 		w.RunFor(time.Second)
-		if recs := w.Sim.Records(); len(recs) != before {
-			tt.Errorf("hooks.Signal to no live actor added records %v", recs[before:])
+		// The system's remoting core ticks once a second; nothing else may happen.
+		if recs := withoutTicks(w.Sim.Records()[before:], ticksOf(w.Sim.Lookup("n1").ID(), sys.Incarnation())); len(recs) != 0 {
+			tt.Errorf("hooks.Signal to no live actor added records %v", recs)
 		}
 		if want := []string{"/user/first", "/user/second", "/user/x"}; !slices.Equal(sigs, want) {
 			tt.Fatalf("the watcher's Signal got %q afterwards, want %q", sigs, want)

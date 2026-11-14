@@ -21,7 +21,7 @@ import (
 // The seeds on which the planted bugs fail first. TestPlantedBugs checks that they still do.
 const (
 	retrySeed       = 0x56247cd01be260d5 // the first seed of TestRetry that fails with BugNoDedup
-	earlyCancelSeed = 0x144668b471a38445 // the first seed of TestCancelBeforeCreate that fails with BugDropEarlyCancel
+	earlyCancelSeed = 0x3d470289e0ec6675 // the first seed of TestCancelBeforeCreate that fails with BugDropEarlyCancel
 )
 
 // The final checks every scenario registers.

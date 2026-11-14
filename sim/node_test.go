@@ -16,6 +16,7 @@ import (
 	"github.com/hmdsefi/faultline/kernel/simnet"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/overload"
+	"github.com/hmdsefi/lockstep/internal/remoting"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -244,8 +245,8 @@ func TestSIM070BootBundle(t *testing.T) {
 			if _, ok := e.Admission.(*overload.Gate); !ok {
 				tt.Errorf("boot %d: Admission is %T, want *overload.Gate", i+1, e.Admission)
 			}
-			if e.Transport == nil {
-				tt.Errorf("boot %d: Transport nil, want the simnet transport", i+1)
+			if e.Transport != nil {
+				tt.Errorf("boot %d: Transport %T, want nil: the boot attaches a remoting core (SIM-165)", i+1, e.Transport)
 			}
 			if e.Interposer == nil {
 				tt.Errorf("boot %d: Interposer nil, want the engine's, which applies pair rules (SFT-070)", i+1)
@@ -256,6 +257,12 @@ func TestSIM070BootBundle(t *testing.T) {
 		}
 		if first.Admission == second.Admission {
 			tt.Error("the restart reused the first boot's admission gate")
+		}
+		// SIM-165, REM-335: each boot's system has its own remoting core; the crash discarded the
+		// first one.
+		if remoting.CoreOf(setups[0]) != nil || remoting.CoreOf(setups[1]) == nil {
+			tt.Errorf("remoting cores of the boots: %p and %p, want none for the crashed one and one for the second",
+				remoting.CoreOf(setups[0]), remoting.CoreOf(setups[1]))
 		}
 	})
 }

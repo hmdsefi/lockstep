@@ -7,6 +7,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/hmdsefi/lockstep/sim"
 )
 
-// AT-SIM-08, SIM-140, SIM-160: a send from a paused node leaves the node once it resumes, from a
+// AT-SIM-08, SIM-140, REM-310: a send from a paused node leaves the node once it resumes, from a
 // node event labeled lockstep/send, and reaches the other node after that.
 func TestATSIM08PausedSender(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
@@ -39,21 +40,20 @@ func TestATSIM08PausedSender(t *testing.T) {
 		n1.Resume()
 		w.RunFor(time.Second)
 
+		// The send dials n2: the HELLO, written while n1 was paused, is the first datagram, and
+		// leaves from a lockstep/send event once n1 resumes; the message follows the handshake.
 		resumed := start.Add(2 * time.Second)
 		recs := w.Sim.Records()
-		i := slices.IndexFunc(recs, func(r kernel.Record) bool { return r.Kind == "net.send" })
+		i := slices.IndexFunc(recs, func(r kernel.Record) bool { return r.Kind == "net.send_raw" })
 		if i < 0 {
-			tt.Fatal("no net.send record")
+			tt.Fatal("no net.send_raw record")
 		}
-		if n := len(ofKind(recs, "net.send")); n != 1 {
-			tt.Errorf("%d net.send records, want 1", n)
-		}
-		if recs[i].Node != n1.ID() || recs[i].At != resumed {
-			tt.Errorf("net.send on node %d at %v, want node %d at %v", recs[i].Node, recs[i].At, n1.ID(), resumed)
+		if recs[i].Node != n1.ID() || recs[i].At != resumed || !strings.Contains(attr(recs[i], "payload"), " HELLO ") {
+			tt.Errorf("first net.send_raw %q on node %d at %v, want the HELLO on node %d at %v", recs[i].Text, recs[i].Node, recs[i].At, n1.ID(), resumed)
 		}
 		last := lastOfKind(recs[:i], "kernel.event")
 		if last == nil || last.Text != "lockstep/send" || last.Node != n1.ID() || last.At != resumed {
-			tt.Errorf("the last kernel.event before net.send is %+v, want lockstep/send on n1 at %v", last, resumed)
+			tt.Errorf("the last kernel.event before net.send_raw is %+v, want lockstep/send on n1 at %v", last, resumed)
 		}
 		if len(got) != 1 || got[0] <= resumed {
 			tt.Errorf("r received at %v, want once after %v", got, resumed)
@@ -69,9 +69,9 @@ func receiver(got *[]int) func(sys *lockstep.System) {
 	}
 }
 
-// SIM-140, SIM-160, ENG-080: envelopes from a paused node leave in Deliver order, and one
-// delivered after the node resumes, while earlier ones still wait for their lockstep/send events,
-// queues behind them: on FIFO links every envelope arrives, in order, with no stale drop.
+// SIM-140, REM-310, ENG-080: the datagrams of a paused node leave in the order they were written,
+// and one written after the node resumes, while earlier ones still wait for their lockstep/send
+// events, queues behind them: every envelope arrives, in order, with no gap.
 func TestSIM140DeferredSendsKeepOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -103,8 +103,8 @@ func TestSIM140DeferredSendsKeepOrder(t *testing.T) {
 				if want := numbers(1, tc.paused+tc.after); !slices.Equal(got, want) {
 					tt.Errorf("r got %v, want %v", got, want)
 				}
-				if n := len(staleDrops(w.Sim.Records(), n2)); n != 0 {
-					tt.Errorf("%d stale-seq drops, want 0", n)
+				if n := len(recordsOn(w.Sim.Records(), "lockstep.remote.gap", n2.ID())); n != 0 {
+					tt.Errorf("%d lockstep.remote.gap records on n2, want 0", n)
 				}
 			})
 		})
@@ -171,11 +171,13 @@ type Num struct{ N int }
 // turn.
 type burst struct{ From, N int }
 
-// AT-SIM-10, SIM-160, SIM-170: on FIFO links the messages of one pair arrive in send order, each
-// numbered with its position. On a jittered link that reorders, the receiver still sees
-// increasing numbers: a copy that arrives after a later one is dropped as stale.
+// AT-SIM-10, REM-160, REM-320: on FIFO links the messages of one pair arrive in send order, each
+// numbered with its position among the envelopes from the sender's incarnation. On a jittered link
+// that would reorder, remoting still sends its datagrams in FIFO order, so the messages arrive in
+// order, without a gap. Across the seeds, the jittered link drew delays that would have reordered
+// some datagrams.
 func TestATSIM10PerPairOrder(t *testing.T) {
-	staleSeeds := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
+	heldBack := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
 	sim.SimulateSeeds(t, fullTrace(0), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []int
@@ -209,43 +211,31 @@ func TestATSIM10PerPairOrder(t *testing.T) {
 		if seqs := delivered(w.Sim.Records(), n2); !slices.Equal(seqs, want) {
 			tt.Errorf("FIFO links: lockstep.deliver seq on n2 %v, want 1..100", seqs)
 		}
-		if n := len(staleDrops(w.Sim.Records(), n2)); n != 0 {
-			tt.Errorf("FIFO links: %d stale-seq drops, want 0", n)
-		}
-
 		w.Net.SetLink(n1.ID(), n2.ID(), simnet.Link{Jitter: 50 * time.Millisecond})
+		jittered := len(w.Sim.Records())
 		got = nil
 		if err := sim.Send(s, "n1", sender, burst{From: 101, N: 100}); err != nil {
 			tt.Fatalf("Send: %v", err)
 		}
 		w.RunFor(time.Second)
-		for i := 1; i < len(got); i++ {
-			if got[i] <= got[i-1] {
-				tt.Errorf("jittered link: r got %v, want strictly increasing numbers", got)
-				break
-			}
+		if !slices.Equal(got, numbers(101, 200)) {
+			tt.Errorf("jittered link: r got %v, want 101..200 in order", got)
 		}
-		drops := staleDrops(w.Sim.Records(), n2)
-		if len(drops)+len(got) != 100 {
-			tt.Errorf("jittered link: %d stale-seq drops and %d delivered, want 100 in all", len(drops), len(got))
+		for n := 101; n <= 200; n++ {
+			want = append(want, strconv.Itoa(n))
 		}
-		for _, d := range drops {
-			if keys := attrKeys(d); !slices.Equal(keys, []string{"to", "reason", "from", "seq", "msg"}) {
-				tt.Errorf("stale-seq drop attributes %v, want to, reason, from, seq, msg", keys)
-			}
-			if d.Text != "drop to "+r.String() || attr(d, "to") != r.String() || attr(d, "from") != sender.String() {
-				tt.Errorf("stale-seq drop %q to %q from %q, want to %s from %s", d.Text, attr(d, "to"), attr(d, "from"), r, sender)
-			}
-			if n, err := strconv.Atoi(attr(d, "seq")); err != nil || n < 101 || n > 200 {
-				tt.Errorf("stale-seq drop seq %q, want 101..200", attr(d, "seq"))
-			}
+		if seqs := delivered(w.Sim.Records(), n2); !slices.Equal(seqs, want) {
+			tt.Errorf("lockstep.deliver seq on n2 %v, want 1..200", seqs)
 		}
-		if len(drops) > 0 {
-			staleSeeds[w.Seed()] = true
+		if n := len(ofKind(w.Sim.Records(), "lockstep.remote.gap")); n != 0 {
+			tt.Errorf("%d lockstep.remote.gap records, want 0", n)
+		}
+		if heldBackByFIFO(w.Sim.Records()[jittered:], "n1", "n2") > 0 {
+			heldBack[w.Seed()] = true
 		}
 	}, 1, 2, 3, 4, 5)
-	if len(staleSeeds) == 0 {
-		t.Error("no seed of five recorded a stale-seq drop on the jittered link")
+	if len(heldBack) == 0 {
+		t.Error("no seed of five drew a delay that would have reordered the jittered link")
 	}
 }
 
@@ -256,17 +246,6 @@ func numbers(from, to int) []int {
 		ns = append(ns, n)
 	}
 	return ns
-}
-
-// staleDrops returns the lockstep.drop records with reason stale-seq on node n, in order.
-func staleDrops(recs []kernel.Record, n *kernel.Node) []kernel.Record {
-	var out []kernel.Record
-	for _, r := range ofKind(recs, "lockstep.drop") {
-		if r.Node == n.ID() && attr(r, "reason") == "stale-seq" {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // delivered returns the seq attributes of the lockstep.deliver records on node n, in order.
@@ -291,9 +270,9 @@ func sendAll() *actor[[]lockstep.PID[Num]] {
 	}}
 }
 
-// SIM-160, ENG-080: each engine numbers its envelopes per destination node, so the sends of one
-// sender to two nodes, interleaved, are numbered 1, 2, 3 at each of them.
-func TestSIM160SeqPerDestination(t *testing.T) {
+// REM-160, ENG-080: each node numbers the envelopes it receives per sending node, so the sends of
+// one sender to two nodes, interleaved, are numbered 1, 2, 3 at each of them.
+func TestREM160SeqPerDestination(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var sender lockstep.PID[[]lockstep.PID[Num]]
@@ -315,9 +294,9 @@ func TestSIM160SeqPerDestination(t *testing.T) {
 	})
 }
 
-// SIM-170: the stream key holds the sender's incarnation, so after the sender restarts, its new
-// system's envelopes, numbered from 1 again, are delivered rather than dropped as stale.
-func TestSIM170StreamPerIncarnation(t *testing.T) {
+// REM-160, REM-294: the receiver numbers envelopes per incarnation of the sender, so after the
+// sender restarts, its new system's envelopes are numbered from 1 again and delivered.
+func TestREM160SeqPerIncarnation(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var sender lockstep.PID[[]lockstep.PID[Num]]
@@ -340,14 +319,11 @@ func TestSIM170StreamPerIncarnation(t *testing.T) {
 		if got := delivered(recs, n2); !slices.Equal(got, []string{"1", "2", "3", "1", "2", "3"}) {
 			tt.Errorf("lockstep.deliver seq on n2 %v, want 1, 2, 3 from each incarnation of n1", got)
 		}
-		if n := len(staleDrops(recs, n2)); n != 0 {
-			tt.Errorf("%d stale-seq drops, want 0", n)
-		}
 	})
 }
 
-// AT-SIM-11, SIM-160: a send to a node that is not a lockstep node returns nil and is dropped
-// with a lockstep.drop record, without a network send.
+// AT-SIM-11, REM-135: a send to a node the world does not have returns nil and is a dead letter
+// with reason unknown-node, without a network send.
 func TestATSIM11UnknownNode(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -368,26 +344,25 @@ func TestATSIM11UnknownNode(t *testing.T) {
 			tt.Fatalf("Send ran %t and returned %v, want nil", sent, sendErr)
 		}
 		recs := w.Sim.Records()
-		var drops []kernel.Record
-		for _, r := range ofKind(recs, "lockstep.drop") {
+		var dead []kernel.Record
+		for _, r := range ofKind(recs, "lockstep.deadletter") {
 			if attr(r, "reason") == "unknown-node" {
-				drops = append(drops, r)
+				dead = append(dead, r)
 			}
 		}
-		if len(drops) != 1 {
-			tt.Fatalf("%d unknown-node drops, want 1", len(drops))
+		if len(dead) != 1 {
+			tt.Fatalf("%d unknown-node dead letters, want 1", len(dead))
 		}
-		d := drops[0]
-		if keys := attrKeys(d); !slices.Equal(keys, []string{"to", "reason", "from", "msg"}) {
-			tt.Errorf("drop attributes %v, want to, reason, from, msg", keys)
+		d := dead[0]
+		if keys := attrKeys(d); !slices.Equal(keys, []string{"from", "to", "reason", "msg"}) {
+			tt.Errorf("dead letter attributes %v, want from, to, reason, msg", keys)
 		}
-		if d.Node != n1.ID() || d.Text != "drop to "+to.String() || attr(d, "to") != to.String() ||
-			attr(d, "from") != from || attr(d, "msg") == "" {
-			tt.Errorf("drop on node %d %q to %q from %q msg %q, want node %d, to %s, from %s and a msg",
-				d.Node, d.Text, attr(d, "to"), attr(d, "from"), attr(d, "msg"), n1.ID(), to, from)
+		if d.Node != n1.ID() || attr(d, "to") != to.String() || attr(d, "from") != from || attr(d, "msg") == "" {
+			tt.Errorf("dead letter on node %d to %q from %q msg %q, want node %d, to %s, from %s and a msg",
+				d.Node, attr(d, "to"), attr(d, "from"), attr(d, "msg"), n1.ID(), to, from)
 		}
-		if n := len(ofKind(recs, "net.send")); n != 0 {
-			tt.Errorf("%d net.send records, want 0", n)
+		if n := len(ofKind(recs, "net.send_raw")) + len(ofKind(recs, "net.send")); n != 0 {
+			tt.Errorf("%d network sends, want 0", n)
 		}
 	})
 }

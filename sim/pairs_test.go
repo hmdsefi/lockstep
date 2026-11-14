@@ -104,11 +104,13 @@ func withAttr(recs []kernel.Record, key, value string) []kernel.Record {
 	return out
 }
 
-// SFT-020, AT-SFT-02: a link fault without FIFO makes the link unordered while it lasts, and
-// link-reset restores FIFO; sim re-applies nothing. B receives a strictly increasing subsequence,
-// every message sent once the link is FIFO again arrives, and each missing one is a stale-seq drop.
+// SFT-020, AT-SFT-02, REM-320: a link fault without FIFO makes the link unordered while it lasts,
+// and link-reset restores FIFO; sim re-applies nothing. Remoting sends every datagram in FIFO
+// order on its link whatever the link's setting, so B receives every message, in order, and the
+// core records no gap. Across the seeds, the link drew delays in the window that would have
+// reordered some datagrams.
 func TestATSFT02UnorderedLinkWindow(t *testing.T) {
-	staleSeeds := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
+	heldBack := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
 	sim.SimulateSeeds(t, fullTrace(0), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []arrival
@@ -121,10 +123,8 @@ func TestATSFT02UnorderedLinkWindow(t *testing.T) {
 		w.RunFor(time.Millisecond)
 
 		const total = 500 // one every 5ms, 200 of them inside the window
-		sentAt := make([]kernel.Time, total+1)
 		for n := 1; n <= total; n++ {
 			now := w.Sim.Now()
-			sentAt[n] = now
 			wantFIFO := now < kernel.Time(time.Second) || now >= kernel.Time(2*time.Second)
 			if fifo := w.Net.Link(n1.ID(), n2.ID()).FIFO; fifo != wantFIFO {
 				tt.Fatalf("at %v the link n1->n2 has FIFO %v, want %v", now, fifo, wantFIFO)
@@ -136,27 +136,21 @@ func TestATSFT02UnorderedLinkWindow(t *testing.T) {
 		}
 		w.RunFor(time.Second)
 
-		gotN := ns(got)
-		for i := 1; i < len(gotN); i++ {
-			if gotN[i] <= gotN[i-1] {
-				tt.Fatalf("B got %v, want a strictly increasing subsequence", gotN)
-			}
+		if gotN := ns(got); !slices.Equal(gotN, numbers(1, total)) {
+			tt.Errorf("B got %d messages %v..., want 1..%d in order", len(gotN), gotN[:min(len(gotN), 10)], total)
 		}
-		for n := 1; n <= total; n++ {
-			if sentAt[n] >= kernel.Time(2*time.Second) && !slices.Contains(gotN, n) {
-				tt.Errorf("message %d, sent at %v after the link was reset, did not arrive", n, sentAt[n])
-			}
+		if n := len(ofKind(w.Sim.Records(), "lockstep.remote.gap")); n != 0 {
+			tt.Errorf("%d lockstep.remote.gap records, want 0", n)
 		}
-		drops := staleDrops(w.Sim.Records(), n2)
-		if len(drops)+len(got) != total {
-			tt.Errorf("%d stale-seq drops and %d arrivals, want %d in all", len(drops), len(got), total)
-		}
-		if len(drops) > 0 {
-			staleSeeds[w.Seed()] = true
+		window := slices.DeleteFunc(slices.Clone(w.Sim.Records()), func(r kernel.Record) bool {
+			return r.At < kernel.Time(time.Second) || r.At >= kernel.Time(2*time.Second)
+		})
+		if heldBackByFIFO(window, "n1", "n2") > 0 {
+			heldBack[w.Seed()] = true
 		}
 	}, 1, 2, 3, 4, 5)
-	if len(staleSeeds) == 0 {
-		t.Error("no seed of five recorded a stale-seq drop in the unordered window")
+	if len(heldBack) == 0 {
+		t.Error("no seed of five drew a delay in the window that would have reordered the link")
 	}
 }
 
@@ -207,8 +201,8 @@ func TestATSFT07DropBetween(t *testing.T) {
 		if !slices.Equal(msgs, wantDropped) {
 			tt.Errorf("%d injected drops, want %d, one for each message the stream drops, in order", len(msgs), len(wantDropped))
 		}
-		if n := len(withAttr(ofKind(w.Sim.Records(), "lockstep.drop"), "reason", "stale-seq")); n != 0 {
-			tt.Errorf("%d stale-seq drops, want 0", n)
+		if n := len(ofKind(w.Sim.Records(), "lockstep.remote.gap")); n != 0 {
+			tt.Errorf("%d lockstep.remote.gap records, want 0", n)
 		}
 	})
 }
@@ -346,6 +340,7 @@ func TestATSFT10CrashDiscardsHeld(t *testing.T) {
 				n2 := s.Node("n2", func(sys *lockstep.System) { b = spawn(sys, "b", timedReceiver(w, &got)) })
 				s.DelayBetween(pidA().Address(), pidB("n2").Address(), 50*time.Millisecond, 50*time.Millisecond)
 				w.RunFor(time.Millisecond)
+				connect(s, 20*time.Millisecond, "n1", "n2")
 				if err := sim.Send(s, "n1", pidA(), burst{From: 1, N: 2}); err != nil {
 					tt.Fatalf("Send: %v", err)
 				}
@@ -357,7 +352,9 @@ func TestATSFT10CrashDiscardsHeld(t *testing.T) {
 				n2.Crash()
 				w.RunFor(tc.restart - 10*time.Millisecond)
 				n2.Restart()
-				w.RunFor(5 * time.Millisecond)
+				// The new n2 dials n1, whose core then closes its session to the old n2 (REM-294),
+				// so message 3 goes out on a new session rather than being lost on the old one.
+				connect(s, 15*time.Millisecond, "n2", "n1")
 				if b == oldB {
 					tt.Fatalf("B's new incarnation has the old PID %s", b)
 				}
@@ -625,6 +622,7 @@ func TestSFT090PausedThenCrashedReceiver(t *testing.T) {
 		n2 := s.Node("n2", func(sys *lockstep.System) { b = spawn(sys, "b", timedReceiver(w, &got)) })
 		s.DelayBetween(pidA().Address(), pidB("n2").Address(), 50*time.Millisecond, 50*time.Millisecond)
 		w.RunFor(time.Millisecond)
+		connect(s, 20*time.Millisecond, "n1", "n2")
 		if err := sim.Send(s, "n1", pidA(), burst{From: 1, N: 1}); err != nil {
 			tt.Fatalf("Send 1: %v", err)
 		}
@@ -633,7 +631,8 @@ func TestSFT090PausedThenCrashedReceiver(t *testing.T) {
 		w.RunFor(100 * time.Millisecond) // past the release time: the release is posted to the node
 		n2.Crash()
 		n2.Restart()
-		w.RunFor(5 * time.Millisecond)
+		// The new n2 dials n1, whose core then closes its session to the old n2 (REM-294).
+		connect(s, 15*time.Millisecond, "n2", "n1")
 		sentAt := w.Sim.Now()
 		if err := sim.Send(s, "n1", pidA(), burst{From: 2, N: 1}); err != nil {
 			tt.Fatalf("Send 2: %v", err)

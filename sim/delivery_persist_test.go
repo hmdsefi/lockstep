@@ -156,7 +156,7 @@ func runDlvLedger(s *sim.Sim, cache *dedup.Config, snapshots bool) *dlvLedgerRun
 	w.Sim.At(now.Add(time.Millisecond), "test/crash", srv.Crash)
 	w.Sim.At(now.Add(2*time.Millisecond), "test/restart", srv.Restart)
 	w.RunFor(10 * time.Millisecond)
-	r.v2, r.err2 = sim.Ask(s, "cli", to, deposit)
+	r.v2, r.err2 = askRetry(s, "cli", to, deposit) // the first tries meet srv's restart (REM-294)
 	return r
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/hooks"
+	"github.com/hmdsefi/lockstep/internal/remoting"
 )
 
 // Sim is the lockstep view of one simulated world. Call its methods on the simulation
@@ -20,6 +21,7 @@ type Sim struct {
 	ended  bool
 	system []lockstep.Option // Options.System, applied at every boot (SIM-070)
 	budget Budget            // Options.Budget, for every node system (SFT-140)
+	remote remoting.Settings // Options.Remote, the protocol settings of every node's core (REM-300)
 
 	// slots holds the first failure stored for each named check, indexed like checkNames.
 	slots [len(checkNames)]error
@@ -157,15 +159,53 @@ func (s *Sim) boot(ln *node, n *kernel.Node) {
 		panic(fmt.Sprintf("lockstep: sim: hooks.NewSystem returned a %T", b.System)) // unreachable (ENG-200)
 	}
 
-	// Install the node's simnet handler (SIM-170).
-	e.host = b.Host
+	// The system's transport is a remoting core over datagrams (SIM-165), registered for the
+	// system so that package remote finds it; it shuts down with the system, before the engine
+	// stops, and a crash discards it (crashed). Then install the node's simnet handler.
+	s.attachCore(e, sys)
 	s.w.Net.Handle(n, e.arrive)
 
-	// Apply the node's pressure state to e's admission gate (SFT-125).
+	// Apply the node's pressure state to e's admission gate (SFT-125), then start the core.
 	ln.bootPressure(e)
+	e.core.Start()
 
 	ln.sys = sys
 	ln.setup(sys)
+}
+
+// attachCore makes a new remoting core the transport of sys, the system of e's boot, and
+// registers it for sys. The steps cannot fail on a system that was just built, with settings that
+// Simulate validated.
+func (s *Sim) attachCore(e *simEngine, sys *lockstep.System) {
+	tr := &transport{e: e}
+	att, err := hooks.AttachTransport(sys, tr, func() { tr.core.Shutdown() })
+	if err != nil {
+		panic(fmt.Sprintf("lockstep: sim: hooks.AttachTransport: %v", err)) // unreachable
+	}
+	d := &driver{e: e}
+	core, err := remoting.New(remoting.Config{
+		Node:        att.Node,
+		Incarnation: att.Incarnation,
+		Clock:       att.Clock,
+		Entropy:     att.Entropy,
+		Tracer:      att.Tracer,
+		Failer:      att.Failer,
+		Log:         att.Log,
+		Host:        att.Host,
+		System:      sys,
+		Driver:      d,
+		Errors:      errorsOf{},
+		DeadLetter:  att.DeadLetter,
+		Settings:    s.remote,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("lockstep: sim: %v", err)) // unreachable: Simulate validated the settings
+	}
+	if !remoting.Register(core) {
+		panic("lockstep: sim: the system of a new boot has a remoting core") // unreachable
+	}
+	tr.core, d.core = core, core
+	e.core, e.driver = core, d
 }
 
 // crashed is the crash hook of s, registered once per run with w.Sim.OnCrash (SIM-110). The
@@ -187,6 +227,7 @@ func (s *Sim) crashed(n *kernel.Node) {
 		ln.eng.kill()
 	}
 	if ln.sys != nil {
+		remoting.Unregister(ln.sys) // the core goes with the system, silently (REM-335)
 		hooks.Discard(ln.sys)
 		ln.sys = nil
 	}

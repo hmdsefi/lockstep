@@ -305,9 +305,9 @@ func crossNode(s *sim.Sim, setupR func(sys *lockstep.System), sendErrs *[]error)
 	return n1, n2, lockstep.PIDAt[seqGo]("n1", "/user/s")
 }
 
-// AT-MBX-15, MBX-115: a sender on n1 keeps its order to a receiver on n2, with FIFO links in
-// every seed; on a link with jitter and duplicates, the receiver sees a strictly increasing
-// subsequence and no repeated delivery.
+// AT-MBX-15, MBX-115, REM-320: a sender on n1 keeps its order to a receiver on n2, with FIFO links
+// in every seed; on a link with jitter and duplicates, remoting still sends each datagram once and
+// in FIFO order, so the receiver sees every number, in order, and no repeated delivery.
 func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 	t.Run("fifo links", func(t *testing.T) {
 		sim.Simulate(t, simOpts(20), func(s *sim.Sim) {
@@ -342,7 +342,7 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 	})
 
 	t.Run("jitter and duplicates", func(t *testing.T) {
-		stale := make(map[uint64]int) // seed -> stale-seq drops of late or duplicate envelopes
+		heldBack := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
 		sim.Simulate(t, simOpts(20), func(s *sim.Sim) {
 			var got []int
 			var sendErrs []error
@@ -363,14 +363,12 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 			if len(sendErrs) != 0 {
 				tt.Errorf("Send returned %v, want nil every time", sendErrs)
 			}
-			if len(got) == 0 {
-				tt.Errorf("receiver observed no number")
+			want := make([]int, 400)
+			for i := range want {
+				want[i] = i + 1
 			}
-			for i := 1; i < len(got); i++ {
-				if got[i] <= got[i-1] {
-					tt.Errorf("observed numbers not strictly increasing at %d: %d after %d", i, got[i], got[i-1])
-					break
-				}
+			if !slices.Equal(got, want) {
+				tt.Errorf("receiver observed %d numbers %v, want 1..400 in order", len(got), got)
 			}
 			seen := make(map[string]bool)
 			delivers := simRecords(w, n2, "lockstep.deliver")
@@ -384,23 +382,45 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 			if len(delivers) != len(got) {
 				tt.Errorf("%d lockstep.deliver records for %d observed numbers", len(delivers), len(got))
 			}
-			n := 0
-			for _, r := range simRecords(w, n2, "lockstep.drop") {
-				if simAttr(r, "reason") == "stale-seq" {
-					n++
-				}
+			if n := len(simRecords(w, n2, "lockstep.remote.gap")); n != 0 {
+				tt.Errorf("%d lockstep.remote.gap records on n2, want 0", n)
 			}
-			stale[w.Seed()] = n
+			if n := len(simRecords(w, n1, "net.dup")); n != 0 {
+				tt.Errorf("%d net.dup records on n1, want 0: remoting sends one copy of each datagram", n)
+			}
+			if simHeldBackByFIFO(simRecords(w, n1, "net.send_raw")) > 0 {
+				heldBack[w.Seed()] = true
+			}
 		})
-		// The scenario must exercise what it tests: the transport dropped late and duplicate copies.
-		total := 0
-		for _, n := range stale {
-			total += n
-		}
-		if total == 0 {
-			t.Errorf("no seed dropped a late or duplicate copy; the link does not reorder or duplicate")
+		// The scenario must exercise what it tests: the link drew delays that would have
+		// reordered datagrams, had remoting not sent them in FIFO order.
+		if len(heldBack) == 0 {
+			t.Errorf("no seed drew a delay that would have reordered the link")
 		}
 	})
+}
+
+// simHeldBackByFIFO counts the MSG datagrams among sends, net.send_raw records of one link, whose
+// drawn delay (delay_ns) would have delivered them before an earlier one: the reorderings that the
+// datagrams' FIFO order prevented (REM-320).
+func simHeldBackByFIFO(sends []kernel.Record) int {
+	n := 0
+	var latest kernel.Time
+	for _, r := range sends {
+		if !strings.Contains(simAttr(r, "payload"), " MSG ") {
+			continue
+		}
+		d, err := strconv.ParseInt(simAttr(r, "delay_ns"), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		due := r.At.Add(time.Duration(d))
+		if due < latest {
+			n++
+		}
+		latest = max(latest, due)
+	}
+	return n
 }
 
 // AT-MBX-18, MBX-120: inbound envelopes meet a full mailbox on n2 as local sends do: the first

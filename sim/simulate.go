@@ -11,6 +11,8 @@ import (
 
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/internal/remoting"
+	"github.com/hmdsefi/lockstep/remote"
 )
 
 // Options configures Simulate and SimulateSeeds.
@@ -27,6 +29,15 @@ type Options struct {
 	// Budget sets count-based admission budgets for every lockstep node. The zero value sets
 	// none. See Budget.
 	Budget Budget
+
+	// Remote holds the remoting protocol settings of every lockstep node. Messages between nodes
+	// travel as encoded remoting frames, so each type sent, asked or replied with across nodes
+	// must be registered in Registry and supported by Codec. The network fields (Listen,
+	// Advertise, Peers, Resolve, TLS) are ignored, zero fields get remote's defaults, and the
+	// zero value uses codec.Default() with JSON. Simulate validates Remote, then checks that Codec
+	// supports every type of Registry, once per call, and fails the test before any seed if
+	// either fails.
+	Remote remote.Config
 }
 
 // Simulate runs body once for every run of every seed, as faultline.Run does, with a fresh Sim
@@ -37,8 +48,8 @@ type Options struct {
 // LOCKSTEP_CHECK_DETERMINISM=1 runs every seed twice and compares the traces.
 func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 	t.Helper()
-	fo := setup(t, opts)
-	r := &runner{body: body, system: slices.Clone(opts.System), budget: opts.Budget}
+	fo, set := setup(t, opts)
+	r := &runner{body: body, system: slices.Clone(opts.System), budget: opts.Budget, remote: set}
 	defer r.end()
 	faultline.Run(t, fo, r.run)
 }
@@ -47,40 +58,71 @@ func Simulate(t *testing.T, opts Options, body func(s *Sim)) {
 // to keep a failing seed as a regression test.
 func SimulateSeeds(t *testing.T, opts Options, body func(s *Sim), seeds ...uint64) {
 	t.Helper()
-	fo := setup(t, opts)
-	r := &runner{body: body, system: slices.Clone(opts.System), budget: opts.Budget}
+	fo, set := setup(t, opts)
+	r := &runner{body: body, system: slices.Clone(opts.System), budget: opts.Budget, remote: set}
 	defer r.end()
 	faultline.RunSeeds(t, fo, r.run, seeds...)
 }
 
 // setup validates opts (SIM-020), then applies the environment (SIM-030), and returns the
-// faultline options to run with. It fails t, running no seed, if either step fails.
-func setup(t *testing.T, opts Options) faultline.Options {
+// faultline options to run with and the remoting settings of every node. It fails t, running no
+// seed, if either step fails.
+func setup(t *testing.T, opts Options) (faultline.Options, remoting.Settings) {
 	t.Helper()
-	fo, err := validate(opts)
+	fo, set, err := validate(opts)
 	if err == nil {
 		fo, err = applyEnv(fo)
 	}
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	return fo
+	return fo, set
 }
 
-// validate checks opts as SIM-020 says and returns a copy of the faultline options.
-func validate(opts Options) (faultline.Options, error) {
+// validate checks opts as SIM-020 says, then Options.Remote (remoteSettings), and returns a copy
+// of the faultline options and the remoting settings.
+func validate(opts Options) (faultline.Options, remoting.Settings, error) {
 	if opts.Mode != faultline.ModeEvent {
-		return faultline.Options{}, errors.New("lockstep: sim: Options.Mode must be faultline.ModeEvent")
+		return faultline.Options{}, remoting.Settings{}, errors.New("lockstep: sim: Options.Mode must be faultline.ModeEvent")
 	}
 	for i, o := range opts.System {
 		if o == nil {
-			return faultline.Options{}, fmt.Errorf("lockstep: sim: Options.System[%d] is nil", i)
+			return faultline.Options{}, remoting.Settings{}, fmt.Errorf("lockstep: sim: Options.System[%d] is nil", i)
 		}
 	}
 	if err := validateBudget(opts.Budget); err != nil {
-		return faultline.Options{}, err
+		return faultline.Options{}, remoting.Settings{}, err
 	}
-	return opts.Options, nil
+	set, err := remoteSettings(opts.Remote)
+	if err != nil {
+		return faultline.Options{}, remoting.Settings{}, err
+	}
+	return opts.Options, set, nil
+}
+
+// remoteSettings returns the protocol settings of c, Options.Remote (REM-300): it zeroes the
+// network fields, which simulation ignores, applies the defaults and checks the rest with
+// remote.Config.Validate, then checks that the codec supports every registered type (REM-030).
+// Its errors start with "lockstep: sim: Options.Remote: ".
+func remoteSettings(c remote.Config) (remoting.Settings, error) {
+	c.Listen, c.Advertise, c.Peers, c.Resolve, c.TLS = "", "", nil, nil, nil
+	if err := c.Validate(); err != nil {
+		return remoting.Settings{}, fmt.Errorf("lockstep: sim: Options.Remote: %w", err)
+	}
+	if err := c.Registry.Check(c.Codec); err != nil {
+		return remoting.Settings{}, fmt.Errorf("lockstep: sim: Options.Remote: %w", err)
+	}
+	return remoting.Settings{
+		Registry:      c.Registry,
+		Codec:         c.Codec,
+		MaxFrame:      c.MaxFrame,
+		OutboundQueue: c.OutboundQueue,
+		Heartbeat:     c.Heartbeat,
+		IdleTimeout:   c.IdleTimeout,
+		DialTimeout:   c.DialTimeout,
+		RedialMin:     c.RedialMin,
+		RedialMax:     c.RedialMax,
+	}, nil
 }
 
 // runner builds a Sim for every run of one Simulate or SimulateSeeds call.
@@ -88,6 +130,7 @@ type runner struct {
 	body   func(s *Sim)
 	system []lockstep.Option // Options.System
 	budget Budget            // Options.Budget
+	remote remoting.Settings // Options.Remote, validated
 	cur    *Sim              // the Sim of the latest run
 }
 
@@ -97,17 +140,30 @@ type runner struct {
 // returns, this cleanup runs before the ones body registered.
 func (r *runner) run(w *faultline.World) {
 	r.end()
-	s := &Sim{w: w, system: r.system, budget: r.budget}
+	s := &Sim{w: w, system: r.system, budget: r.budget, remote: r.remote}
 	r.cur = s
 	s.registerChecks()
 	w.Sim.OnCrash(s.crashed)
 	r.body(s)
-	w.T().Cleanup(func() { s.ended = true })
+	w.T().Cleanup(s.end)
 }
 
 // end ends the Sim of the latest run, if any.
 func (r *runner) end() {
 	if r.cur != nil {
-		r.cur.ended = true
+		r.cur.end()
+	}
+}
+
+// end ends the run of s (SIM-040) and takes the remoting core of every node's current system out
+// of the table of remoting.CoreOf, which would otherwise keep the run's world alive for the rest
+// of the test binary. A crash and a shutdown have taken out the cores of the earlier systems.
+// Calls after the first do nothing more.
+func (s *Sim) end() {
+	s.ended = true
+	for _, ln := range s.nodes {
+		if ln.sys != nil {
+			remoting.Unregister(ln.sys)
+		}
 	}
 }

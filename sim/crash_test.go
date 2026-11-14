@@ -6,6 +6,8 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -141,8 +143,9 @@ func TestATSIM06Crash(t *testing.T) {
 	})
 }
 
-// AT-SIM-07, SIM-070, SIM-130: a restart boots a new system with epoch 2. Its actor has the old
-// PID but for the uid, and a message to the old PID is a dead letter on n1.
+// AT-SIM-07, SIM-070, SIM-130, REM-294: a restart boots a new system with epoch 2. Its actor has
+// the old PID but for the uid, and a message to the old PID is a dead letter: on n2 while n2's
+// core still knows n1's old incarnation, and on n1 once it reaches the new one.
 func TestATSIM07Restart(t *testing.T) {
 	sim.Simulate(t, fullTrace(5), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -166,18 +169,27 @@ func TestATSIM07Restart(t *testing.T) {
 			tt.Errorf("new PID %v, old %v; want the same PID but for a uid whose high 32 bits are 2", c.pid, c.oldPID)
 		}
 
-		if err := sim.Send(s, "n2", c.oldPID, Tick{}); err != nil {
-			tt.Fatalf("Send from n2 to the old PID: %v", err)
+		// n2 knows n1's first incarnation from its handshake, so the first send is queued for it
+		// and becomes a dead letter on n2 once n2 sees the restart (REM-294); the next one reaches
+		// the new incarnation, where the old PID is a dead letter.
+		for range 2 {
+			if err := sim.Send(s, "n2", c.oldPID, Tick{}); err != nil {
+				tt.Fatalf("Send from n2 to the old PID: %v", err)
+			}
+			w.RunFor(time.Second)
 		}
-		w.RunFor(time.Second)
-		dead := 0
+		dead := map[string]int{}
 		for _, r := range ofKind(w.Sim.Records(), "lockstep.deadletter") {
-			if r.Node == c.n1.ID() && attr(r, "to") == c.oldPID.String() && attr(r, "reason") == "stopped" {
-				dead++
+			if attr(r, "to") == c.oldPID.String() {
+				dead[fmt.Sprintf("%d %s", r.Node, attr(r, "reason"))]++
 			}
 		}
-		if dead != 1 {
-			tt.Errorf("%d lockstep.deadletter records on n1 for the old PID with reason stopped, want 1", dead)
+		want := map[string]int{
+			fmt.Sprintf("%d peer-restarted", c.n2.ID()): 1,
+			fmt.Sprintf("%d stopped", c.n1.ID()):        1,
+		}
+		if !maps.Equal(dead, want) {
+			tt.Errorf("lockstep.deadletter records for the old PID by node and reason: %v, want %v", dead, want)
 		}
 	})
 }
@@ -357,7 +369,7 @@ func ignoresSeams(s *sim.Sim, e sim.EngineBundle, n1 *kernel.Node) {
 	}
 	for _, node := range []string{"n1", "n2", "nowhere"} {
 		env := engine.Envelope{From: engine.Address{Node: "n1", Path: "/user"}, To: engine.Address{Node: node, Path: "/user/r"}, Payload: Deposit{1}}
-		if err := e.Transport.Deliver(env); err != nil {
+		if err := s.Transport(e).Deliver(env); err != nil {
 			tt.Errorf("Deliver to %s: %v, want nil", node, err)
 		}
 	}
@@ -382,7 +394,8 @@ func ignoresSeams(s *sim.Sim, e sim.EngineBundle, n1 *kernel.Node) {
 	if fired || a.ran {
 		tt.Errorf("timer fired %v, turn ran %v; want neither", fired, a.ran)
 	}
-	if recs := w.Sim.Records()[before:]; len(recs) != 0 {
+	// The live systems' remoting cores tick once a second; the dead engine's must not.
+	if recs := withoutTicks(w.Sim.Records()[before:], ticksBut(n1.ID(), e.Epoch)); len(recs) != 0 {
 		tt.Errorf("%d records after the seam calls, the first %s %q on node %d inc %d; want none",
 			len(recs), recs[0].Kind, recs[0].Text, recs[0].Node, recs[0].Inc)
 	}
