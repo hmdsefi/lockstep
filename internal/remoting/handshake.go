@@ -102,9 +102,9 @@ func (c *Core) handshakeReply(s *session, f *Frame) {
 		default:
 			s.peer.failures = 0
 			c.sessionUp(s, &h)
-			// The send path writes the peer's queued frames here, after the up record; until
-			// then Connect's demand is met once the session is up.
+			// The frames queued while the session was dialing go out after the up record.
 			s.peer.want = false
+			c.flush(s)
 		}
 	case KindReject:
 		c.recordReject(s, string(f.Payload))

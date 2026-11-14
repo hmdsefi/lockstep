@@ -97,8 +97,17 @@ type Config struct {
 	Failer engine.Failer
 	// Log receives the core's warnings. Nil means none.
 	Log *slog.Logger
+	// Host is the system the core belongs to: the core fails asks whose requests it could not
+	// send through Host.Inbound. Required.
+	Host engine.Host
 	// Driver opens the core's connections. Required.
 	Driver Driver
+	// Errors builds the errors the core returns and fails asks with. Required.
+	Errors Errors
+	// DeadLetter makes msg a dead letter from from to to with reason, as the system's own dead
+	// letters are. The core calls it in engine context without holding its lock, so it may send.
+	// Required.
+	DeadLetter func(from, to engine.Address, reason string, msg any)
 	// Settings are the protocol settings.
 	Settings Settings
 }
@@ -119,13 +128,20 @@ type Core struct {
 	rand      *rand.Rand
 	tracer    engine.Tracer // nil when records are off
 	log       *slog.Logger
+	host      engine.Host
 	driver    Driver
+	errs      Errors
+	dead      func(from, to engine.Address, reason string, msg any)
 
 	started bool
 	tick    engine.Cancel // the armed heartbeat tick; nil before Start
 	peers   map[string]*peer
 	links   map[Link]*session
 	serial  uint64 // sessions created so far
+
+	// deferred holds the calls that must run after the lock is released, in order: dead letters,
+	// which may send and so call Deliver again.
+	deferred []func()
 }
 
 // New checks cfg and returns a Core that has not started. Every error text starts with
@@ -142,14 +158,24 @@ func New(cfg Config) (*Core, error) {
 		return nil, errors.New(p + "no clock")
 	case cfg.Entropy == nil:
 		return nil, errors.New(p + "no entropy")
+	case cfg.Host == nil:
+		return nil, errors.New(p + "no host")
 	case cfg.Driver == nil:
 		return nil, errors.New(p + "no driver")
+	case cfg.Errors == nil:
+		return nil, errors.New(p + "no errors")
+	case cfg.DeadLetter == nil:
+		return nil, errors.New(p + "no dead-letter function")
+	case s.Registry == nil:
+		return nil, errors.New(p + "no registry")
 	case s.Codec == nil:
 		return nil, errors.New(p + "no codec")
 	case len(s.Codec.Name()) < 1 || len(s.Codec.Name()) > MaxCodecName:
 		return nil, fmt.Errorf(p+"codec name %q is not 1 to %d bytes", s.Codec.Name(), MaxCodecName)
 	case s.MaxFrame < MinFrameLimit || s.MaxFrame > MaxFrameLimit:
 		return nil, fmt.Errorf(p+"MaxFrame %d out of range [%d, %d]", s.MaxFrame, MinFrameLimit, MaxFrameLimit)
+	case s.OutboundQueue < 1:
+		return nil, fmt.Errorf(p+"OutboundQueue %d is less than 1", s.OutboundQueue)
 	case s.Heartbeat <= 0 || s.IdleTimeout <= 0 || s.DialTimeout <= 0 || s.RedialMin <= 0:
 		return nil, errors.New(p + "Heartbeat, IdleTimeout, DialTimeout and RedialMin must be positive")
 	case s.IdleTimeout/2 < s.Heartbeat: // IdleTimeout < 2*Heartbeat without overflow
@@ -167,7 +193,10 @@ func New(cfg Config) (*Core, error) {
 		clock:     cfg.Clock,
 		rand:      cfg.Entropy.Rand("lockstep/" + cfg.Node + "/" + strconv.FormatUint(uint64(cfg.Incarnation), 10) + "/$remote"),
 		log:       cfg.Log,
+		host:      cfg.Host,
 		driver:    cfg.Driver,
+		errs:      cfg.Errors,
+		dead:      cfg.DeadLetter,
 		peers:     make(map[string]*peer),
 		links:     make(map[Link]*session),
 	}
@@ -184,7 +213,7 @@ func New(cfg Config) (*Core, error) {
 // after the first do nothing. Call it in engine context.
 func (c *Core) Start() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.started {
 		return
 	}
@@ -215,7 +244,7 @@ func (c *Core) Connect(node string) error {
 		return fmt.Errorf("remoting: cannot connect to node %q", node)
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	_, known := c.peers[node]
 	p := c.peer(node)
 	if p.out != nil && p.out.up {
@@ -245,7 +274,7 @@ func (c *Core) Connect(node string) error {
 // "dial-timeout". Call it in engine context.
 func (c *Core) Accepted(link Link) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if _, ok := c.links[link]; ok {
 		return
 	}
@@ -257,13 +286,18 @@ func (c *Core) Accepted(link Link) {
 }
 
 // Writable tells the core that link has room again after its Write returned false. The core
-// writes the frames the link did not take, in order, and resumes writing. Call it in engine
+// writes the frames the link did not take, in order, then the data frames queued for the peer,
+// and resumes writing. Call it in engine
 // context.
 func (c *Core) Writable(link Link) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if s := c.links[link]; s != nil {
+		s.stalled = false
 		c.flushBlocked(s)
+		if s.dir == dirOut && s.up {
+			c.flush(s)
+		}
 	}
 }
 
@@ -274,7 +308,7 @@ func (c *Core) Writable(link Link) {
 // Call it in engine context.
 func (c *Core) Frame(link Link, b []byte) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	s := c.links[link]
 	if s == nil {
 		return
@@ -301,7 +335,7 @@ func (c *Core) Frame(link Link, b []byte) {
 // goes down with reason "io". Call it in engine context.
 func (c *Core) Closed(link Link, err error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	s := c.links[link]
 	if s == nil {
 		return
@@ -349,7 +383,7 @@ func (c *Core) armTick() {
 // left to the dial timeout.
 func (c *Core) onTick() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	now := c.clock.Now()
 	for _, s := range c.sessions() {
 		if c.links[s.link] != s || !s.up {
@@ -359,7 +393,7 @@ func (c *Core) onTick() {
 			c.closeSession(s, CloseIdle, DownIdle)
 			continue
 		}
-		if s.dir == dirOut && len(s.blocked) == 0 &&
+		if s.dir == dirOut && !s.held() &&
 			(now.Sub(s.lastSend) >= c.set.Heartbeat || now.Sub(s.lastRecv) >= c.set.Heartbeat) {
 			c.write(s, &Frame{Kind: KindPing})
 		}

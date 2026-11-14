@@ -120,7 +120,10 @@ func testConfig(eng *enginetest.Engine, drv Driver) Config {
 		Entropy:     b.Entropy,
 		Tracer:      b.Tracer,
 		Failer:      b.Failer,
+		Host:        nopHost{},
 		Driver:      drv,
+		Errors:      testErrors{},
+		DeadLetter:  func(engine.Address, engine.Address, string, any) {},
 		Settings:    testSettings(),
 	}
 }
