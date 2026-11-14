@@ -38,6 +38,9 @@ type RemotePayload struct {
 	Ask    engine.Address // RemoteAsk: the ask address the answer goes to; else zero
 	Err    error          // RemoteFail: the failure; else nil
 	Reason any            // RemoteTerminated: the lockstep.StopReason; else nil
+	// Seq is, for RemoteWatch, RemoteUnwatch and RemoteTerminated, the watcher's watch number
+	// (ACT-630's sequence), echoed back in RemoteTerminated; 0 elsewhere.
+	Seq uint64
 }
 
 // Attachment is what a transport gets from the system it is attached to.
@@ -95,7 +98,8 @@ var Pending func(sys any, ask engine.Address) bool
 // AttachTransport makes t the transport of sys and runs stop once from Shutdown, after the last
 // actor stopped and before Engine.Stop. It returns an error if sys has a transport already, the
 // engine's own Transport included, and an error wrapping lockstep.ErrStopped on a stopped system.
-// Implemented by ACT.
+// The send paths see t as soon as it is stored, so t's Deliver may be called, from any goroutine
+// that sends, before AttachTransport returns. Implemented by ACT.
 var AttachTransport func(sys any, t engine.Transport, stop func()) (Attachment, error)
 
 // LookupPath returns the address, with its uid, of the actor registered at path on sys whose

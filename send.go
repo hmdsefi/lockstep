@@ -121,24 +121,47 @@ func (s *System) recordSend(from *Address, to Address, msg any) {
 // each reason is found without a lookup (OBS-090).
 type deadReason uint8
 
-// The dead-letter reasons of MBX-150, in its order. REM adds its own in Phase 3.
+// The dead-letter reasons of MBX-150, in its order, then REM's (REM §8), in its order. The runtime
+// gives only MBX-150's; the transport gives REM's through hooks.Attachment.DeadLetter.
 const (
-	reasonStopped     deadReason = iota // a local address that is not alive, or an inbound one that names no live actor
-	reasonNotFound                      // a path address that resolves to no actor of the sender's message type
-	reasonUnreachable                   // another node, and the engine has no Transport
+	reasonStopped         deadReason = iota // a local address that is not alive, or an inbound one that names no live actor
+	reasonNotFound                          // a path address that resolves to no actor of the sender's message type
+	reasonUnreachable                       // another node, and the system has no transport
+	reasonQueueFull                         // the transport's queue to the peer is full (REM-140)
+	reasonUnknownNode                       // the transport knows no address of the peer (REM-135)
+	reasonTooLargeForPeer                   // the frame is larger than the peer takes
+	reasonPeerRestarted                     // queued for an incarnation of the peer that ended (REM-294)
+	reasonShutdown                          // still queued when the transport shut down (REM-296)
+	reasonWrongType                         // arrived with a type the recipient does not take (REM-230)
 )
 
 // deadReasons lists the spelling of every dead-letter reason, in the order of the constants: the
 // value of the reason attribute of lockstep.deadletter, of the dead letter log event and of the
 // label of lockstep_deadletters_total (OBS-145).
 var deadReasons = [...]string{
-	reasonStopped:     "stopped",
-	reasonNotFound:    "not-found",
-	reasonUnreachable: "unreachable",
+	reasonStopped:         "stopped",
+	reasonNotFound:        "not-found",
+	reasonUnreachable:     "unreachable",
+	reasonQueueFull:       "queue-full",
+	reasonUnknownNode:     "unknown-node",
+	reasonTooLargeForPeer: "too-large-for-peer",
+	reasonPeerRestarted:   "peer-restarted",
+	reasonShutdown:        "shutdown",
+	reasonWrongType:       "wrong-type",
 }
 
 // String returns the reason's spelling.
 func (r deadReason) String() string { return deadReasons[r] }
+
+// deadReasonOf returns the reason spelled name, and false if there is none.
+func deadReasonOf(name string) (deadReason, bool) {
+	for r, n := range deadReasons {
+		if n == name {
+			return deadReason(r), true
+		}
+	}
+	return 0, false
+}
 
 // routeRequest is one user message on its way to a mailbox: what Send routes, and what Ask and
 // Host.Inbound route the same way.
@@ -372,10 +395,10 @@ func (s *System) resolve(to Address, typ reflect.Type) (actorCell, Address, dead
 	return c, Address{node: s.node, path: to.path, uid: uid}, 0
 }
 
-// sendRemote routes r to another node: to the transport, or to a dead letter when the engine has
-// none (ENG-080). A transport error comes back wrapped (MSG-110), with nothing sent.
+// sendRemote routes r to another node: to the system's transport, or to a dead letter when the
+// system has none (ENG-080). A transport error comes back wrapped (MSG-110), with nothing sent.
 func (s *System) sendRemote(r routeRequest) outcome {
-	tr := s.eng.Transport
+	tr := s.transportOf()
 	if tr == nil {
 		return s.deadRequest(r, reasonUnreachable)
 	}
