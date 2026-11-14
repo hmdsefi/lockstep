@@ -21,6 +21,12 @@ import (
 // the ask's timeout, else the default ask timeout applies, and inside a turn it returns
 // lockstep.ErrAwaitInActor. The PID carries the actor's uid.
 //
+// In simulation, Lookup of another node from a test body fails the seed: it waits as
+// Reply.Await does, and the simulation never waits on a pending reply (inside a turn it returns
+// lockstep.ErrAwaitInActor, as everywhere). Address the actor with a path PID from
+// lockstep.PIDAt instead, which needs no lookup, or call lockstep.Lookup on the system of the
+// node that holds it.
+//
 // Errors: lockstep.ErrInvalidName for a node or path that is not well-formed; an error wrapping
 // ErrUnreachable, which says so, when remoting is not enabled on sys; a *Error from the other
 // node, whose code is CodeNotFound (it unwraps to lockstep.ErrNotFound) when no actor is

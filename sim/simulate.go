@@ -102,8 +102,9 @@ func validate(opts Options) (faultline.Options, remoting.Settings, error) {
 
 // remoteSettings returns the protocol settings of c, Options.Remote (REM-300): it zeroes the
 // network fields, which simulation ignores, applies the defaults and checks the rest with
-// remote.Config.Validate, then checks that the codec supports every registered type (REM-030).
-// Its errors start with "lockstep: sim: Options.Remote: ".
+// remote.Config.Validate, then checks that the codec supports every registered type (REM-030) and
+// that its name fits the handshake (1 to 64 bytes). Its errors start with
+// "lockstep: sim: Options.Remote: ".
 func remoteSettings(c remote.Config) (remoting.Settings, error) {
 	c.Listen, c.Advertise, c.Peers, c.Resolve, c.TLS = "", "", nil, nil, nil
 	if err := c.Validate(); err != nil {
@@ -111,6 +112,11 @@ func remoteSettings(c remote.Config) (remoting.Settings, error) {
 	}
 	if err := c.Registry.Check(c.Codec); err != nil {
 		return remoting.Settings{}, fmt.Errorf("lockstep: sim: Options.Remote: %w", err)
+	}
+	// The handshake carries the codec's name in 1 to 64 bytes, as remote.Enable checks.
+	if n := len(c.Codec.Name()); n < 1 || n > remoting.MaxCodecName {
+		return remoting.Settings{}, fmt.Errorf("lockstep: sim: Options.Remote: codec name %q is not 1 to %d bytes",
+			c.Codec.Name(), remoting.MaxCodecName)
 	}
 	return remoting.Settings{
 		Registry:      c.Registry,

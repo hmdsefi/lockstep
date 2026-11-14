@@ -141,11 +141,26 @@ var (
 		codec.RegisterIn[chan int](r, "simtest.Chan")
 		sim.Simulate(t, sim.Options{Remote: remote.Config{Registry: r}}, printBody)
 	})
+	_ = scenario("remote-codec-name-empty", func(t *testing.T) {
+		sim.Simulate(t, sim.Options{Remote: remote.Config{Codec: namedCodec{}}}, printBody)
+	})
+	_ = scenario("remote-codec-name-long", func(t *testing.T) {
+		sim.Simulate(t, sim.Options{Remote: remote.Config{Codec: namedCodec{name: strings.Repeat("c", 65)}}}, printBody)
+	})
 )
+
+// namedCodec is the JSON codec under another name.
+type namedCodec struct {
+	codec.JSON
+	name string
+}
+
+func (c namedCodec) Name() string { return c.name }
 
 // AT-SIM-33 (defined here: the spec gives it no text), REM-015, REM-030, REM-300: Options.Remote
 // is checked once per Simulate, before any seed. A protocol field that remote.Config.Validate
-// refuses, or a registered type the codec does not support, fails the test with
+// refuses, a registered type the codec does not support, or a codec name that is not 1 to 64
+// bytes (the handshake's limit, which remote.Enable checks too) fails the test with
 // "lockstep: sim: Options.Remote: <error>" and runs no seed.
 func TestATSIM33RemoteOptions(t *testing.T) {
 	unsupported := codec.JSON{}.Supports(reflect.TypeFor[chan int]())
@@ -159,6 +174,8 @@ func TestATSIM33RemoteOptions(t *testing.T) {
 		{"remote-max-frame", "lockstep: sim: Options.Remote: remote: invalid config: MaxFrame 100 out of range [4096, 67108864]"},
 		{"remote-idle", "lockstep: sim: Options.Remote: remote: invalid config: IdleTimeout 1s is less than twice Heartbeat 1s"},
 		{"remote-codec", "lockstep: sim: Options.Remote: " + unsupported.Error()},
+		{"remote-codec-name-empty", `lockstep: sim: Options.Remote: codec name "" is not 1 to 64 bytes`},
+		{"remote-codec-name-long", `lockstep: sim: Options.Remote: codec name "` + strings.Repeat("c", 65) + `" is not 1 to 64 bytes`},
 	} {
 		t.Run(tc.scenario, func(t *testing.T) {
 			out, code := runScenario(t, tc.scenario)
