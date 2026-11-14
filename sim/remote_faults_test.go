@@ -356,9 +356,11 @@ func runATREM16(t *testing.T, opts sim.Options, runs *int) {
 			}
 		}
 		// The data frames each gap skips were lost, each with its loss record at its send time.
-		sends := map[string]kernel.Record{} // n1's MSG send records by seq; read by key
+		sends := map[string]kernel.Record{} // n1's send records of MSG frames, by seq; read by key
 		for _, r := range nodeRecords(recs, n1, "lockstep.remote.send") {
-			sends[attr(r, "seq")] = r
+			if attr(r, "kind") == "MSG" {
+				sends[attr(r, "seq")] = r
+			}
 		}
 		unmatched := slices.Clone(losses)
 		lostData := 0
@@ -702,6 +704,11 @@ func runATREM18(t *testing.T, opts sim.Options, runs *int) {
 // least 3 s later, and n2 sees CLOSE idle at 9.010 s. The link from n3 to n2 is cut too, so n2
 // receives nothing from n3 after the PING of 5.010 s and closes that incoming session idle at its
 // own 9 s tick, while n3 closes its side then as well.
+//
+// n4 pins the boundary: the link from n2 to n4 has 990 ms of latency, so n4's session comes up at
+// 1.001 s and each PONG arrives on a whole second. The PONG sent at 5.010 s is lost in flight by
+// the cut at 5.5 s, so n4 last received at exactly 5 s and closes idle at the 8 s tick, where the
+// silence equals IdleTimeout: the core closes at IdleTimeout, not after it.
 func TestATREM19HeartbeatTiming(t *testing.T) {
 	o := remoteOpts(3, 12*time.Second, remote.Config{Heartbeat: time.Second, IdleTimeout: 3 * time.Second})
 	o.Net = simnet.Config{Default: simnet.Link{Latency: 10 * time.Millisecond}}
@@ -715,12 +722,17 @@ func runATREM19(t *testing.T, opts sim.Options, runs *int) {
 		n1 := s.Node("n1", noSetup)
 		n2 := s.Node("n2", noSetup)
 		n3 := s.Node("n3", noSetup)
+		n4 := s.Node("n4", noSetup)
+		slow := w.Net.Link(n2.ID(), n4.ID())
+		slow.Latency = 990 * time.Millisecond
+		w.Net.SetLink(n2.ID(), n4.ID(), slow)
 		w.Plan(fault.Script(
 			fault.Event{At: vt(5500 * time.Millisecond), Kind: fault.KindCut, Node: "n2", Peer: "n1"},
 			fault.Event{At: vt(5500 * time.Millisecond), Kind: fault.KindCut, Node: "n3", Peer: "n2"},
+			fault.Event{At: vt(5500 * time.Millisecond), Kind: fault.KindCut, Node: "n2", Peer: "n4"},
 		))
 		w.RunFor(time.Millisecond)
-		for _, from := range []string{"n1", "n3"} {
+		for _, from := range []string{"n1", "n3", "n4"} {
 			if err := s.Connect(from, "n2"); err != nil {
 				tt.Fatalf("Connect(%s, n2): %v", from, err)
 			}
@@ -728,9 +740,11 @@ func runATREM19(t *testing.T, opts sim.Options, runs *int) {
 		w.RunFor(11 * time.Second)
 
 		recs := w.Sim.Records()
-		seconds := func(from, to int, offset time.Duration) []kernel.Time {
+		// fromTwo returns the whole seconds from 2 s to to s, each plus offset: the first tick
+		// that pings is the 2 s one.
+		fromTwo := func(to int, offset time.Duration) []kernel.Time {
 			var out []kernel.Time
-			for i := from; i <= to; i++ {
+			for i := 2; i <= to; i++ {
 				out = append(out, vt(time.Duration(i)*time.Second+offset))
 			}
 			return out
@@ -739,7 +753,7 @@ func runATREM19(t *testing.T, opts sim.Options, runs *int) {
 			if got := timesOf(sessionRecs(recs, n, "lockstep.remote.up", "out", "n2")); !slices.Equal(got, []kernel.Time{vt(21 * time.Millisecond)}) {
 				tt.Errorf("%s's sessions to n2 up at %v, want [21ms]", n.Name(), got)
 			}
-			if got, want := sentDatagrams(recs, n, "PING"), seconds(2, 8, 0); !slices.Equal(got, want) {
+			if got, want := sentDatagrams(recs, n, "PING"), fromTwo(8, 0); !slices.Equal(got, want) {
 				tt.Errorf("%s wrote PING at %v, want %v", n.Name(), got, want)
 			}
 			if got := sessionRecs(recs, n, "lockstep.remote.down", "out", "n2"); len(got) != 1 || got[0].At != vt(9*time.Second) || attr(got[0], "reason") != "idle" {
@@ -749,9 +763,23 @@ func runATREM19(t *testing.T, opts sim.Options, runs *int) {
 		if got, want := sentDatagrams(recs, n1, "CLOSE"), []kernel.Time{vt(9 * time.Second)}; !slices.Equal(got, want) {
 			tt.Errorf("n1 wrote CLOSE at %v, want %v", got, want)
 		}
+		if got := timesOf(sessionRecs(recs, n4, "lockstep.remote.up", "out", "n2")); !slices.Equal(got, []kernel.Time{vt(1001 * time.Millisecond)}) {
+			tt.Errorf("n4's sessions to n2 up at %v, want [1.001s]", got)
+		}
+		if got, want := sentDatagrams(recs, n4, "PING"), fromTwo(7, 0); !slices.Equal(got, want) {
+			tt.Errorf("n4 wrote PING at %v, want %v", got, want)
+		}
+		if got := sessionRecs(recs, n4, "lockstep.remote.down", "out", "n2"); len(got) != 1 || got[0].At != vt(8*time.Second) || attr(got[0], "reason") != "idle" {
+			tt.Errorf("n4's sessions to n2 down: %s, want one idle at 8s, exactly IdleTimeout after its last receive", describe(s, got))
+		}
+		if got := sessionRecs(recs, n2, "lockstep.remote.down", "in", "n4"); len(got) != 1 || got[0].At != vt(8010*time.Millisecond) || attr(got[0], "reason") != "closed" {
+			tt.Errorf("n2's sessions from n4 down: %s, want one closed at 8.01s", describe(s, got))
+		}
 		// n2 answers every PING that arrives: those of n1 at x.010 s from 2 s to 8 s (the ones
-		// after 5.5 s are lost on the way back), and those of n3 up to 5.010 s.
-		want := append(seconds(2, 8, 10*time.Millisecond), seconds(2, 5, 10*time.Millisecond)...)
+		// after 5.5 s are lost on the way back), those of n3 up to 5.010 s, and those of n4 from
+		// 2 s to 7 s (the ones after 5.5 s are cut on the way back).
+		want := append(fromTwo(8, 10*time.Millisecond), fromTwo(5, 10*time.Millisecond)...)
+		want = append(want, fromTwo(7, 10*time.Millisecond)...)
 		slices.Sort(want)
 		if got := sentDatagrams(recs, n2, "PONG"); !slices.Equal(got, want) {
 			tt.Errorf("n2 wrote PONG at %v, want %v", got, want)
@@ -762,8 +790,8 @@ func runATREM19(t *testing.T, opts sim.Options, runs *int) {
 		if got := sessionRecs(recs, n2, "lockstep.remote.down", "in", "n3"); len(got) != 1 || got[0].At != vt(9*time.Second) || attr(got[0], "reason") != "idle" {
 			tt.Errorf("n2's sessions from n3 down: %s, want one idle at 9s", describe(s, got))
 		}
-		if n := len(ofKind(recs, "lockstep.remote.dial")); n != 2 {
-			tt.Errorf("%d dial records, want 2: nothing waits for a session after the idle closes", n)
+		if n := len(ofKind(recs, "lockstep.remote.dial")); n != 3 {
+			tt.Errorf("%d dial records, want 3: nothing waits for a session after the idle closes", n)
 		}
 	})
 }
@@ -879,8 +907,15 @@ func runATREM20(t *testing.T, opts sim.Options, runs *int) {
 			}
 		}
 		for _, a := range asks {
-			if a.o.done != 0 && !peerRestarted(a.o.err) {
-				tt.Errorf("ask %s#%d -> %s sent at %s ended at %s with %v, want remote.ErrPeerRestarted", a.from, a.inc, a.to, a.o.sent, a.o.done, a.o.err)
+			if a.o.done == 0 {
+				continue
+			}
+			atRestart := slices.ContainsFunc(restarts, func(r kernel.Record) bool {
+				return r.At == a.o.done && nodeName(s, r.Node) == a.from && r.Inc == a.inc && attr(r, "peer") == a.to
+			})
+			if !peerRestarted(a.o.err) || !atRestart {
+				tt.Errorf("ask %s#%d -> %s sent at %s ended at %s with %v, want remote.ErrPeerRestarted at a restart record of %s on %s#%d",
+					a.from, a.inc, a.to, a.o.sent, a.o.done, a.o.err, a.to, a.from, a.inc)
 			}
 		}
 		wantTerms := len(first)
@@ -1038,7 +1073,9 @@ func redialDelay(f int, lo, hi time.Duration, r *rand.Rand) time.Duration {
 // every second, and partitions separate them from the start to 15 s and from 18 s to 25 s. Every
 // lockstep.remote.redial record of a has the delay that REM-100's formula gives for its failure
 // count, drawn in order from kernel.New(kernel.Config{Seed: seed}).Rand("lockstep/a/1/$remote"):
-// the core draws from no other stream and draws nothing else from it. The failure count grows by
+// the core draws from no other stream and draws nothing else from it. Each redial's timer waits
+// exactly that delay: a's next dial of b, with attempt failures+1, is at the record's time plus
+// the delay. The failure count grows by
 // one per failed dial, saturates the base at RedialMax, and starts again at 1 after a session was
 // up.
 func TestATREM32RedialBackoff(t *testing.T) {
@@ -1070,6 +1107,7 @@ func runATREM32(t *testing.T, opts sim.Options, runs *int) {
 		redials := ofKind(recs, "lockstep.remote.redial")
 		r := kernel.New(kernel.Config{Seed: w.Seed()}).Rand("lockstep/a/1/$remote")
 		lo, hi := opts.Remote.RedialMin, opts.Remote.RedialMax
+		dials := nodeRecords(recs, a, "lockstep.remote.dial")
 		var failures []int
 		saturated := false
 		for _, rec := range redials {
@@ -1086,15 +1124,32 @@ func runATREM32(t *testing.T, opts sim.Options, runs *int) {
 			if got, err := time.ParseDuration(attr(rec, "delay")); err != nil || got != want {
 				tt.Errorf("redial %d after %d failures: delay %s, want %s", len(failures), f, attr(rec, "delay"), want)
 			}
+			// The timer waits exactly the recorded delay: a's next dial of b, attempt f+1, is at
+			// the record's time plus the delay. Only a redial due after the run's end has none.
+			next := slices.IndexFunc(dials, func(d kernel.Record) bool { return d.Seq > rec.Seq && attr(d, "peer") == "b" })
+			switch due := rec.At.Add(want); {
+			case next < 0 && due <= w.End():
+				tt.Errorf("redial %d after %d failures at %s: no dial after it, want one at %s", len(failures), f, rec.At, due)
+			case next >= 0 && (dials[next].At != due || attr(dials[next], "attempt") != strconv.Itoa(f+1)):
+				tt.Errorf("redial %d after %d failures at %s: next dial %s, want attempt %d at %s",
+					len(failures), f, rec.At, describe(s, dials[next:next+1]), f+1, due)
+			}
 		}
 		// 1, 2, ... in the first partition, then 1, 2, ... again after the session that came up
 		// after the first heal went down idle in the second.
+		if len(failures) == 0 {
+			tt.Fatal("no lockstep.remote.redial record")
+		}
 		restart := slices.Index(failures[1:], 1) + 1
-		if len(failures) == 0 || failures[0] != 1 || restart == 0 {
+		if failures[0] != 1 || restart == 0 {
 			tt.Fatalf("failure counts %v, want 1, 2, ... twice", failures)
 		}
 		for i, f := range failures {
-			if want := i + 1 - map[bool]int{false: 0, true: restart}[i >= restart]; f != want {
+			want := i + 1
+			if i >= restart {
+				want -= restart
+			}
+			if f != want {
 				tt.Fatalf("failure counts %v, want 1, 2, ... twice", failures)
 			}
 		}
