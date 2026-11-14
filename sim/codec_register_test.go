@@ -14,13 +14,20 @@ import (
 // internal test sends, is registered in codec_register_internal_test.go.
 func init() { //nolint:gochecknoinits // registrations must exist before the first test runs
 	codec.Register[Add]("simtest.Add")
+	codec.Register[Builtins]("simtest.Builtins")
+	codec.Register[Carry]("simtest.Carry")
 	codec.Register[Count]("simtest.Count")
 	codec.Register[Deposit]("simtest.Deposit")
 	codec.Register[DlvDeposit]("simtest.DlvDeposit")
+	codec.Register[Forward]("simtest.Forward")
 	codec.Register[Get]("simtest.Get")
+	codec.Register[GetBalance]("simtest.GetBalance")
+	codec.Register[GetRate]("simtest.GetRate")
+	codec.Register[GetSeq]("simtest.GetSeq")
 	codec.Register[Inc]("simtest.Inc")
 	codec.Register[Num]("simtest.Num")
 	codec.Register[Ping]("simtest.Ping")
+	codec.Register[Seq]("simtest.Seq")
 	codec.Register[Tick]("simtest.Tick")
 	codec.Register[Wait]("simtest.Wait")
 	codec.Register[*box]("simtest.BoxPtr")
@@ -36,13 +43,20 @@ func TestCrossNodeTypesRegistered(t *testing.T) {
 		name string
 	}{
 		{Add{}, "simtest.Add"},
+		{Builtins{}, "simtest.Builtins"},
+		{Carry{}, "simtest.Carry"},
 		{Count{}, "simtest.Count"},
 		{Deposit{}, "simtest.Deposit"},
 		{DlvDeposit{}, "simtest.DlvDeposit"},
+		{Forward{}, "simtest.Forward"},
 		{Get{}, "simtest.Get"},
+		{GetBalance{}, "simtest.GetBalance"},
+		{GetRate{}, "simtest.GetRate"},
+		{GetSeq{}, "simtest.GetSeq"},
 		{Inc{}, "simtest.Inc"},
 		{Num{}, "simtest.Num"},
 		{Ping{}, "simtest.Ping"},
+		{Seq{}, "simtest.Seq"},
 		{Tick{}, "simtest.Tick"},
 		{Wait{}, "simtest.Wait"},
 		{&box{}, "simtest.BoxPtr"},
