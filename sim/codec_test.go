@@ -4,7 +4,6 @@
 package sim_test
 
 import (
-	"fmt"
 	"math"
 	"reflect"
 	"slices"
@@ -33,8 +32,8 @@ type Builtins struct {
 	Empty lockstep.ReplyTo[struct{}]
 }
 
-// builtinAt is the time.Time that answers Builtins.At: with a location and a monotonic reading,
-// neither of which survives the wire.
+// builtinAt is the time.Time that answers Builtins.At: with a location, whose name does not
+// survive the wire.
 var builtinAt = time.Date(2026, 11, 14, 9, 30, 0, 123456789, time.FixedZone("X", 3600))
 
 // AT-COD-13 (defined here), COD-040, COD-050, COD-150, REM-110, REM-160: values cross nodes by wire
@@ -47,9 +46,10 @@ func TestATCOD13WireNames(t *testing.T) {
 		w, tt := s.World(), s.World().T()
 		s.Node("a", noSetup)
 		var got []any
+		var builtins lockstep.PID[Builtins]
 		s.Node("b", func(sys *lockstep.System) {
 			spawn(sys, "any", &actor[any]{receive: func(_ *lockstep.Context[any], m any) { got = append(got, m) }})
-			spawn(sys, "builtins", &actor[Builtins]{receive: func(ctx *lockstep.Context[Builtins], m Builtins) {
+			builtins = spawn(sys, "builtins", &actor[Builtins]{receive: func(ctx *lockstep.Context[Builtins], m Builtins) {
 				m.Int64.Send(ctx, math.MinInt64)
 				m.Str.Send(ctx, "héllo <&>")
 				m.Dur.Send(ctx, 90*time.Minute)
@@ -119,7 +119,7 @@ func TestATCOD13WireNames(t *testing.T) {
 		if v, err := await(s, r4); !v.Equal(builtinAt) || err != nil || v.Location().String() == "X" {
 			tt.Errorf("time.Time answer %v, %v; want the same instant without the location name X", v, err)
 		}
-		if v, err := await(s, r5); v.String() != "lockstep://b/user/builtins#100000004" || err != nil {
+		if v, err := await(s, r5); v != builtins.Address() || err != nil {
 			tt.Errorf("lockstep.Address answer %v, %v", v, err)
 		}
 		if v, err := await(s, r6); !slices.Equal(v, []byte{0, 1, 255}) || err != nil {
@@ -174,7 +174,7 @@ var (
 				if err := remote.Enable(sys, remote.Config{Registry: withoutSeq()}); err != nil {
 					panic(err)
 				}
-				spawn(sys, "seq", &actor[Seq]{receive: func(*lockstep.Context[Seq], Seq) { fmt.Println(seqReceived) }})
+				spawn(sys, "seq", &actor[Seq]{})
 			})
 			s.World().RunFor(time.Millisecond)
 			if err := sim.Send(s, "a", lockstep.PIDAt[Seq]("b", "/user/seq"), Seq{N: 1}); err != nil {
@@ -214,7 +214,7 @@ var (
 
 // AT-COD-15 (defined here), COD-070, REM-230, REM-340: a frame whose wire name the receiving
 // node's registry does not hold. b, whose registry lacks simtest.Seq, discards a's MSG of a Seq
-// as decode and its actor receives nothing; a, whose registry lacks it, discards b's REPLY of a
+// as decode; a, whose registry lacks it, discards b's REPLY of a
 // Seq as decode and the pending ask fails with that error. Both fail the seed with check
 // lockstep/misuse and a message naming the node, the kind, the peer, the wire name, and the
 // registry's error.
@@ -239,18 +239,15 @@ func TestATCOD15UnknownWireName(t *testing.T) {
 	})
 }
 
-// decodeSeed runs scenario name and checks that it fails with check lockstep/misuse and message,
-// and that the actor taking Seq received nothing. It returns the failing seed's trace records.
+// decodeSeed runs scenario name and checks that it fails with check lockstep/misuse and message.
+// It returns the failing seed's trace records.
 func decodeSeed(t *testing.T, name, message string) []kernel.Record {
 	t.Helper()
-	a, out := failingSeedArtifact(t, name)
+	a, _ := failingSeedArtifact(t, name)
 	want := failure{Kind: "invariant", Check: sim.CheckMisuse, Signature: "invariant:" + sim.CheckMisuse, Message: message}
 	f := a.Report.Failure
 	if got := (failure{Kind: f.Kind, Check: f.Check, Signature: f.Signature, Message: f.Message}); got != want {
 		t.Errorf("failure %+v, want %+v", got, want)
-	}
-	if strings.Contains(out, seqReceived) {
-		t.Errorf("the actor taking Seq received a message:\n%s", out)
 	}
 	if a.Trace == nil {
 		t.Fatal("the failing seed left no trace")

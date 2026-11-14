@@ -240,9 +240,10 @@ func TestATACT36RemoteWatchEndToEnd(t *testing.T) {
 		var got []lockstep.Terminated
 		var wpid lockstep.PID[WatchCmd]
 		s.Node("a", func(sys *lockstep.System) { wpid = spawnWatcher(sys, &got) })
-		var p, q, r, u lockstep.PID[Seq]
+		var e, p, q, r, u lockstep.PID[Seq]
 		s.Node("b", func(sys *lockstep.System) {
 			p, q, r, u = spawn(sys, "p", halter()), spawn(sys, "q", halter()), spawn(sys, "r", halter()), spawn(sys, "u", halter())
+			e = spawn(sys, "e", halter())
 		})
 		w.RunFor(time.Millisecond)
 		wa := wpid.Address().String()
@@ -265,13 +266,15 @@ func TestATACT36RemoteWatchEndToEnd(t *testing.T) {
 		}
 
 		got = nil
+		// r, then e, which sorts before it: the restart unwatches them in this order.
 		command(s, wpid, WatchCmd{Watch: []lockstep.Address{r.Address()}})
+		command(s, wpid, WatchCmd{Watch: []lockstep.Address{e.Address()}})
 		if err := s.InjectFail(wpid.Address(), errBoom); err != nil {
 			tt.Fatal(err)
 		}
 		w.RunFor(time.Second)
 		command(s, wpid, WatchCmd{Watch: []lockstep.Address{q.Address()}, Stop: true})
-		for _, x := range []lockstep.PID[Seq]{q, r} {
+		for _, x := range []lockstep.PID[Seq]{q, r, e} {
 			if err := lockstep.Stop(s.System("b"), x.Address()); err != nil {
 				tt.Fatal(err)
 			}
@@ -301,7 +304,7 @@ func TestATACT36RemoteWatchEndToEnd(t *testing.T) {
 			}
 			return out
 		}
-		if want := remote(p, q, u, u, r, q); !slices.Equal(watchRecs, want) {
+		if want := remote(p, q, u, u, r, e, q); !slices.Equal(watchRecs, want) {
 			tt.Errorf("a's lockstep.watch records %q, want %q", watchRecs, want)
 		}
 		if want := []string{q.String(), u.String()}; !slices.Equal(unwatchRecs, want) {
@@ -314,10 +317,10 @@ func TestATACT36RemoteWatchEndToEnd(t *testing.T) {
 			}
 			return out
 		}
-		if got, want := sends(s, recs, "a", "WATCH"), from(p, q, u, u, r, q); !slices.Equal(got, want) {
+		if got, want := sends(s, recs, "a", "WATCH"), from(p, q, u, u, r, e, q); !slices.Equal(got, want) {
 			tt.Errorf("a's WATCH frames %q, want %q", got, want)
 		}
-		if got, want := sends(s, recs, "a", "UNWATCH"), from(q, u, r, q); !slices.Equal(got, want) {
+		if got, want := sends(s, recs, "a", "UNWATCH"), from(q, u, r, e, q); !slices.Equal(got, want) {
 			tt.Errorf("a's UNWATCH frames %q, want %q", got, want)
 		}
 		if got, want := sends(s, recs, "b", "TERMINATED"), []string{p.String() + " " + wa, u.String() + " " + wa}; !slices.Equal(got, want) {

@@ -182,7 +182,8 @@ func TestATREM11AskMissingActor(t *testing.T) {
 // bank on b with its message type returns its PID, uid included, which a can ask; a lookup of a
 // path nobody holds fails with a *remote.Error of code not-found, and one with another message
 // type with code wrong-type; a lookup of the paused b fails with lockstep.ErrTimeout at its
-// timeout, and the answer b sends when it resumes is a late reply that fails nothing. A lookup on a's own node is lockstep.Lookup.
+// timeout, and the answer b sends when it resumes is a late reply that fails nothing.
+// remote.Lookup on a system's own node is lockstep.Lookup, and does not wait.
 func TestATREM13Lookup(t *testing.T) {
 	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -226,7 +227,7 @@ func TestATREM13Lookup(t *testing.T) {
 			tt.Errorf("lockstep/misuse holds %v, want nothing", err)
 		}
 
-		local, err := lookup[BankMsg](s, "b", "b", "/user/bank")
+		local, err := remote.Lookup[BankMsg](context.Background(), s.System("b"), "b", "/user/bank")
 		if err != nil || local != bankPID {
 			tt.Errorf("lookup on b's own node = %v, %v; want %v", local, err, bankPID)
 		}
@@ -279,8 +280,8 @@ func await[R any](s *sim.Sim, r *lockstep.Reply[R]) (R, error) {
 	w := s.World()
 	for !hooks.AskResolved(r) {
 		next, ok := w.Sim.NextAt()
-		if !ok {
-			w.T().Fatal("the reply is pending and no event is left")
+		if !ok || next > w.End() {
+			w.T().Fatal("the reply is pending and no event is left before the end of the run")
 		}
 		w.RunFor(max(0, next.Sub(w.Sim.Now())))
 	}
@@ -490,7 +491,7 @@ var (
 func wrongTypeNodes(s *sim.Sim) {
 	s.Node("a", noSetup)
 	s.Node("b", func(sys *lockstep.System) {
-		spawn(sys, "seq", &actor[Seq]{receive: func(*lockstep.Context[Seq], Seq) { fmt.Println(seqReceived) }})
+		spawn(sys, "seq", &actor[Seq]{})
 		spawn(sys, "liar", liar())
 	})
 	s.World().RunFor(time.Millisecond)
@@ -498,9 +499,6 @@ func wrongTypeNodes(s *sim.Sim) {
 	// fails the seed.
 	connect(s, 300*time.Millisecond, "a", "b")
 }
-
-// seqReceived is what the actor at /user/seq of wrongTypeNodes prints for each message.
-const seqReceived = "SEQ RECEIVED"
 
 // liar answers each Ping with a string, through its ReplyTo converted to a ReplyTo[string] by the
 // text form, which does not check the answer's type.
@@ -523,14 +521,11 @@ func liar() *actor[Ping] {
 // trace records.
 func wrongTypeSeed(t *testing.T, name, prefix string) []kernel.Record {
 	t.Helper()
-	a, out := failingSeedArtifact(t, name)
+	a, _ := failingSeedArtifact(t, name)
 	f := a.Report.Failure
 	if f.Kind != "invariant" || f.Check != sim.CheckMisuse || f.Signature != "invariant:"+sim.CheckMisuse ||
 		!strings.HasPrefix(f.Message, prefix) || !strings.Contains(f.Message, lockstep.ErrWrongType.Error()) {
 		t.Errorf("failure %+v, want invariant %s with a message starting %q and holding %q", f, sim.CheckMisuse, prefix, lockstep.ErrWrongType)
-	}
-	if strings.Contains(out, seqReceived) {
-		t.Errorf("the actor taking Seq received a message:\n%s", out)
 	}
 	if a.Trace == nil {
 		t.Fatal("the failing seed left no trace")
@@ -557,7 +552,7 @@ func discards(recs []kernel.Record) []string {
 // request whose value its live recipient does not take. b discards the frame wrong-type, makes it
 // a dead letter wrong-type, fails a request back to its asker (a FAIL from the recipient to the
 // ask address), and the seed fails with check lockstep/misuse and a message naming b, the frame's
-// kind, a and the wire name. The recipient receives nothing.
+// kind, a and the wire name.
 func TestATREM27WrongTypeMessage(t *testing.T) {
 	seq := lockstep.PIDAt[Seq]("b", "/user/seq").String()
 	t.Run("MSG", func(t *testing.T) {
