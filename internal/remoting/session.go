@@ -105,6 +105,16 @@ type peer struct {
 	// watchers are the watches of the peer's actors on local actors, from its WATCH frames, until
 	// UNWATCH, the watched actor's end, the peer's restart or the shutdown ends them (REM-280).
 	watchers map[watchPair]*inWatch
+	// refusedWarned is set when the core logged that it refused a WATCH of the peer at the bound on
+	// its watches; it is cleared once the peer holds fewer watches than the bound, so the warning
+	// is logged once each time the peer reaches the bound.
+	refusedWarned bool
+	// registered are the watches that the WATCH frames written to the peer's current incarnation
+	// may have left there: for each pair, the number of the last WATCH written, until an UNWATCH of
+	// that number is written or a TERMINATED of it arrives. A session that comes up writes an
+	// UNWATCH for every one of them whose pair has no outgoing watch any more, because its UNWATCH
+	// became a dead letter or was dropped, so that the peer does not keep the registration.
+	registered map[watchPair]uint64
 	// lookups are the lookups sent to the peer that have no answer yet, in the order they were
 	// sent (REM-290).
 	lookups []lookup
