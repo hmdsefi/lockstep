@@ -72,8 +72,8 @@ func (h *recHost) Inbound(env engine.Envelope) {
 	}
 }
 
-// The runtime payloads of the tests are hooks.RemotePayload values themselves: package lockstep,
-// which implements the hooks, is not linked into this test binary.
+// The runtime payloads of the tests are hooks.RemotePayload values themselves: useTestHooks
+// replaces package lockstep's Payload and NewPayload (codec links package lockstep).
 var hooksOnce sync.Once
 
 func useTestHooks() {

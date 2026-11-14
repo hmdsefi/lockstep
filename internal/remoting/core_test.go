@@ -121,6 +121,7 @@ func testConfig(eng *enginetest.Engine, drv Driver) Config {
 		Tracer:      b.Tracer,
 		Failer:      b.Failer,
 		Host:        nopHost{},
+		System:      &fakeSys{},
 		Driver:      drv,
 		Errors:      testErrors{},
 		DeadLetter:  func(engine.Address, engine.Address, string, any) {},
@@ -660,7 +661,8 @@ func TestSessionDirections(t *testing.T) {
 		l := h.acceptUp(3)
 		h.core.Frame(l, frame(Frame{Kind: KindMsg, Seq: 1, Sender: "lockstep://b/user/x#1", Recipient: "lockstep://a/user/y#2"}))
 		same(t, "frames", l.kinds(), []string{"WELCOME"})
-		same(t, "records", h.recs(), nil)
+		// The session stays up; the receive path discards the frame, which has no type.
+		same(t, "records", h.recs(), []string{"discard peer=b conn=3 kind=MSG seq=1 reason=decode"})
 	})
 	t.Run("one outgoing session per peer", func(t *testing.T) {
 		h := newHarness(t, nil)

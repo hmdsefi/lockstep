@@ -67,8 +67,7 @@ type session struct {
 
 	seq           uint64 // outgoing: the sequence number of the last data frame written (REM-130)
 	headersWarned bool   // outgoing: the dropped-headers warning was logged (REM-055)
-
-	// The receive path adds the next sequence number expected on an incoming session here.
+	recvSeq       uint64 // incoming: the sequence number of the last data frame accepted, 0 before any (REM-200)
 }
 
 // held reports whether s's link must not be written to until the driver calls Writable: it
@@ -102,6 +101,13 @@ type peer struct {
 
 	advertise string // the address from the peer's last HELLO, or ""
 	inc       uint32 // the peer's last known incarnation, 0 if unknown
+
+	// recvCount is the number of envelopes handed to the host from the peer's incarnation
+	// recvInc: the Seq of the last of them (REM-160).
+	recvCount uint64
+	recvInc   uint32
+	// closedIn is the peer's last up incoming session that went down, while Core.closed holds it.
+	closedIn *session
 }
 
 // waiting reports whether p has work that needs an outgoing session, so that a redial is armed
@@ -210,6 +216,7 @@ func (c *Core) down(s *session, reason string) {
 	case p == nil:
 	case p.in == s:
 		p.in = nil
+		c.keepClosed(s)
 	case p.out == s:
 		p.out = nil
 		if !s.up {
@@ -230,8 +237,9 @@ func (c *Core) down(s *session, reason string) {
 	}
 }
 
-// sessionFrame applies a frame received on an up session (REM-080 to REM-095).
-func (c *Core) sessionFrame(s *session, f *Frame) {
+// sessionFrame applies a frame received on an up session (REM-080 to REM-095); in is the frame's
+// decoded form, or nil.
+func (c *Core) sessionFrame(s *session, f *Frame, in *inbound) {
 	switch {
 	case f.Kind == KindClose:
 		c.down(s, DownClosed)
@@ -239,15 +247,11 @@ func (c *Core) sessionFrame(s *session, f *Frame) {
 		c.write(s, &Frame{Kind: KindPong})
 	case s.dir == dirOut && f.Kind == KindPong:
 	case s.dir == dirIn && f.Kind.Data():
-		c.receive(s, f)
+		c.receive(s, f, in)
 	default:
 		c.protocolError(s, &ProtocolError{Field: FieldKind, Detail: f.Kind.String() + " frame on an up " + s.dir.word() + " session"})
 	}
 }
-
-// receive applies a data frame received on an up incoming session. The receive path implements
-// it: sequencing, decoding and delivery to the host. Until then data frames are dropped.
-func (c *Core) receive(*session, *Frame) {}
 
 // dial starts an outgoing session to p: it asks the driver for a link, records the dial, writes
 // HELLO and arms the dial timeout. It returns the driver's error, and then changes nothing.
