@@ -5,6 +5,7 @@ package remoting
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -58,10 +59,18 @@ type nopHost struct{}
 
 func (nopHost) Inbound(engine.Envelope) {}
 
-// recHost is a Host that keeps what it gets.
-type recHost struct{ envs []engine.Envelope }
+// recHost is a Host that keeps what it gets, then calls on if set.
+type recHost struct {
+	envs []engine.Envelope
+	on   func(engine.Envelope)
+}
 
-func (h *recHost) Inbound(env engine.Envelope) { h.envs = append(h.envs, env) }
+func (h *recHost) Inbound(env engine.Envelope) {
+	h.envs = append(h.envs, env)
+	if h.on != nil {
+		h.on(env)
+	}
+}
 
 // The runtime payloads of the tests are hooks.RemotePayload values themselves: package lockstep,
 // which implements the hooks, is not linked into this test binary.
@@ -591,8 +600,9 @@ func TestUnknownNode(t *testing.T) {
 		if len(h.host.envs) != 1 || h.host.envs[0].To != askAddr {
 			t.Errorf("host got %v, want the ask failed", h.host.envs)
 		}
-		if p := h.core.peers["b"]; p.redial != nil || len(p.queue) != 0 {
-			t.Error("a redial is armed with nothing waiting")
+		// Nothing waits and b never handshook: the peer is forgotten, no redial left armed.
+		if p := h.core.peers["b"]; p != nil {
+			t.Errorf("peer kept: redial armed %v, %d frames queued", p.redial != nil, len(p.queue))
 		}
 	})
 }
@@ -676,4 +686,190 @@ func remoteOf(t *testing.T, env engine.Envelope) hooks.RemotePayload {
 		t.Fatalf("payload %T, want hooks.RemotePayload", env.Payload)
 	}
 	return p
+}
+
+// TestUnknownNodeOnImmediateRedial checks that when an up session goes down with frames queued and
+// the immediate re-dial finds no address, the queue is dead-lettered "unknown-node", its asks fail
+// later, and no redial is armed; the peer, which handshook, is kept.
+func TestUnknownNodeOnImmediateRedial(t *testing.T) {
+	h := newSendHarness(t, nil)
+	h.deliver(msgEnv(ping{1}))
+	l := h.up()
+	l.full = true
+	h.deliver(msgEnv(ping{2}))
+	h.deliver(askEnv(ping{3}, askAddr))
+	h.drv.errs["b"] = ErrUnknownNode
+	h.core.Frame(l, ctrl(KindClose, CloseShutdown))
+	same(t, "dead letters", h.takeDead(), []string{
+		"unknown-node lockstep://a/user/x#1 -> lockstep://b/user/y#2 {2}",
+		"unknown-node lockstep://a/user/x#1 -> lockstep://b/user/y#2 {3}",
+	})
+	p := h.core.peers["b"]
+	if p == nil || p.redial != nil || len(p.queue) != 0 || p.inc != 7 {
+		t.Fatalf("peer %+v, want it kept with incarnation 7, nothing queued and no redial", p)
+	}
+	h.eng.Advance(0)
+	if len(h.host.envs) != 1 || h.host.envs[0].To != askAddr || !errors.Is(remoteOf(t, h.host.envs[0]).Err, errUnreachable) {
+		t.Errorf("host got %v, want the ask failed unreachable", h.host.envs)
+	}
+}
+
+// TestDeliverWritableOrder checks that Writable writes the control frames the link refused before
+// the data frames queued meanwhile.
+func TestDeliverWritableOrder(t *testing.T) {
+	h := newSendHarness(t, nil)
+	h.deliver(msgEnv(ping{1}))
+	l := h.up()
+	l.full = true
+	h.eng.Advance(time.Second) // the tick's PING is refused and held
+	h.deliver(msgEnv(ping{2}))
+	h.deliver(msgEnv(ping{3}))
+	p := h.core.peers["b"]
+	if s := p.out; len(s.blocked) != 1 || s.stalled || len(p.queue) != 2 {
+		t.Fatalf("blocked %d, stalled %v, queued %d; want a held PING and two queued frames", len(s.blocked), s.stalled, len(p.queue))
+	}
+	l.full = false
+	n := len(l.events)
+	h.core.Writable(l)
+	same(t, "writes after Writable", l.events[n:], []string{"write PING", "write MSG", "write MSG"})
+	same(t, "data frames", data(l), []string{"MSG seq=1", "MSG seq=2", "MSG seq=3"})
+}
+
+// TestDeliverFailTimers checks that the core keeps the Cancel of each lockstep/remote/fail timer
+// until it fires, that a stopped one fails nothing, and that the fail callback may call Deliver.
+func TestDeliverFailTimers(t *testing.T) {
+	h := newSendHarness(t, func(c *Config) { c.Settings.OutboundQueue = 1 })
+	var errs []error
+	h.host.on = func(engine.Envelope) { errs = append(errs, h.core.Deliver(msgEnv(ping{9}))) }
+	h.deliver(msgEnv(ping{1}))
+	h.deliver(askEnv(ping{2}, askAddr))
+	if len(h.core.failTimers) != 1 {
+		t.Fatalf("%d fail timers kept, want 1", len(h.core.failTimers))
+	}
+	h.eng.Advance(0)
+	if len(h.core.failTimers) != 0 || len(h.host.envs) != 1 || len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("after the callback: %d timers kept, host got %d, Deliver from the callback %v",
+			len(h.core.failTimers), len(h.host.envs), errs)
+	}
+	same(t, "dead letters", h.takeDead(), []string{
+		"queue-full lockstep://a/user/x#1 -> lockstep://b/user/y#2 {2}",
+		"queue-full lockstep://a/user/x#1 -> lockstep://b/user/y#2 {9}",
+	})
+
+	h.deliver(askEnv(ping{3}, askAddr2))
+	if len(h.core.failTimers) != 1 || !h.core.failTimers[0].cancel() {
+		t.Fatal("no fail timer to stop")
+	}
+	h.eng.Advance(time.Second)
+	if len(h.host.envs) != 1 {
+		t.Errorf("a stopped fail timer failed %d asks", len(h.host.envs)-1)
+	}
+}
+
+// TestDeliverBuildsAskErrorsOnlyForAsks checks that the unreachable and frame-size errors are
+// built only when an ask is among the dropped frames.
+func TestDeliverBuildsAskErrorsOnlyForAsks(t *testing.T) {
+	ce := &countingErrors{}
+	h := newSendHarness(t, func(c *Config) {
+		c.Errors = ce
+		c.Settings.OutboundQueue = 1
+	})
+	h.deliver(msgEnv(ping{1}))
+	h.deliver(msgEnv(ping{2})) // queue-full, no ask
+	h.up()
+	h.deliver(msgEnv(blob{strings.Repeat("x", 9000)})) // too large for the peer, no ask
+	if ce.built != 0 {
+		t.Errorf("%d errors built for dropped frames without an ask", ce.built)
+	}
+	h.deliver(askEnv(blob{strings.Repeat("x", 9000)}, askAddr))
+	if ce.built != 1 {
+		t.Errorf("%d errors built for one dropped ask, want 1", ce.built)
+	}
+}
+
+// countingErrors counts the Unreachable and FrameTooLarge errors it builds.
+type countingErrors struct {
+	testErrors
+	built int
+}
+
+func (e *countingErrors) Unreachable(node string) error {
+	e.built++
+	return e.testErrors.Unreachable(node)
+}
+
+func (e *countingErrors) FrameTooLarge(size, limit int) error {
+	e.built++
+	return e.testErrors.FrameTooLarge(size, limit)
+}
+
+// TestDeliverForgetsIdlePeers checks that a peer that never handshook is forgotten once nothing is
+// queued or waiting for it, so sends to many node names do not grow the core's peers.
+func TestDeliverForgetsIdlePeers(t *testing.T) {
+	h := newSendHarness(t, nil)
+	for i := range 50 {
+		node := "n" + strconv.Itoa(i)
+		h.drv.errs[node] = ErrUnknownNode
+		h.deliver(toNode(msgEnv(ping{i}), node))
+	}
+	if len(h.core.peers) != 0 {
+		t.Errorf("%d peers kept for unknown nodes", len(h.core.peers))
+	}
+	// A dial that is rejected with nothing else waiting leaves no peer behind either.
+	h.deliver(msgEnv(ping{1}))
+	h.drv.errs["b"] = ErrUnknownNode
+	h.core.Frame(h.link(), ctrl(KindReject, RejectCodec))
+	h.eng.Advance(time.Minute)
+	if len(h.core.peers) != 0 {
+		t.Errorf("%d peers kept after the queue was dead-lettered", len(h.core.peers))
+	}
+}
+
+// lockCheck is a slog handler that counts the records logged while the core's lock is held.
+type lockCheck struct {
+	core        *Core
+	n, underMut int
+}
+
+func (*lockCheck) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *lockCheck) Handle(context.Context, slog.Record) error {
+	h.n++
+	if !h.core.mu.TryLock() {
+		h.underMut++
+		return nil
+	}
+	h.core.mu.Unlock()
+	return nil
+}
+
+func (h *lockCheck) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *lockCheck) WithGroup(string) slog.Handler      { return h }
+
+// TestDeliverLogsWithoutLock checks that the core logs only after releasing its lock: the
+// dropped-headers warning, a protocol error, a failed dial, a closed link and a WELCOME from the
+// wrong node.
+func TestDeliverLogsWithoutLock(t *testing.T) {
+	lc := &lockCheck{}
+	h := newSendHarness(t, func(c *Config) { c.Log = slog.New(lc) })
+	lc.core = h.core
+
+	env := msgEnv(ping{1})
+	env.Headers = []engine.Header{{Key: ""}}
+	h.deliver(env)
+	l := h.up()
+	h.core.Frame(l, []byte{0, 0, 0, 1, 9})
+
+	h.drv.errs["c"] = errors.New("refused")
+	h.deliver(toNode(msgEnv(ping{2}), "c"))
+
+	in := h.acceptUp(60)
+	h.core.Closed(in, errors.New("reset"))
+
+	h.deliver(msgEnv(ping{3}))
+	h.core.Frame(h.link(), welcome("x", "a", 7, "json"))
+
+	if lc.n != 5 || lc.underMut != 0 {
+		t.Errorf("%d log records, %d of them under the lock; want 5, none under it", lc.n, lc.underMut)
+	}
 }

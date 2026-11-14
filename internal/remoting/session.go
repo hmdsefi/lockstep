@@ -184,7 +184,7 @@ func (c *Core) closeSession(s *session, reason, downReason string) {
 
 // protocolError closes s after a received frame broke the protocol.
 func (c *Core) protocolError(s *session, err error) {
-	c.log.Warn("remoting: protocol error", "node", c.node, "peer", s.peerName(), "conn", s.conn, "dir", s.dir.String(), "err", err)
+	c.warn("remoting: protocol error", "node", c.node, "peer", s.peerName(), "conn", s.conn, "dir", s.dir.String(), "err", err)
 	c.closeSession(s, CloseProtocol, DownProtocol)
 }
 
@@ -216,6 +216,7 @@ func (c *Core) down(s *session, reason string) {
 			p.failures++
 		}
 		if !c.waiting(p) {
+			c.tidy(p)
 			return
 		}
 		if p.failures > 0 {
@@ -279,16 +280,16 @@ func (c *Core) armDialTimeout(s *session) {
 // waiting. When the driver knows no address for p, the frames queued for p are dead letters
 // (REM-135).
 func (c *Core) dialFailed(p *peer, err error) {
-	c.log.Info("remoting: dial failed", "node", c.node, "peer", p.name, "err", err)
-	if errors.Is(err, ErrUnknownNode) && len(p.queue) > 0 {
-		q := p.queue
-		p.queue = nil
-		c.drop(q, DeadUnknownNode, c.errs.Unreachable(p.name))
+	c.info("remoting: dial failed", "node", c.node, "peer", p.name, "err", err)
+	if errors.Is(err, ErrUnknownNode) {
+		c.dropQueue(p, DeadUnknownNode)
 	}
 	p.failures++
 	if c.waiting(p) {
 		c.armRedial(p)
+		return
 	}
+	c.tidy(p)
 }
 
 // dialTimedOut takes a session down whose handshake did not complete within DialTimeout: an
@@ -322,7 +323,11 @@ func (c *Core) redialFired(p *peer) {
 	c.mu.Lock()
 	defer c.unlock()
 	p.redial = nil
-	if p.out != nil || !c.waiting(p) {
+	if p.out != nil {
+		return
+	}
+	if !c.waiting(p) {
+		c.tidy(p)
 		return
 	}
 	if err := c.dial(p); err != nil {

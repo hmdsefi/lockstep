@@ -140,8 +140,11 @@ type Core struct {
 	serial  uint64 // sessions created so far
 
 	// deferred holds the calls that must run after the lock is released, in order: dead letters,
-	// which may send and so call Deliver again.
+	// which may send and so call Deliver again, and log calls, whose handlers may block.
 	deferred []func()
+	// failTimers holds the armed lockstep/remote/fail timers, in arming order, so a shutdown can
+	// stop them.
+	failTimers []*failTimer
 }
 
 // New checks cfg and returns a Core that has not started. Every error text starts with
@@ -233,6 +236,16 @@ func (c *Core) Start() {
 	c.armTick()
 }
 
+// warn logs a warning once the lock is released; args are evaluated now.
+func (c *Core) warn(msg string, args ...any) {
+	c.deferred = append(c.deferred, func() { c.log.Warn(msg, args...) })
+}
+
+// info logs at level info once the lock is released; args are evaluated now.
+func (c *Core) info(msg string, args ...any) {
+	c.deferred = append(c.deferred, func() { c.log.Info(msg, args...) })
+}
+
 // Connect makes sure an outgoing session to node exists or is on its way: it dials now unless a
 // session is up, a dial is in progress or a redial is armed. Until a session to node comes up,
 // node has work waiting, so a dial that fails is retried with backoff; a session that is already
@@ -245,7 +258,6 @@ func (c *Core) Connect(node string) error {
 	}
 	c.mu.Lock()
 	defer c.unlock()
-	_, known := c.peers[node]
 	p := c.peer(node)
 	if p.out != nil && p.out.up {
 		return nil
@@ -256,9 +268,7 @@ func (c *Core) Connect(node string) error {
 	}
 	if err := c.dial(p); err != nil {
 		if errors.Is(err, ErrUnknownNode) {
-			if !known {
-				delete(c.peers, node)
-			}
+			c.tidy(p)
 			return err
 		}
 		p.want = true
@@ -287,8 +297,7 @@ func (c *Core) Accepted(link Link) {
 
 // Writable tells the core that link has room again after its Write returned false. The core
 // writes the frames the link did not take, in order, then the data frames queued for the peer,
-// and resumes writing. Call it in engine
-// context.
+// and resumes writing. Call it in engine context.
 func (c *Core) Writable(link Link) {
 	c.mu.Lock()
 	defer c.unlock()
@@ -341,9 +350,19 @@ func (c *Core) Closed(link Link, err error) {
 		return
 	}
 	if err != nil {
-		c.log.Info("remoting: link closed", "node", c.node, "peer", s.peerName(), "conn", s.conn, "err", err)
+		c.info("remoting: link closed", "node", c.node, "peer", s.peerName(), "conn", s.conn, "err", err)
 	}
 	c.down(s, DownIO)
+}
+
+// tidy forgets p when it holds nothing: no session, no queued frame, no armed redial, nothing
+// waiting, and no incarnation, which only a handshake gives. A peer that completed a handshake is
+// kept for its incarnation and advertise address, which restart detection and later dials need, so
+// the peers kept are the nodes that handshook with this one plus the ones with work.
+func (c *Core) tidy(p *peer) {
+	if p.out == nil && p.in == nil && p.redial == nil && p.inc == 0 && !c.waiting(p) && c.peers[p.name] == p {
+		delete(c.peers, p.name)
+	}
 }
 
 // peer returns the peer named name, adding it if it is new.

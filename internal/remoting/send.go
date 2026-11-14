@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/hmdsefi/lockstep/internal/engine"
@@ -172,12 +173,12 @@ func addrText(a engine.Address) string {
 }
 
 // enqueue queues f for node and writes or dials (REM-130 to REM-140). A full queue makes f a dead
-// letter "queue-full"; a driver that knows no address for node makes it one "unknown-node".
+// letter "queue-full"; a driver that knows no address for node makes the queue, f included, dead
+// letters "unknown-node".
 func (c *Core) enqueue(node string, f *outFrame) {
-	_, known := c.peers[node]
 	p := c.peer(node)
 	if len(p.queue) >= c.set.OutboundQueue {
-		c.drop([]*outFrame{f}, DeadQueueFull, c.errs.Unreachable(node))
+		c.drop([]*outFrame{f}, DeadQueueFull, func() error { return c.errs.Unreachable(node) })
 		return
 	}
 	f.inc = p.inc
@@ -192,12 +193,9 @@ func (c *Core) enqueue(node string, f *outFrame) {
 		switch {
 		case err == nil:
 		case errors.Is(err, ErrUnknownNode):
-			// The queue held nothing else: a peer with queued frames has a dial in progress or armed.
-			p.queue = nil
-			c.drop([]*outFrame{f}, DeadUnknownNode, c.errs.Unreachable(node))
-			if !known {
-				delete(c.peers, node)
-			}
+			// No failure is counted, as Connect counts none: nothing is retried.
+			c.dropQueue(p, DeadUnknownNode)
+			c.tidy(p)
 		default:
 			c.dialFailed(p, err)
 		}
@@ -214,7 +212,7 @@ func (c *Core) flush(s *session) {
 		f := p.queue[0]
 		if limit := int(s.peerLimit); f.size() > limit {
 			c.popQueue(p)
-			c.drop([]*outFrame{f}, DeadTooLargeForPeer, c.errs.FrameTooLarge(f.size(), limit))
+			c.drop([]*outFrame{f}, DeadTooLargeForPeer, func() error { return c.errs.FrameTooLarge(f.size(), limit) })
 			continue
 		}
 		seq := s.seq + 1
@@ -228,7 +226,7 @@ func (c *Core) flush(s *session) {
 		s.lastSend = c.clock.Now()
 		if f.dropped > 0 && !s.headersWarned {
 			s.headersWarned = true
-			c.log.Warn("remoting: headers dropped: they break the header limits", "node", c.node, "peer", p.name,
+			c.warn("remoting: headers dropped: they break the header limits", "node", c.node, "peer", p.name,
 				"conn", s.conn, "kind", f.kind.String(), "from", addrText(f.from), "to", addrText(f.to), "headers", f.dropped)
 		}
 		if c.tracer != nil {
@@ -253,29 +251,65 @@ func (c *Core) popQueue(p *peer) {
 	}
 }
 
+// dropQueue makes every frame queued for p a dead letter with reason, and fails the asks among
+// them with the unreachable error.
+func (c *Core) dropQueue(p *peer, reason string) {
+	if len(p.queue) == 0 {
+		return
+	}
+	q := p.queue
+	p.queue = nil
+	c.drop(q, reason, func() error { return c.errs.Unreachable(p.name) })
+}
+
+// failTimer is one armed lockstep/remote/fail timer and the asks it fails.
+type failTimer struct {
+	cancel engine.Cancel
+	fails  []askFailure
+}
+
 // drop makes frames dead letters with reason, in order, once the lock is released, and fails the
-// asks among them with askErr in one later lockstep/remote/fail callback (REM-145). None of them
-// took a sequence number.
-func (c *Core) drop(frames []*outFrame, reason string, askErr error) {
+// asks among them with the error askErr builds, called once and only when there is an ask, in one
+// later lockstep/remote/fail callback (REM-145). None of the frames took a sequence number.
+func (c *Core) drop(frames []*outFrame, reason string, askErr func() error) {
 	var fails []askFailure
+	var err error
 	for _, f := range frames {
 		c.deferred = append(c.deferred, func() { c.dead(f.from, f.to, reason, f.msg) })
 		if f.kind == KindAsk {
-			fails = append(fails, askFailure{target: f.to, ask: f.ask, err: askErr})
+			if err == nil {
+				err = askErr()
+			}
+			fails = append(fails, askFailure{target: f.to, ask: f.ask, err: err})
 		}
 	}
 	if len(fails) == 0 {
 		return
 	}
-	c.clock.AfterFunc(0, labelFail, func() {
-		for _, a := range fails {
-			c.host.Inbound(engine.Envelope{
-				From:    a.target,
-				To:      a.ask,
-				Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteFail, Err: a.err}),
-			})
-		}
-	})
+	t := &failTimer{fails: fails}
+	// The callback cannot run before the lock is released, so t.cancel is set by then.
+	t.cancel = c.clock.AfterFunc(0, labelFail, func() { c.failFired(t) })
+	c.failTimers = append(c.failTimers, t)
+}
+
+// failFired fails t's asks through the host, in order, without the lock.
+func (c *Core) failFired(t *failTimer) {
+	c.mu.Lock()
+	i := slices.Index(c.failTimers, t)
+	if i >= 0 {
+		c.failTimers = slices.Delete(c.failTimers, i, i+1)
+	}
+	c.unlock()
+	if i < 0 {
+		return // stopped
+	}
+	for _, a := range t.fails {
+		c.host.Inbound(engine.Envelope{
+			From:    a.target,
+			To:      a.ask,
+			Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteFail, Err: a.err}),
+		})
+	}
 }
 
 // unlock releases the lock, then runs the calls deferred while it was held, in order.
