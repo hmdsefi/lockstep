@@ -145,12 +145,25 @@ func (r *runner) run(w *faultline.World) {
 	s.registerChecks()
 	w.Sim.OnCrash(s.crashed)
 	r.body(s)
-	w.T().Cleanup(func() { s.ended = true })
+	w.T().Cleanup(s.end)
 }
 
 // end ends the Sim of the latest run, if any.
 func (r *runner) end() {
 	if r.cur != nil {
-		r.cur.ended = true
+		r.cur.end()
+	}
+}
+
+// end ends the run of s (SIM-040) and takes the remoting core of every node's current system out
+// of the table of remoting.CoreOf, which would otherwise keep the run's world alive for the rest
+// of the test binary. A crash and a shutdown have taken out the cores of the earlier systems.
+// Calls after the first do nothing more.
+func (s *Sim) end() {
+	s.ended = true
+	for _, ln := range s.nodes {
+		if ln.sys != nil {
+			remoting.Unregister(ln.sys)
+		}
 	}
 }

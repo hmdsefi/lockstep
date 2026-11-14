@@ -342,6 +342,7 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 	})
 
 	t.Run("jitter and duplicates", func(t *testing.T) {
+		heldBack := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
 		sim.Simulate(t, simOpts(20), func(s *sim.Sim) {
 			var got []int
 			var sendErrs []error
@@ -384,8 +385,42 @@ func TestATMBX15CrossNodePairFIFO(t *testing.T) {
 			if n := len(simRecords(w, n2, "lockstep.remote.gap")); n != 0 {
 				tt.Errorf("%d lockstep.remote.gap records on n2, want 0", n)
 			}
+			if n := len(simRecords(w, n1, "net.dup")); n != 0 {
+				tt.Errorf("%d net.dup records on n1, want 0: remoting sends one copy of each datagram", n)
+			}
+			if simHeldBackByFIFO(simRecords(w, n1, "net.send_raw")) > 0 {
+				heldBack[w.Seed()] = true
+			}
 		})
+		// The scenario must exercise what it tests: the link drew delays that would have
+		// reordered datagrams, had remoting not sent them in FIFO order.
+		if len(heldBack) == 0 {
+			t.Errorf("no seed drew a delay that would have reordered the link")
+		}
 	})
+}
+
+// simHeldBackByFIFO counts the MSG datagrams among sends, net.send_raw records of one link, whose
+// drawn delay (delay_ns) would have delivered them before an earlier one: the reorderings that the
+// datagrams' FIFO order prevented (REM-320).
+func simHeldBackByFIFO(sends []kernel.Record) int {
+	n := 0
+	var latest kernel.Time
+	for _, r := range sends {
+		if !strings.Contains(simAttr(r, "payload"), " MSG ") {
+			continue
+		}
+		d, err := strconv.ParseInt(simAttr(r, "delay_ns"), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		due := r.At.Add(time.Duration(d))
+		if due < latest {
+			n++
+		}
+		latest = max(latest, due)
+	}
+	return n
 }
 
 // AT-MBX-18, MBX-120: inbound envelopes meet a full mailbox on n2 as local sends do: the first

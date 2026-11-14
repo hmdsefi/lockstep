@@ -4,9 +4,11 @@
 package sim_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/hmdsefi/faultline/kernel"
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/codec"
+	"github.com/hmdsefi/lockstep/internal/remoting"
 	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
@@ -76,6 +79,46 @@ func TestATREM31EncodedDelivery(t *testing.T) {
 			tt.Errorf("lockstep.remote.send records %q, want %q", sends, want)
 		}
 	})
+}
+
+// SIM-040, REM-335: every system's remoting core is registered for the system while the run
+// lasts, and none is left in the table once Simulate returns, whether its node crashed, shut down
+// or was still up at the end, so no run's world outlives it.
+func TestSimulateUnregistersCores(t *testing.T) {
+	var systems []*lockstep.System
+	sim.Simulate(t, fullTrace(3), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		s.Node("n1", noSetup)
+		n2 := s.Node("n2", noSetup)
+		s.Node("n3", noSetup)
+		w.RunFor(time.Millisecond)
+		first := s.System("n2")
+		systems = append(systems, s.System("n1"), first, s.System("n3"))
+		n2.Crash()
+		n2.Restart()
+		systems = append(systems, s.System("n2"))
+		if err := s.System("n3").Shutdown(context.Background()); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(time.Millisecond)
+		if remoting.CoreOf(s.System("n1")) == nil || remoting.CoreOf(s.System("n2")) == nil {
+			tt.Error("a live system has no remoting core during the run")
+		}
+		if remoting.CoreOf(first) != nil {
+			tt.Error("the crashed system still has a remoting core")
+		}
+		if remoting.CoreOf(s.System("n3")) != nil {
+			tt.Error("the shut-down system still has a remoting core")
+		}
+	})
+	if len(systems) == 0 {
+		t.Fatal("the body never ran")
+	}
+	for i, sys := range systems {
+		if c := remoting.CoreOf(sys); c != nil {
+			t.Errorf("system %d (%s, incarnation %d) still has its remoting core after Simulate", i, sys.Node(), sys.Incarnation())
+		}
+	}
 }
 
 // The scenarios of TestATSIM33RemoteOptions: each prints bodyRan from body.
@@ -182,11 +225,51 @@ func connect(s *sim.Sim, d time.Duration, nodes ...string) {
 }
 
 // withoutTicks returns a copy of recs without the kernel.event records of the remoting cores'
-// heartbeat ticks (REM-090), which every live system has once a second.
-func withoutTicks(recs []kernel.Record) []kernel.Record {
+// heartbeat ticks (REM-090), which every live system has once a second, for which drop reports
+// true given the tick's node and incarnation.
+func withoutTicks(recs []kernel.Record, drop func(node kernel.NodeID, inc uint32) bool) []kernel.Record {
 	return slices.DeleteFunc(slices.Clone(recs), func(r kernel.Record) bool {
-		return r.Kind == "kernel.event" && r.Text == "lockstep/remote/tick"
+		return r.Kind == "kernel.event" && r.Text == "lockstep/remote/tick" && drop(r.Node, r.Inc)
 	})
+}
+
+// heldBackByFIFO counts the MSG datagrams from node from to node to, among recs, whose drawn
+// delay (net.send_raw's delay_ns) would have delivered them before an earlier one: the
+// reorderings that the datagrams' FIFO order prevented (REM-320). A test of an unordered link uses
+// it to show that the link did draw such delays.
+func heldBackByFIFO(recs []kernel.Record, from, to string) int {
+	n := 0
+	var latest kernel.Time
+	seen := false
+	for _, r := range recs {
+		if r.Kind != "net.send_raw" || attr(r, "from") != from || attr(r, "to") != to || !strings.Contains(attr(r, "payload"), " MSG ") {
+			continue
+		}
+		d, err := strconv.ParseInt(attr(r, "delay_ns"), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		due := r.At.Add(time.Duration(d))
+		if seen && due < latest {
+			n++
+		}
+		if !seen || due > latest {
+			latest, seen = due, true
+		}
+	}
+	return n
+}
+
+// ticksOf returns a drop function for withoutTicks that drops the ticks of incarnation inc of
+// node only.
+func ticksOf(node kernel.NodeID, inc uint32) func(kernel.NodeID, uint32) bool {
+	return func(n kernel.NodeID, i uint32) bool { return n == node && i == inc }
+}
+
+// ticksBut returns a drop function for withoutTicks that drops every tick but those of
+// incarnation inc of node.
+func ticksBut(node kernel.NodeID, inc uint32) func(kernel.NodeID, uint32) bool {
+	return func(n kernel.NodeID, i uint32) bool { return n != node || i != inc }
 }
 
 // askRetry is sim.Ask with a 100 ms timeout, retried up to five times while the ask times out or

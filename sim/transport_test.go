@@ -174,8 +174,10 @@ type burst struct{ From, N int }
 // AT-SIM-10, REM-160, REM-320: on FIFO links the messages of one pair arrive in send order, each
 // numbered with its position among the envelopes from the sender's incarnation. On a jittered link
 // that would reorder, remoting still sends its datagrams in FIFO order, so the messages arrive in
-// order, without a gap.
+// order, without a gap. Across the seeds, the jittered link drew delays that would have reordered
+// some datagrams.
 func TestATSIM10PerPairOrder(t *testing.T) {
+	heldBack := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
 	sim.SimulateSeeds(t, fullTrace(0), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []int
@@ -210,6 +212,7 @@ func TestATSIM10PerPairOrder(t *testing.T) {
 			tt.Errorf("FIFO links: lockstep.deliver seq on n2 %v, want 1..100", seqs)
 		}
 		w.Net.SetLink(n1.ID(), n2.ID(), simnet.Link{Jitter: 50 * time.Millisecond})
+		jittered := len(w.Sim.Records())
 		got = nil
 		if err := sim.Send(s, "n1", sender, burst{From: 101, N: 100}); err != nil {
 			tt.Fatalf("Send: %v", err)
@@ -227,7 +230,13 @@ func TestATSIM10PerPairOrder(t *testing.T) {
 		if n := len(ofKind(w.Sim.Records(), "lockstep.remote.gap")); n != 0 {
 			tt.Errorf("%d lockstep.remote.gap records, want 0", n)
 		}
+		if heldBackByFIFO(w.Sim.Records()[jittered:], "n1", "n2") > 0 {
+			heldBack[w.Seed()] = true
+		}
 	}, 1, 2, 3, 4, 5)
+	if len(heldBack) == 0 {
+		t.Error("no seed of five drew a delay that would have reordered the jittered link")
+	}
 }
 
 // numbers returns from..to.
@@ -345,6 +354,9 @@ func TestATSIM11UnknownNode(t *testing.T) {
 			tt.Fatalf("%d unknown-node dead letters, want 1", len(dead))
 		}
 		d := dead[0]
+		if keys := attrKeys(d); !slices.Equal(keys, []string{"from", "to", "reason", "msg"}) {
+			tt.Errorf("dead letter attributes %v, want from, to, reason, msg", keys)
+		}
 		if d.Node != n1.ID() || attr(d, "to") != to.String() || attr(d, "from") != from || attr(d, "msg") == "" {
 			tt.Errorf("dead letter on node %d to %q from %q msg %q, want node %d, to %s, from %s and a msg",
 				d.Node, attr(d, "to"), attr(d, "from"), attr(d, "msg"), n1.ID(), to, from)

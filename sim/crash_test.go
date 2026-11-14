@@ -394,7 +394,8 @@ func ignoresSeams(s *sim.Sim, e sim.EngineBundle, n1 *kernel.Node) {
 	if fired || a.ran {
 		tt.Errorf("timer fired %v, turn ran %v; want neither", fired, a.ran)
 	}
-	if recs := withoutTicks(w.Sim.Records()[before:]); len(recs) != 0 {
+	// The live systems' remoting cores tick once a second; the dead engine's must not.
+	if recs := withoutTicks(w.Sim.Records()[before:], ticksBut(n1.ID(), e.Epoch)); len(recs) != 0 {
 		tt.Errorf("%d records after the seam calls, the first %s %q on node %d inc %d; want none",
 			len(recs), recs[0].Kind, recs[0].Text, recs[0].Node, recs[0].Inc)
 	}

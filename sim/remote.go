@@ -63,13 +63,25 @@ func (d datagram) Describe() string {
 		" seq=" + strconv.FormatUint(seq, 10) + " bytes=" + strconv.Itoa(len(d)-idLen)
 }
 
+// The offsets of a frame's kind byte (after the 4-byte length and the version byte) and of its
+// sequence number (after the flags).
+const kindAt, seqAt = 5, 8
+
+// frameKind returns the kind byte of the frame b starts with, and false when b is too short to
+// hold one.
+func frameKind(b []byte) (remoting.Kind, bool) {
+	if len(b) <= kindAt {
+		return 0, false
+	}
+	return remoting.Kind(b[kindAt]), true
+}
+
 // frameHead returns the kind name and sequence number of the frame b starts with, as far as b
 // holds them: an empty kind and 0 when b is too short.
 func frameHead(b []byte) (string, uint64) {
-	const kindAt, seqAt = 5, 8 // after the 4-byte length and the version byte; after the flags
 	kind := ""
-	if len(b) > kindAt {
-		kind = remoting.Kind(b[kindAt]).String()
+	if k, ok := frameKind(b); ok {
+		kind = k.String()
 	}
 	var seq uint64
 	if len(b) >= seqAt+8 {
@@ -241,7 +253,7 @@ func (d *driver) receive(from kernel.NodeID, id uint64, frame []byte) {
 	key := linkKey{peer: from, id: id &^ dirBit, out: id&dirBit != 0}
 	l := d.links[key]
 	if l == nil {
-		if kind, _ := frameHead(frame); key.out || kind != remoting.KindHello.String() {
+		if kind, ok := frameKind(frame); key.out || !ok || kind != remoting.KindHello {
 			d.unknown(from, id, frame)
 			return
 		}
@@ -263,7 +275,7 @@ func (d *driver) unknown(from kernel.NodeID, id uint64, frame []byte) {
 		engine.Attr{Key: "seq", Value: strconv.FormatUint(seq, 10)},
 		engine.Attr{Key: "reason", Value: discardUnknownConnection},
 	)
-	if kind == remoting.KindClose.String() {
+	if k, ok := frameKind(frame); ok && k == remoting.KindClose {
 		return
 	}
 	closeFrame := remoting.AppendFrame(nil, &remoting.Frame{Kind: remoting.KindClose, Payload: []byte(remoting.CloseUnknownConnection)})

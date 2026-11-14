@@ -107,8 +107,10 @@ func withAttr(recs []kernel.Record, key, value string) []kernel.Record {
 // SFT-020, AT-SFT-02, REM-320: a link fault without FIFO makes the link unordered while it lasts,
 // and link-reset restores FIFO; sim re-applies nothing. Remoting sends every datagram in FIFO
 // order on its link whatever the link's setting, so B receives every message, in order, and the
-// core records no gap.
+// core records no gap. Across the seeds, the link drew delays in the window that would have
+// reordered some datagrams.
 func TestATSFT02UnorderedLinkWindow(t *testing.T) {
+	heldBack := map[uint64]bool{} // read by key; a seed that runs again sets the same entry
 	sim.SimulateSeeds(t, fullTrace(0), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var got []arrival
@@ -140,7 +142,16 @@ func TestATSFT02UnorderedLinkWindow(t *testing.T) {
 		if n := len(ofKind(w.Sim.Records(), "lockstep.remote.gap")); n != 0 {
 			tt.Errorf("%d lockstep.remote.gap records, want 0", n)
 		}
+		window := slices.DeleteFunc(slices.Clone(w.Sim.Records()), func(r kernel.Record) bool {
+			return r.At < kernel.Time(time.Second) || r.At >= kernel.Time(2*time.Second)
+		})
+		if heldBackByFIFO(window, "n1", "n2") > 0 {
+			heldBack[w.Seed()] = true
+		}
 	}, 1, 2, 3, 4, 5)
+	if len(heldBack) == 0 {
+		t.Error("no seed of five drew a delay in the window that would have reordered the link")
+	}
 }
 
 // SFT-060, SFT-080, AT-SFT-07: DropBetween drops the messages that the pair's fresh drop stream
