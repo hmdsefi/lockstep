@@ -16,7 +16,7 @@
 // Connections are kept alive with heartbeats and redialed with a backoff between RedialMin and
 // RedialMax. Frames larger than MaxFrame are refused with ErrFrameTooLarge.
 //
-// Remoting is switched on for a System in a later version of this package. This version declares
-// the configuration, the sentinel errors and the failure codes that the rest of the package builds
-// on.
+// Enable switches remoting on for a System built by lockstep.New: it listens on Config.Listen and
+// keeps one outgoing connection per peer, opened when the system first sends to that peer.
+// Remoting stops when the System shuts down. Lookup finds an actor on another node by its path.
 package remote
