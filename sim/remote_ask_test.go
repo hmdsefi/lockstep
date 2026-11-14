@@ -473,18 +473,25 @@ var (
 	_ = scenario("rem27-ask", func(t *testing.T) {
 		sim.Simulate(t, fullTrace(1), func(s *sim.Sim) {
 			wrongTypeNodes(s)
-			lockstep.Ask(s.System("a"), lockstep.PIDAt[BankMsg]("b", "/user/seq"), getBalance(""))
-			s.World().RunFor(time.Second)
+			askFails(s, lockstep.PIDAt[BankMsg]("b", "/user/seq"), getBalance(""))
 		})
 	})
 	_ = scenario("rem28-reply", func(t *testing.T) {
 		sim.Simulate(t, fullTrace(1), func(s *sim.Sim) {
 			wrongTypeNodes(s)
-			lockstep.Ask(s.System("a"), lockstep.PIDAt[Ping]("b", "/user/liar"), buildPing(1))
-			s.World().RunFor(time.Second)
+			askFails(s, lockstep.PIDAt[Ping]("b", "/user/liar"), buildPing(1))
 		})
 	})
 )
+
+// askFails asks to from node a with sim.Ask, which runs the world until the reply resolves. The
+// failing-seed scenarios call it for an ask whose seed fails no later than the event that resolves
+// it, so it never returns; if it does, the scenario fails with t.Fatal instead of the expected
+// check.
+func askFails[M, R any](s *sim.Sim, to lockstep.PID[M], build func(lockstep.ReplyTo[R]) M) {
+	v, err := sim.Ask(s, "a", to, build)
+	s.World().T().Fatalf("the ask of %v returned %v, %v; want the seed to fail first", to, v, err)
+}
 
 // wrongTypeNodes boots a, and b with an actor taking Seq at /user/seq and a liar at /user/liar,
 // and runs the world until both are up and connected both ways.
