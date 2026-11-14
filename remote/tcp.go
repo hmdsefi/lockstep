@@ -79,7 +79,8 @@ type driver struct {
 	mu      sync.Mutex
 	stopped bool
 	links   map[*link]struct{} // links whose Closed is not yet posted
-	wg      sync.WaitGroup     // every goroutine; Add only under mu while !stopped, or by a counted goroutine
+	// wg counts every goroutine; Add runs under mu while !stopped, or from a counted goroutine.
+	wg sync.WaitGroup
 
 	qmu    sync.Mutex
 	events []event // posted, not yet handed to the core
@@ -318,8 +319,8 @@ func (d *driver) post(e event) {
 // drain hands the queued events to the core, in order, in engine context. Only one drain is armed
 // or running at a time, so the events reach the core one at a time. It hands over at most
 // drainBatch events and leaves the rest, and those posted meanwhile, to another callback, so a
-// busy network does not hold a worker indefinitely. Once
-// the engine stops, the callback no longer runs: the core has shut down by then.
+// busy network does not hold a worker indefinitely. Once the engine stops, the callback no longer
+// runs: the core has shut down by then.
 func (d *driver) drain() {
 	d.qmu.Lock()
 	n := min(len(d.events), drainBatch)
@@ -394,7 +395,7 @@ func (l *link) Write(frame []byte) bool {
 	}
 	l.buf = append(l.buf, frame)
 	l.size += len(frame)
-	l.cond.Signal()
+	l.cond.Broadcast() // the reader may wait on cond too
 	return true
 }
 
@@ -559,9 +560,10 @@ func readBody(r io.Reader, prefix [4]byte, n int) ([]byte, error) {
 }
 
 // write writes the frames the link takes, in order, each batch within the write deadline, until
-// the link closes or ends; on an accepted TLS connection it first waits for the handshake to end. A refused frame makes it post Writable once it has taken the buffer.
-// A write error ends the link. After Close it closes the connection's writing side and gives the
-// reader closeLinger to see the peer close its side.
+// the link closes or ends; on an accepted TLS connection it first waits for the handshake to end.
+// A refused frame makes it post Writable once it has taken the buffer. A write error ends the
+// link. After Close it closes the connection's writing side and gives the reader closeLinger to
+// see the peer close its side.
 func (l *link) write(conn net.Conn) {
 	if l.handshook != nil {
 		<-l.handshook
