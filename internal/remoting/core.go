@@ -172,8 +172,9 @@ type Core struct {
 	// lowered by tests.
 	maxWatchers int
 	// met are the counters, nil functions being off; up is the number of up sessions.
-	met Metrics
-	up  atomic.Int64
+	met   Metrics
+	tally tally // counts not yet handed to met; unlock hands them over
+	up    atomic.Int64
 }
 
 // New checks cfg and returns a Core that has not started. Every error text starts with

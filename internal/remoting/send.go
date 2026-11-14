@@ -393,7 +393,9 @@ func (c *Core) failFired(t *failTimer) {
 func (c *Core) unlock() {
 	calls := c.deferred
 	c.deferred = nil
+	t := c.takeTally()
 	c.mu.Unlock()
+	c.flushTally(t)
 	for _, call := range calls {
 		call()
 	}

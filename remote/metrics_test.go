@@ -217,9 +217,17 @@ func TestATREM42Metrics(t *testing.T) {
 		reconnects = 1
 		session()
 
-		_ = in.Close()
-		sessions--
+		// Shutdown writes CLOSE shutdown on the session still up, which counts like any frame, and
+		// leaves no session open.
+		shutdown(t, sys)
+		closing := mustRead(t, in, remoting.KindClose)
+		sentFrames++
+		sentBytes += frameBytes(&closing)
+		sessions = 0
 		check()
+		if got := m.value(names[6]); got != 0 {
+			t.Errorf("the sessions gauge reads %d after Shutdown, want 0", got)
+		}
 	})
 
 	t.Run("two systems", func(t *testing.T) {

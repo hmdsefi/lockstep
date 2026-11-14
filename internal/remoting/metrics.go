@@ -35,23 +35,45 @@ type Metrics struct {
 	Gaps           func(n uint64)
 }
 
+// tally holds the counts of events the core has seen under its lock and not yet handed to the
+// counters: the counters are user code, which runs only after the lock is released (unlock).
+type tally struct {
+	framesSent, framesRecv, bytesSent, bytesRecv, reconnects, gaps uint64
+}
+
 // sent counts one frame of size bytes (length prefix included) that a link took.
 func (c *Core) sent(size int) {
-	if f := c.met.FramesSent; f != nil {
-		f(1)
-	}
-	if f := c.met.BytesSent; f != nil {
-		f(uint64(size)) //nolint:gosec // G115: a frame length is not negative
-	}
+	c.tally.framesSent++
+	c.tally.bytesSent += uint64(size) //nolint:gosec // G115: a frame length is not negative
 }
 
 // received counts one frame of size bytes (length prefix included) that arrived on a known link.
 func (c *Core) received(size int) {
-	if f := c.met.FramesReceived; f != nil {
-		f(1)
-	}
-	if f := c.met.BytesReceived; f != nil {
-		f(uint64(size)) //nolint:gosec // G115: a frame length is not negative
+	c.tally.framesRecv++
+	c.tally.bytesRecv += uint64(size) //nolint:gosec // G115: a frame length is not negative
+}
+
+// takeTally returns the counts so far and clears them. Call it with the lock held.
+func (c *Core) takeTally() tally {
+	t := c.tally
+	c.tally = tally{}
+	return t
+}
+
+// flushTally hands the counts t to the counters that are on, one call per counter, and only for a
+// count above 0. Call it after the lock is released.
+func (c *Core) flushTally(t tally) {
+	for _, x := range [...]struct {
+		f func(uint64)
+		n uint64
+	}{
+		{c.met.FramesSent, t.framesSent}, {c.met.FramesReceived, t.framesRecv},
+		{c.met.BytesSent, t.bytesSent}, {c.met.BytesReceived, t.bytesRecv},
+		{c.met.Reconnects, t.reconnects}, {c.met.Gaps, t.gaps},
+	} {
+		if x.f != nil && x.n > 0 {
+			x.f(x.n)
+		}
 	}
 }
 
@@ -64,8 +86,8 @@ func (c *Core) countUp(s *session) {
 	if s.dir == dirOut {
 		seen = &s.peer.upOut
 	}
-	if *seen && c.met.Reconnects != nil {
-		c.met.Reconnects(1)
+	if *seen {
+		c.tally.reconnects++
 	}
 	*seen = true
 }
