@@ -980,11 +980,17 @@ func TestSessionWritable(t *testing.T) {
 		l.full = true
 		h.core.Frame(l, ctrl(KindPing, ""))
 		l.full = false
-		h.core.Frame(l, ctrl(KindPing, "")) // the first PONG is still held: this one waits too
+		for range 100 { // the first PONG is still held: it answers these too
+			h.core.Frame(l, ctrl(KindPing, ""))
+		}
 		same(t, "frames", l.kinds(), []string{"WELCOME"})
+		if n := len(h.core.links[l].blocked); n != 1 {
+			t.Errorf("%d frames held, want 1 PONG", n)
+		}
 		h.core.Writable(l)
-		same(t, "frames", l.kinds(), []string{"WELCOME", "PONG", "PONG"})
+		same(t, "frames", l.kinds(), []string{"WELCOME", "PONG"})
 		h.core.Writable(l) // nothing held: nothing written
+		h.core.Frame(l, ctrl(KindPing, ""))
 		same(t, "frames", l.kinds(), []string{"WELCOME", "PONG", "PONG"})
 	})
 	t.Run("blocked dialer", func(t *testing.T) {

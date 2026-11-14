@@ -115,10 +115,16 @@ func writable(d dir, k Kind) bool {
 }
 
 // write writes f on s, or keeps it in s.blocked when the link holds frames it did not take or does
-// not take this one. Writing a frame the session's direction forbids is a bug in the core.
+// not take this one; s.blocked holds at most one PONG, and a PONG beyond it is dropped. Writing a
+// frame the session's direction forbids is a bug in the core.
 func (c *Core) write(s *session, f *Frame) {
 	if !writable(s.dir, f.Kind) {
 		panic("remoting: " + f.Kind.String() + " frame written on an " + s.dir.word() + " session")
+	}
+	if f.Kind == KindPong && s.holdsPong() {
+		// One held PONG answers every PING that arrives while the link is blocked, so a peer
+		// that pings without reading cannot grow s.blocked.
+		return
 	}
 	b := AppendFrame(nil, f)
 	if len(s.blocked) > 0 || !s.link.Write(b) {
@@ -126,6 +132,16 @@ func (c *Core) write(s *session, f *Frame) {
 		return
 	}
 	s.lastSend = c.clock.Now()
+}
+
+// holdsPong reports whether s.blocked holds a PONG.
+func (s *session) holdsPong() bool {
+	for _, b := range s.blocked {
+		if Kind(b[prefixLen+1]) == KindPong {
+			return true
+		}
+	}
+	return false
 }
 
 // flushBlocked writes the frames s's link did not take, in order, until the link refuses one
