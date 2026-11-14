@@ -73,9 +73,9 @@ const (
 	KindAsk        Kind = 17 // a request; payload: ask address, then codec bytes
 	KindReply      Kind = 18 // an answer to an ask; payload: codec bytes
 	KindFail       Kind = 19 // a failed ask; payload: failure
-	KindWatch      Kind = 20 // starts watching an actor
-	KindUnwatch    Kind = 21 // stops watching an actor
-	KindTerminated Kind = 22 // a watched actor stopped; payload: terminated
+	KindWatch      Kind = 20 // starts watching an actor; payload: watch number
+	KindUnwatch    Kind = 21 // stops watching an actor; payload: watch number
+	KindTerminated Kind = 22 // a watched actor stopped; payload: terminated, with the watch number
 	KindLookup     Kind = 23 // looks an actor up by path
 )
 
@@ -89,6 +89,7 @@ const (
 	payloadReason
 	payloadAsk
 	payloadFailure
+	payloadWatch
 	payloadTerminated
 )
 
@@ -113,8 +114,8 @@ var kinds = [...]kindInfo{
 	KindAsk:        {name: "ASK", data: true, headers: true, sender: true, recipient: true, typeKey: true, payload: payloadAsk},
 	KindReply:      {name: "REPLY", data: true, headers: true, sender: true, recipient: true, typeKey: true, payload: payloadAny},
 	KindFail:       {name: "FAIL", data: true, sender: true, recipient: true, payload: payloadFailure},
-	KindWatch:      {name: "WATCH", data: true, sender: true, recipient: true, payload: payloadEmpty},
-	KindUnwatch:    {name: "UNWATCH", data: true, sender: true, recipient: true, payload: payloadEmpty},
+	KindWatch:      {name: "WATCH", data: true, sender: true, recipient: true, payload: payloadWatch},
+	KindUnwatch:    {name: "UNWATCH", data: true, sender: true, recipient: true, payload: payloadWatch},
 	KindTerminated: {name: "TERMINATED", data: true, sender: true, recipient: true, payload: payloadTerminated},
 	KindLookup:     {name: "LOOKUP", data: true, sender: true, recipient: true, typeKey: true, payload: payloadEmpty},
 }
@@ -356,6 +357,8 @@ func checkPayload(k Kind, r payloadRule, p []byte) error {
 		_, _, err = ParseAsk(p)
 	case payloadFailure:
 		_, err = ParseFailure(p)
+	case payloadWatch:
+		_, err = ParseWatch(p)
 	case payloadTerminated:
 		_, err = ParseTerminated(p)
 	case payloadAny:

@@ -102,8 +102,10 @@ func (c *Core) handshakeReply(s *session, f *Frame) {
 		default:
 			s.peer.failures = 0
 			c.sessionUp(s, &h)
-			// The frames queued while the session was dialing go out after the up record.
+			// The frames queued while the session was dialing go out after the up record, behind
+			// the outgoing watches that need their WATCH again (REM-284).
 			s.peer.want = false
+			c.resendWatches(s.peer)
 			c.flush(s)
 		}
 	case KindReject:
@@ -116,8 +118,9 @@ func (c *Core) handshakeReply(s *session, f *Frame) {
 	}
 }
 
-// sessionUp marks s up after its handshake with h and records it. Peer restarts are detected
-// where the known incarnation is replaced (REM-294).
+// sessionUp marks s up after its handshake with h and records it. A handshake that shows a new
+// incarnation of a peer whose incarnation the core knew is the peer's restart, which runs first
+// (REM-294).
 func (c *Core) sessionUp(s *session, h *Hello) {
 	if s.dialTimeout != nil {
 		s.dialTimeout()
@@ -126,6 +129,9 @@ func (c *Core) sessionUp(s *session, h *Hello) {
 	s.up = true
 	s.peerInc = h.Incarnation
 	s.peerLimit = h.FrameLimit
+	if p := s.peer; p.inc != 0 && p.inc != h.Incarnation {
+		c.restart(p, h.Incarnation, s)
+	}
 	s.peer.inc = h.Incarnation
 	if c.tracer != nil {
 		c.tracer.Record(recordUp,

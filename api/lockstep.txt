@@ -392,6 +392,7 @@ pkg github.com/hmdsefi/lockstep/remote, const DefaultMaxFrame ideal-int
 pkg github.com/hmdsefi/lockstep/remote, const ProtocolVersion = 1
 pkg github.com/hmdsefi/lockstep/remote, const ProtocolVersion ideal-int
 pkg github.com/hmdsefi/lockstep/remote, func DefaultConfig() Config
+pkg github.com/hmdsefi/lockstep/remote, func Lookup[M any](context.Context, *lockstep.System, string, string) (lockstep.PID[M], error)
 pkg github.com/hmdsefi/lockstep/remote, method (*Config) Validate() error
 pkg github.com/hmdsefi/lockstep/remote, method (*Error) Error() string
 pkg github.com/hmdsefi/lockstep/remote, method (*Error) Unwrap() error

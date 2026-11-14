@@ -119,7 +119,9 @@ type Config struct {
 // Core is the remoting protocol of one node, shared by the production and the simulation
 // drivers. It keeps one outgoing session per peer, which it dials on demand, and accepts incoming
 // sessions; it handshakes, sends heartbeats, closes idle sessions and redials with seeded
-// backoff. It guards its state with a mutex, starts no goroutine and reads time only from its
+// backoff. It serves the death watches and lookups of other nodes, keeps this node's watches of
+// their actors across reconnects, ends what a restarted peer's old incarnation left behind, and
+// shuts down cleanly. It guards its state with a mutex, starts no goroutine and reads time only from its
 // Clock, so the same events give the same frames and records in every run.
 type Core struct {
 	mu sync.Mutex
@@ -140,7 +142,8 @@ type Core struct {
 	dead      func(from, to engine.Address, reason string, msg any)
 
 	started bool
-	tick    engine.Cancel // the armed heartbeat tick; nil before Start
+	shut    bool          // Shutdown ran
+	tick    engine.Cancel // the armed heartbeat tick; nil before Start and after Shutdown
 	peers   map[string]*peer
 	links   map[Link]*session
 	serial  uint64 // sessions created so far
@@ -227,11 +230,11 @@ func New(cfg Config) (*Core, error) {
 }
 
 // Start records the start of remoting on this node and arms the first heartbeat tick. Calls
-// after the first do nothing. Call it in engine context.
+// after the first, and calls after Shutdown, do nothing. Call it in engine context.
 func (c *Core) Start() {
 	c.mu.Lock()
 	defer c.unlock()
-	if c.started {
+	if c.started || c.shut {
 		return
 	}
 	c.started = true
@@ -264,14 +267,17 @@ func (c *Core) info(msg string, args ...any) {
 // session is up, a dial is in progress or a redial is armed. Until a session to node comes up,
 // node has work waiting, so a dial that fails is retried with backoff; a session that is already
 // up adds no such work. Connect returns an error wrapping ErrUnknownNode when the driver knows no
-// address for node, and an error for this node's own name or an invalid one. Call it in engine
-// context.
+// address for node, an error for this node's own name or an invalid one, and an error after
+// Shutdown. Call it in engine context.
 func (c *Core) Connect(node string) error {
 	if node == c.node || !engine.ValidNodeName(node) {
 		return fmt.Errorf("remoting: cannot connect to node %q", node)
 	}
 	c.mu.Lock()
 	defer c.unlock()
+	if c.shut {
+		return errShutDown
+	}
 	p := c.peer(node)
 	if p.out != nil && p.out.up {
 		return nil
@@ -295,10 +301,14 @@ func (c *Core) Connect(node string) error {
 
 // Accepted hands the core a link that a peer opened to this node. The core waits DialTimeout for
 // its HELLO; a link without one by then is closed, without REJECT, and goes down with reason
-// "dial-timeout". Call it in engine context.
+// "dial-timeout". After Shutdown the core closes link at once. Call it in engine context.
 func (c *Core) Accepted(link Link) {
 	c.mu.Lock()
 	defer c.unlock()
+	if c.shut {
+		link.Close()
+		return
+	}
 	if _, ok := c.links[link]; ok {
 		return
 	}
@@ -433,10 +443,13 @@ func (c *Core) armTick() {
 // onTick runs once per Heartbeat (REM-090): an up session that received nothing for IdleTimeout
 // is closed with CLOSE idle; an up outgoing session that wrote or received nothing for Heartbeat
 // writes PING, unless its link still holds frames it did not take. Sessions in their handshake are
-// left to the dial timeout.
+// left to the dial timeout. The lookups whose asks are no longer pending are forgotten (REM-290).
 func (c *Core) onTick() {
 	c.mu.Lock()
 	defer c.unlock()
+	if c.shut {
+		return
+	}
 	now := c.clock.Now()
 	for _, s := range c.sessions() {
 		if c.links[s.link] != s || !s.up {
@@ -451,5 +464,6 @@ func (c *Core) onTick() {
 			c.write(s, &Frame{Kind: KindPing})
 		}
 	}
+	c.pruneLookups()
 	c.armTick()
 }
