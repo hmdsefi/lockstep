@@ -4,6 +4,7 @@
 package remoting
 
 import (
+	"errors"
 	"strconv"
 	"time"
 
@@ -60,10 +61,19 @@ type session struct {
 	// written first when the driver calls Writable. Control frames go here; the send path keeps
 	// data frames in the peer's queue, counted against OutboundQueue, and writes them after these.
 	blocked [][]byte
+	// stalled is set when the link refused a data frame, which stays in the peer's queue, and
+	// cleared by Writable.
+	stalled bool
 
-	// The send path adds the sequence number of the last data frame written on an outgoing
-	// session here, and the receive path the next sequence number expected on an incoming one.
+	seq           uint64 // outgoing: the sequence number of the last data frame written (REM-130)
+	headersWarned bool   // outgoing: the dropped-headers warning was logged (REM-055)
+
+	// The receive path adds the next sequence number expected on an incoming session here.
 }
+
+// held reports whether s's link must not be written to until the driver calls Writable: it
+// refused a frame, control or data, that the core still holds.
+func (s *session) held() bool { return len(s.blocked) > 0 || s.stalled }
 
 func (s *session) connText() string { return strconv.FormatUint(s.conn, 10) }
 
@@ -83,10 +93,12 @@ type peer struct {
 
 	failures int           // consecutive failed dials since an outgoing session last came up (REM-100)
 	redial   engine.Cancel // the armed redial timer; nil when none
-	// want is set by Connect while no outgoing session is up, and cleared when one comes up. The
-	// send path adds its queue of unwritten frames to waiting, and watches add the outgoing
-	// watches.
+	// want is set by Connect while no outgoing session is up, and cleared when one comes up.
+	// Watches add the outgoing watches to waiting.
 	want bool
+	// queue holds the data frames Deliver accepted and no session has written yet, in order, at
+	// most OutboundQueue of them (REM-140).
+	queue []*outFrame
 
 	advertise string // the address from the peer's last HELLO, or ""
 	inc       uint32 // the peer's last known incarnation, 0 if unknown
@@ -96,7 +108,7 @@ type peer struct {
 // when the session goes down or a dial fails (REM-100: only while frames are queued or outgoing
 // watches exist).
 func (c *Core) waiting(p *peer) bool {
-	return p.want
+	return p.want || len(p.queue) > 0
 }
 
 // writable reports whether a session of direction d may write a frame of kind k (REM-080,
@@ -127,7 +139,7 @@ func (c *Core) write(s *session, f *Frame) {
 		return
 	}
 	b := AppendFrame(nil, f)
-	if len(s.blocked) > 0 || !s.link.Write(b) {
+	if s.held() || !s.link.Write(b) {
 		s.blocked = append(s.blocked, b)
 		return
 	}
@@ -162,7 +174,7 @@ func (c *Core) flushBlocked(s *session) {
 // CLOSE is best effort: on a link that holds frames it did not take, or that does not take the
 // CLOSE, the link is closed without it.
 func (c *Core) closeSession(s *session, reason, downReason string) {
-	if len(s.blocked) == 0 {
+	if !s.held() {
 		if s.link.Write(AppendFrame(nil, &Frame{Kind: KindClose, Payload: []byte(reason)})) {
 			s.lastSend = c.clock.Now()
 		}
@@ -172,7 +184,7 @@ func (c *Core) closeSession(s *session, reason, downReason string) {
 
 // protocolError closes s after a received frame broke the protocol.
 func (c *Core) protocolError(s *session, err error) {
-	c.log.Warn("remoting: protocol error", "node", c.node, "peer", s.peerName(), "conn", s.conn, "dir", s.dir.String(), "err", err)
+	c.warn("remoting: protocol error", "node", c.node, "peer", s.peerName(), "conn", s.conn, "dir", s.dir.String(), "err", err)
 	c.closeSession(s, CloseProtocol, DownProtocol)
 }
 
@@ -204,6 +216,7 @@ func (c *Core) down(s *session, reason string) {
 			p.failures++
 		}
 		if !c.waiting(p) {
+			c.tidy(p)
 			return
 		}
 		if p.failures > 0 {
@@ -264,20 +277,26 @@ func (c *Core) armDialTimeout(s *session) {
 }
 
 // dialFailed counts a dial the driver could not start as a failure and redials while p has work
-// waiting.
+// waiting. When the driver knows no address for p, the frames queued for p are dead letters
+// (REM-135).
 func (c *Core) dialFailed(p *peer, err error) {
-	c.log.Info("remoting: dial failed", "node", c.node, "peer", p.name, "err", err)
+	c.info("remoting: dial failed", "node", c.node, "peer", p.name, "err", err)
+	if errors.Is(err, ErrUnknownNode) {
+		c.dropQueue(p, DeadUnknownNode)
+	}
 	p.failures++
 	if c.waiting(p) {
 		c.armRedial(p)
+		return
 	}
+	c.tidy(p)
 }
 
 // dialTimedOut takes a session down whose handshake did not complete within DialTimeout: an
 // outgoing session without WELCOME, or an incoming one without HELLO. No frame is written.
 func (c *Core) dialTimedOut(s *session) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	if c.links[s.link] != s || s.up {
 		return
 	}
@@ -302,9 +321,13 @@ func (c *Core) armRedial(p *peer) {
 // redialFired dials p again if it still has work waiting.
 func (c *Core) redialFired(p *peer) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	p.redial = nil
-	if p.out != nil || !c.waiting(p) {
+	if p.out != nil {
+		return
+	}
+	if !c.waiting(p) {
+		c.tidy(p)
 		return
 	}
 	if err := c.dial(p); err != nil {
