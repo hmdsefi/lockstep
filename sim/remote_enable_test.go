@@ -94,6 +94,7 @@ func TestATREM30EnableSimulated(t *testing.T) {
 			tt.Errorf("n1 ticks at %v, want %v", ticks, want)
 		}
 
+		errs = nil
 		n1.Crash()
 		n1.Restart()
 		w.RunFor(time.Millisecond)
@@ -101,11 +102,61 @@ func TestATREM30EnableSimulated(t *testing.T) {
 	})
 }
 
-// AT-REM-30, REM-040: sessions already up keep the frame limit their peer announced in its
-// handshake. n1 enables a 4 MiB limit at boot, and its session to n2 comes up with n2's 1 MiB;
-// n2 then enables 4 MiB as well, but a 2 MiB message from n1 still exceeds the limit of n1's
-// session and becomes a dead letter "too-large-for-peer", while a small one arrives.
-func TestATREM30SessionsKeepPeerFrameLimit(t *testing.T) {
+// AT-REM-30, REM-040, SIM-120: Enable on a simulated system that is shutting down, has shut down
+// or was discarded with its node's crash returns an error wrapping lockstep.ErrStopped, and never
+// tries to listen: in production, Listen "not an address" would fail first with the listen error.
+func TestATREM30EnableStopped(t *testing.T) {
+	sim.Simulate(t, fullTrace(2), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		s.Node("n1", func(sys *lockstep.System) { spawn(sys, "a", &actor[Deposit]{}) })
+		n2 := s.Node("n2", noSetup)
+		w.RunFor(time.Millisecond)
+		cfg := remote.Config{Listen: "not an address"}
+		check := func(what string, sys *lockstep.System) {
+			tt.Helper()
+			err := remote.Enable(sys, cfg)
+			want := `remote: lockstep: stopped: node "` + sys.Node() + `"`
+			if !errors.Is(err, lockstep.ErrStopped) || err.Error() != want {
+				tt.Errorf("Enable on a %s system: %v, want %q", what, err, want)
+			}
+		}
+
+		sys1 := s.System("n1")
+		executed := w.Sim.Executed()
+		if err := sys1.Shutdown(context.Background()); err != nil {
+			tt.Fatalf("Shutdown: %v", err)
+		}
+		if w.Sim.Executed() != executed {
+			tt.Fatal("the shutdown ran events before Shutdown returned")
+		}
+		check("shutting-down", sys1) // no actor has stopped yet
+		w.RunFor(time.Second)
+		check("shut-down", sys1)
+
+		sys2 := s.System("n2")
+		n2.Crash()
+		check("crashed", sys2)
+		n2.Restart()
+		w.RunFor(time.Millisecond)
+		check("crashed and restarted", sys2)
+		if err := remote.Enable(s.System("n2"), remote.Config{}); err != nil {
+			tt.Errorf("Enable on n2's new boot: %v", err)
+		}
+	})
+}
+
+// renamedJSON is codec.JSON under another name.
+type renamedJSON struct{ codec.JSON }
+
+func (renamedJSON) Name() string { return "json2" }
+
+// AT-REM-30, REM-040: sessions already up keep the frame limit and the codec agreed at their
+// handshake. n1 enables a 4 MiB limit at boot, and its session to n2 comes up with n2's 1 MiB.
+// While n2 has sessions, Enable on n2 with another codec or another registry returns an error and
+// changes nothing, so a later Enable succeeds. n2 then enables 4 MiB as well, but a 2 MiB message
+// from n1 still exceeds the limit of n1's session and becomes a dead letter "too-large-for-peer",
+// while a small one arrives.
+func TestATREM30SessionsKeepHandshake(t *testing.T) {
 	sim.Simulate(t, fullTrace(2), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		var enableErr error
@@ -119,6 +170,12 @@ func TestATREM30SessionsKeepPeerFrameLimit(t *testing.T) {
 			tt.Fatalf("Enable on n1: %v", enableErr)
 		}
 		connect(s, 300*time.Millisecond, "n1", "n2")
+		const inUse = "remote: the codec and registry cannot change while connections are open or messages wait for one"
+		for _, c := range []remote.Config{{Codec: renamedJSON{}}, {Registry: codec.NewRegistry()}} {
+			if err := remote.Enable(s.System("n2"), c); err == nil || err.Error() != inUse {
+				tt.Errorf("Enable on n2 with %+v while connected: %v, want %q", c, err, inUse)
+			}
+		}
 		if err := remote.Enable(s.System("n2"), remote.Config{MaxFrame: 4 << 20}); err != nil {
 			tt.Fatalf("Enable on n2: %v", err)
 		}
@@ -219,10 +276,18 @@ func TestATSIM20ShutdownClosesSessions(t *testing.T) {
 			tt.Errorf("n2's down records %q, want %q", n2Downs, want)
 		}
 
-		before := len(w.Sim.Records())
-		s.Engine("n1").Tracer.Record("lockstep.remote.down")
-		if n := len(w.Sim.Records()) - before; n != 0 {
-			tt.Errorf("the stopped engine emitted %d records, want none: it is dead", n)
+		// The dead letter is n1's last record of any kind: the engine is dead, so nothing of n1
+		// runs or records afterwards, not even a kernel event.
+		last := slices.IndexFunc(recs[done+1:], func(r kernel.Record) bool {
+			return r.Node == n1.ID() && r.Kind == "lockstep.deadletter"
+		})
+		if last < 0 {
+			tt.Fatal("no dead letter of n1 after the shutdown")
+		}
+		for _, r := range recs[done+1+last+1:] {
+			if r.Node == n1.ID() {
+				tt.Errorf("n1 recorded %s %q %v after its last dead letter, want nothing", r.Kind, r.Text, r.Attrs)
+			}
 		}
 	})
 }

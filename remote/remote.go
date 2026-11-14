@@ -42,21 +42,32 @@ var enableMu sync.Mutex
 // if sys is nil.
 //
 // On a system of a simulated node (package sim), whose messages to other nodes always travel
-// through remoting, Enable only replaces the node's protocol settings: it checks that it was not
-// called for this boot of the node already (ErrAlreadyEnabled), then c with Validate, ignoring
-// the network fields Listen, Advertise, Peers, Resolve and TLS. It neither requires c.Listen nor
-// listens, and does not check c.Codec against c.Registry, which the simulation does for its
-// own options. Connections already up keep the frame limits announced when they opened, so call
-// Enable from the node's setup function, before the system sends to other nodes.
+// through remoting, Enable only replaces the node's protocol settings. It returns an error
+// wrapping lockstep.ErrStopped once the system's shutdown has begun, and after its node crashed.
+// Otherwise it checks that it was not called for this boot of the node already
+// (ErrAlreadyEnabled), then c with Validate, ignoring the network fields Listen, Advertise, Peers,
+// Resolve and TLS. It never requires c.Listen nor listens, and does not check c.Codec against
+// c.Registry, which the simulation does for its own options. Connections already up keep the
+// frame limits and the codec agreed when they opened: Enable returns an error and changes nothing
+// if c names a codec of another name or another registry while the node has a connection or a
+// message waiting for one. So call Enable from the node's setup function, before the system sends
+// to other nodes.
 func Enable(sys *lockstep.System, c Config) error {
 	if sys == nil {
 		panic("remote: Enable with nil System")
 	}
 	enableMu.Lock()
 	defer enableMu.Unlock()
+	if remoting.Stopped(sys) {
+		// A simulated system whose core shut down or whose node crashed.
+		return errSimStopped(sys)
+	}
 	if core := remoting.CoreOf(sys); core != nil {
 		// A simulated system has its core from its boot, marked simulated, and may still have
 		// its settings replaced once; any other core means Enable ran already.
+		if core.Simulated() && hooks.ShuttingDown(sys) {
+			return errSimStopped(sys)
+		}
 		if !core.Settable() {
 			return ErrAlreadyEnabled
 		}
@@ -181,12 +192,22 @@ func enableSimulated(core *remoting.Core, c Config) error {
 	if n := len(c.Codec.Name()); n < 1 || n > remoting.MaxCodecName {
 		return fmt.Errorf("remote: codec name %q is not 1 to %d bytes", c.Codec.Name(), remoting.MaxCodecName)
 	}
-	if err := core.SetSettings(settings(&c, "", "")); err != nil {
-		// Only after the system's shutdown: Validate and the check above cover SetSettings's
-		// checks, and enableMu keeps a second Enable out.
-		return fmt.Errorf("remote: %w", err)
+	err := core.SetSettings(settings(&c, "", ""))
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, remoting.ErrCodecInUse):
+		return errors.New("remote: the codec and registry cannot change while connections are open or messages wait for one")
 	}
-	return nil
+	// Unreachable: Validate and the check above cover SetSettings's checks, enableMu keeps a
+	// second Enable out, and Enable checked the shutdown first.
+	return fmt.Errorf("remote: %w", err)
+}
+
+// errSimStopped is Enable's error on a simulated system that is shutting down, has stopped or was
+// discarded with its node's crash.
+func errSimStopped(sys *lockstep.System) error {
+	return fmt.Errorf("remote: %w: node %q", lockstep.ErrStopped, sys.Node())
 }
 
 // wildcard reports whether a is a TCP address on every interface (0.0.0.0 or [::]), which peers

@@ -254,6 +254,13 @@ func checkSettings(s Settings) error {
 	return nil
 }
 
+// ErrCodecInUse is SetSettings's error for settings that change the codec or the registry while
+// the core has a connection or a queued frame.
+var ErrCodecInUse = errors.New("remoting: the codec and registry cannot change while connections are open or frames are queued")
+
+// Simulated reports whether the core was built with Config.Simulated.
+func (c *Core) Simulated() bool { return c.simulated }
+
 // Settable reports whether SetSettings may replace the core's settings: the core is simulated
 // (Config.Simulated) and its settings have not been replaced yet.
 func (c *Core) Settable() bool {
@@ -267,14 +274,18 @@ func (c *Core) Settable() bool {
 // handshakes it writes and applies s to the frames it builds, queues and receives, to its timers
 // and to its redials. Sessions already up are not handshaken again: they keep the frame limit
 // their peer announced, and their peer keeps the one this core announced then, so a lower MaxFrame
-// can make the peer's next large frame a protocol error. A started core's heartbeat tick is armed
-// again, one new Heartbeat from now. The start record is not repeated.
+// can make the peer's next large frame a protocol error. They also keep the codec agreed at their
+// handshake: s may name a codec of another name or another registry only while the core has no
+// connection, up or in its handshake, and no frame queued, which was encoded with the old codec.
+// A started core's heartbeat tick is armed again, one new Heartbeat from now. The start record is
+// not repeated.
 //
 // It returns an error and changes nothing when s fails New's checks, when the core is not
-// simulated or its settings were replaced already, and, wrapping lockstep.ErrStopped, after
-// Shutdown. The send and receive paths read the settings without the lock, so SetSettings is only
-// for a simulated core, whose calls all come from the simulation's one goroutine. Call it in
-// engine context or from that goroutine.
+// simulated or its settings were replaced already, when s changes the codec or registry while a
+// connection is open or a frame queued, and, wrapping lockstep.ErrStopped, after Shutdown. The
+// send and receive paths read the settings without the lock, so SetSettings is only for a
+// simulated core, whose calls all come from the simulation's one goroutine. Call it in engine
+// context or from that goroutine.
 func (c *Core) SetSettings(s Settings) error {
 	if err := checkSettings(s); err != nil {
 		return err
@@ -288,6 +299,8 @@ func (c *Core) SetSettings(s Settings) error {
 		return errors.New("remoting: the settings were replaced already")
 	case c.shut:
 		return errShutDown
+	case (s.Codec.Name() != c.codecName || s.Registry != c.set.Registry) && c.open():
+		return ErrCodecInUse
 	}
 	c.replaced = true
 	c.set = s
@@ -297,6 +310,20 @@ func (c *Core) SetSettings(s Settings) error {
 		c.armTick()
 	}
 	return nil
+}
+
+// open reports whether the core has a connection, up or in its handshake, or a frame queued for a
+// peer.
+func (c *Core) open() bool {
+	if len(c.links) > 0 {
+		return true
+	}
+	for _, p := range c.peers { //lockstep:maporder the result is the same in any order
+		if len(p.queue) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Start records the start of remoting on this node and arms the first heartbeat tick. Calls
