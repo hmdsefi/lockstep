@@ -39,24 +39,23 @@ const DeadWrongType = "wrong-type"
 // codeOther is the failure code byte of a failure that matches no lockstep error (remote.CodeOther).
 const codeOther uint8 = 0
 
-// inbound is what the receive path reads from a MSG, ASK, REPLY or FAIL frame before it takes the
-// lock. Decoding reads only settings that do not change, so a slow codec does not hold the lock.
+// inbound is what the receive path reads from a data frame before it takes the lock. Decoding
+// reads only settings that do not change, so a slow codec does not hold the lock.
 type inbound struct {
 	from, to engine.Address
 	toOK     bool           // the recipient is an address
 	ask      engine.Address // ASK: the ask address
 	value    any            // MSG, ASK, REPLY: the decoded value
 	failure  Failure        // FAIL: the failure
+	watch    uint64         // WATCH, UNWATCH: the watch number
+	term     Terminated     // TERMINATED: the payload
 	err      error          // the first of the sender, the ask address and the codec bytes that does not decode
 }
 
-// decodeFrame decodes f's addresses and value (REM-230, COD-070). It returns nil for a frame of
-// another kind: the control frames, and the watch and lookup frames, which the receive path does
-// not decode.
+// decodeFrame decodes the addresses and the payload of f, a data frame (REM-230, COD-070). It
+// returns nil for a control frame.
 func (c *Core) decodeFrame(f *Frame) *inbound {
-	switch f.Kind {
-	case KindMsg, KindAsk, KindReply, KindFail:
-	default:
+	if !f.Kind.Data() {
 		return nil
 	}
 	in := &inbound{}
@@ -79,6 +78,14 @@ func (c *Core) decodeFrame(f *Frame) *inbound {
 		}
 	case KindFail:
 		in.failure, _ = ParseFailure(f.Payload) // ParseFrame checked the layout
+		return in
+	case KindWatch, KindUnwatch:
+		in.watch, _ = ParseWatch(f.Payload) // ParseFrame checked the layout
+		return in
+	case KindTerminated:
+		in.term, _ = ParseTerminated(f.Payload) // ParseFrame checked the layout
+		return in
+	case KindLookup:
 		return in
 	}
 	switch {
@@ -132,15 +139,15 @@ func cutUTF8(s string, n int) string {
 	return s[:n]
 }
 
-// receive applies a data frame received on s, an up incoming session, in its decoded form in
-// (nil for the watch and lookup kinds). It applies the sequence rule (REM-200): a frame numbered
-// below the next one expected is discarded late; one above it records the gap and is accepted.
-// An accepted frame whose recipient, or ASK's ask address, is not right for this node is
-// discarded misrouted (REM-210, REM-220), one that does not decode is discarded decode (REM-230),
-// and the rest are checked against their recipients and handed to the host (REM-160, REM-260 to
-// REM-268). The host, the dead-letter function and the Failer run after the lock is released, in
-// frame order. A frame numbered math.MaxUint64 is the last one a session takes: any data frame
-// after it closes the session as a protocol error.
+// receive applies a data frame received on s, an up incoming session, in its decoded form in. It
+// applies the sequence rule (REM-200): a frame numbered below the next one expected is discarded
+// late; one above it records the gap and is accepted. An accepted frame whose recipient, or ASK's
+// ask address, is not right for this node is discarded misrouted (REM-210, REM-220), one that does
+// not decode is discarded decode (REM-230), and the rest are checked against their recipients and
+// handed to the host (REM-160, REM-260 to REM-268). WATCH, UNWATCH, TERMINATED and LOOKUP go to
+// the watch and lookup path (REM-280 to REM-290). The host, the hooks, the dead-letter function
+// and the Failer run after the lock is released, in frame order. A frame numbered math.MaxUint64
+// is the last one a session takes: any data frame after it closes the session as a protocol error.
 func (c *Core) receive(s *session, f *Frame, in *inbound) {
 	if s.recvSeq == math.MaxUint64 {
 		c.protocolError(s, protoErr(FieldSeq, "%s frame after sequence number %d, the last", f.Kind, s.recvSeq))
@@ -155,9 +162,9 @@ func (c *Core) receive(s *session, f *Frame, in *inbound) {
 		c.recordGap(s, want, f.Seq)
 	}
 	s.recvSeq = f.Seq
-	if in == nil {
-		// WATCH, UNWATCH, TERMINATED and LOOKUP are applied by the watch and lookup path of the
-		// core; until it exists they are dropped here, once the sequence rule has counted them.
+	switch f.Kind {
+	case KindWatch, KindUnwatch, KindTerminated, KindLookup:
+		c.receivePeerFrame(s, f, in)
 		return
 	}
 	switch {
@@ -172,6 +179,7 @@ func (c *Core) receive(s *session, f *Frame, in *inbound) {
 		err := c.recvError(s, f, in.err)
 		if (f.Kind == KindReply || f.Kind == KindFail) && hooks.Pending(c.sys, in.to) {
 			// The ask would otherwise wait for its timeout: it fails with the decode error.
+			c.forgetLookup(s.peer, in.to)
 			c.inbound(s, f, in, hooks.RemotePayload{Kind: hooks.RemoteFail, Err: err})
 		}
 		c.fail(s, f, err)
@@ -181,10 +189,41 @@ func (c *Core) receive(s *session, f *Frame, in *inbound) {
 	case KindMsg, KindAsk:
 		c.receiveMessage(s, f, in)
 	case KindReply:
+		c.forgetLookup(s.peer, in.to)
 		c.receiveReply(s, f, in)
 	case KindFail:
+		c.forgetLookup(s.peer, in.to)
 		err := c.errs.Remote(s.peer.name, in.failure.Code, in.failure.Message)
 		c.inbound(s, f, in, hooks.RemotePayload{Kind: hooks.RemoteFail, Err: err})
+	}
+}
+
+// receivePeerFrame applies a WATCH, UNWATCH, TERMINATED or LOOKUP frame that s accepted. Its
+// recipient must be on this node and its sender on the peer's: a watcher or a lookup's reply
+// address of the peer for WATCH, UNWATCH and LOOKUP, the watched actor for TERMINATED. Otherwise
+// it is discarded misrouted, or decode when its sender is not an address.
+func (c *Core) receivePeerFrame(s *session, f *Frame, in *inbound) {
+	switch {
+	case !in.toOK || in.to.Node != c.node:
+		c.discard(s, f, DiscardMisrouted)
+		return
+	case in.err != nil:
+		c.discard(s, f, DiscardDecode)
+		c.fail(s, f, c.recvError(s, f, in.err))
+		return
+	case in.from.Node != s.peer.name:
+		c.discard(s, f, DiscardMisrouted)
+		return
+	}
+	switch f.Kind {
+	case KindWatch:
+		c.receiveWatch(s.peer, watchPair{watcher: in.from, watched: in.to}, in.watch)
+	case KindUnwatch:
+		c.receiveUnwatch(s.peer, watchPair{watcher: in.from, watched: in.to}, in.watch)
+	case KindTerminated:
+		c.receiveTerminated(s, f, in)
+	case KindLookup:
+		c.receiveLookup(s.peer, in.from, in.to, f.Type)
 	}
 }
 

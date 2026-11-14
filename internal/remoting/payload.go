@@ -143,6 +143,27 @@ func ParseFailure(b []byte) (Failure, error) {
 	return Failure{Code: b[0], Message: string(b[1:])}, nil
 }
 
+// AppendWatch appends the payload of a WATCH or UNWATCH frame to dst, the watcher's watch number n
+// as a uvarint, and returns the extended slice. It encodes n as it is; ParseWatch rejects 0.
+func AppendWatch(dst []byte, n uint64) []byte {
+	return binary.AppendUvarint(dst, n)
+}
+
+// ParseWatch decodes the payload of a WATCH or UNWATCH frame: one uvarint watch number, not 0, and
+// nothing after it. A broken rule returns a *ProtocolError about FieldPayload.
+func ParseWatch(b []byte) (uint64, error) {
+	n, rest, err := uvarint(b, FieldPayload)
+	switch {
+	case err != nil:
+		return 0, err
+	case n == 0:
+		return 0, protoErr(FieldPayload, "watch number is 0")
+	case len(rest) > 0:
+		return 0, protoErr(FieldPayload, "%d bytes follow the watch number", len(rest))
+	}
+	return n, nil
+}
+
 // StopKind says why a watched actor stopped, as a TERMINATED frame carries it.
 type StopKind uint8
 
@@ -157,13 +178,17 @@ const (
 
 // Terminated is the payload of a TERMINATED frame.
 type Terminated struct {
+	// Watch is the watcher's number for the watch that ended, which its WATCH carried; never 0.
+	Watch   uint64
 	Kind    StopKind
 	Failure Failure // set only when Kind is StopFailed
 }
 
-// AppendTerminated appends the encoding of t to dst and returns the extended slice. The failure is
-// written only when t.Kind is StopFailed.
+// AppendTerminated appends the encoding of t to dst and returns the extended slice: the watch
+// number as a uvarint, the stop kind, and the failure, which is written only when t.Kind is
+// StopFailed. It encodes t as it is; ParseTerminated rejects watch number 0.
 func AppendTerminated(dst []byte, t *Terminated) []byte {
+	dst = binary.AppendUvarint(dst, t.Watch)
 	dst = append(dst, byte(t.Kind))
 	if t.Kind == StopFailed {
 		dst = AppendFailure(dst, &t.Failure)
@@ -171,14 +196,20 @@ func AppendTerminated(dst []byte, t *Terminated) []byte {
 	return dst
 }
 
-// ParseTerminated decodes a TERMINATED payload: a stop kind from StopNormal to StopNoActor, followed
-// by a failure when it is StopFailed and by nothing otherwise. A broken rule returns a
-// *ProtocolError about FieldPayload.
+// ParseTerminated decodes a TERMINATED payload: a uvarint watch number, not 0, then a stop kind from
+// StopNormal to StopNoActor, followed by a failure when it is StopFailed and by nothing otherwise.
+// A broken rule returns a *ProtocolError about FieldPayload.
 func ParseTerminated(b []byte) (Terminated, error) {
-	if len(b) == 0 {
+	n, b, err := uvarint(b, FieldPayload)
+	switch {
+	case err != nil:
+		return Terminated{}, err
+	case n == 0:
+		return Terminated{}, protoErr(FieldPayload, "terminated watch number is 0")
+	case len(b) == 0:
 		return Terminated{}, protoErr(FieldPayload, "terminated payload has no stop kind")
 	}
-	t := Terminated{Kind: StopKind(b[0])}
+	t := Terminated{Watch: n, Kind: StopKind(b[0])}
 	switch {
 	case t.Kind == StopFailed:
 		f, err := ParseFailure(b[1:])

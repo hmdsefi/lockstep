@@ -132,6 +132,7 @@ func testConfig(eng *enginetest.Engine, drv Driver) Config {
 // newHarness returns a started core; mod, if not nil, changes its Config first.
 func newHarness(t *testing.T, mod func(*Config)) *harness {
 	t.Helper()
+	useRecvHooks() // the hooks answer for Config.System, a *fakeSys
 	eng := enginetest.New("a", 7)
 	drv := &fakeDriver{t: t, errs: map[string]error{}}
 	cfg := testConfig(eng, drv)
@@ -216,12 +217,13 @@ func (h *harness) dialUp() *fakeLink {
 	return l
 }
 
-// acceptUp accepts a link with ID id and a HELLO from "b"; it returns the incoming link.
+// acceptUp accepts a link with ID id and a HELLO from "b" of incarnation 7, the incarnation of
+// dialUp's WELCOME; it returns the incoming link.
 func (h *harness) acceptUp(id uint64) *fakeLink {
 	h.t.Helper()
 	l := &fakeLink{t: h.t, id: id}
 	h.core.Accepted(l)
-	h.core.Frame(l, hello("b", "a", 9, "json", ""))
+	h.core.Frame(l, hello("b", "a", 7, "json", ""))
 	h.skip()
 	return l
 }
@@ -830,14 +832,14 @@ func TestReplacedIncoming(t *testing.T) {
 
 	l := &fakeLink{t: t, id: 3}
 	h.core.Accepted(l)
-	h.core.Frame(l, hello("b", "a", 9, "json", ""))
+	h.core.Frame(l, hello("b", "a", 7, "json", ""))
 	same(t, "old events", old.events, []string{"write WELCOME", "write CLOSE", "close"})
 	same(t, "old frames", old.kinds(), []string{"WELCOME", "CLOSE replaced"})
 	same(t, "new frames", l.kinds(), []string{"WELCOME"})
 	same(t, "records", h.recs(), []string{
 		"accept conn=3",
 		"down peer=b conn=1 dir=in reason=replaced",
-		"up peer=b conn=3 dir=in peer-inc=9 max-frame=8192",
+		"up peer=b conn=3 dir=in peer-inc=7 max-frame=8192",
 	})
 	h.core.Frame(old, ctrl(KindPing, "")) // gone: ignored
 	h.core.Frame(l, ctrl(KindPing, ""))

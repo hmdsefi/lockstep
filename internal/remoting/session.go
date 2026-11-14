@@ -93,11 +93,21 @@ type peer struct {
 	failures int           // consecutive failed dials since an outgoing session last came up (REM-100)
 	redial   engine.Cancel // the armed redial timer; nil when none
 	// want is set by Connect while no outgoing session is up, and cleared when one comes up.
-	// Watches add the outgoing watches to waiting.
 	want bool
 	// queue holds the data frames Deliver accepted and no session has written yet, in order, at
-	// most OutboundQueue of them (REM-140).
+	// most OutboundQueue of them (REM-140), plus the WATCH frames a reconnect puts in front.
 	queue []*outFrame
+
+	// watches are the outgoing watches on the peer's actors: the watches of local actors whose
+	// RemoteWatch Deliver took, with their watch numbers, until a RemoteUnwatch or a TERMINATED of
+	// the same number, the peer's restart or the shutdown ends them (REM-282, REM-284).
+	watches map[watchPair]uint64
+	// watchers are the watches of the peer's actors on local actors, from its WATCH frames, until
+	// UNWATCH, the watched actor's end, the peer's restart or the shutdown ends them (REM-280).
+	watchers map[watchPair]*inWatch
+	// lookups are the lookups sent to the peer that have no answer yet, in the order they were
+	// sent (REM-290).
+	lookups []lookup
 
 	advertise string // the address from the peer's last HELLO, or ""
 	inc       uint32 // the peer's last known incarnation, 0 if unknown
@@ -114,7 +124,7 @@ type peer struct {
 // when the session goes down or a dial fails (REM-100: only while frames are queued or outgoing
 // watches exist).
 func (c *Core) waiting(p *peer) bool {
-	return p.want || len(p.queue) > 0
+	return p.want || len(p.queue) > 0 || len(p.watches) > 0
 }
 
 // writable reports whether a session of direction d may write a frame of kind k (REM-080,
@@ -195,7 +205,8 @@ func (c *Core) protocolError(s *session, err error) {
 }
 
 // down ends s: it closes the link, forgets the session, records the down and, for an outgoing
-// session, counts a failure if it never came up and redials while the peer has work waiting.
+// session, counts a failure if it never came up and redials while the peer has work waiting. After
+// Shutdown it only forgets the session.
 func (c *Core) down(s *session, reason string) {
 	s.link.Close()
 	delete(c.links, s.link)
@@ -214,6 +225,13 @@ func (c *Core) down(s *session, reason string) {
 	p := s.peer
 	switch {
 	case p == nil:
+	case c.shut:
+		if p.in == s {
+			p.in = nil
+		}
+		if p.out == s {
+			p.out = nil
+		}
 	case p.in == s:
 		p.in = nil
 		c.keepClosed(s)
@@ -327,7 +345,7 @@ func (c *Core) redialFired(p *peer) {
 	c.mu.Lock()
 	defer c.unlock()
 	p.redial = nil
-	if p.out != nil {
+	if p.out != nil || c.shut {
 		return
 	}
 	if !c.waiting(p) {

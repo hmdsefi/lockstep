@@ -29,6 +29,9 @@ var (
 	realAssignable = hooks.Assignable
 	realPending    = hooks.Pending
 	realLookupPath = hooks.LookupPath
+	realWatchFor   = hooks.WatchFor
+	realFailAsks   = hooks.FailAsks
+	realDown       = hooks.WatchesDown
 )
 
 // fakeSys stands in for a *lockstep.System in the runtime hooks that the receive path calls: it
@@ -36,6 +39,12 @@ var (
 type fakeSys struct {
 	actors map[string]fakeActor
 	asks   map[engine.Address]reflect.Type
+	// The watch side, in watch_test.go: the remote watches on the actors, and the hook calls.
+	watches map[string][]*fakeWatch // by the watched actor's path, in registration order
+	calls   []string
+	core    **Core // when set, the hooks check that the core's lock is free
+	t       *testing.T
+	endNow  *lockstep.StopReason // when set, WatchFor runs fn with it before it returns
 }
 
 type fakeActor struct {
@@ -95,10 +104,30 @@ func useRecvHooks() {
 			if !ok {
 				return realLookupPath(sys, path, typeKey)
 			}
-			if a, ok := s.actors[path]; ok {
-				return engine.Address{Node: "a", Path: path, UID: a.uid}, nil
+			return s.lookupPath(path, typeKey)
+		}
+		hooks.WatchFor = func(sys any, watcher, watched engine.Address, fn func(reason any)) (bool, func()) {
+			s, ok := sys.(*fakeSys)
+			if !ok {
+				return realWatchFor(sys, watcher, watched, fn)
 			}
-			return engine.Address{}, errors.New("not found")
+			return s.watchFor(watcher, watched, fn)
+		}
+		hooks.FailAsks = func(sys any, node string, err error) {
+			s, ok := sys.(*fakeSys)
+			if !ok {
+				realFailAsks(sys, node, err)
+				return
+			}
+			s.call("FailAsks " + node + ": " + err.Error())
+		}
+		hooks.WatchesDown = func(sys any, node string, err error) {
+			s, ok := sys.(*fakeSys)
+			if !ok {
+				realDown(sys, node, err)
+				return
+			}
+			s.call("WatchesDown " + node + ": " + err.Error())
 		}
 	})
 }
@@ -229,7 +258,7 @@ func TestSequenceRule(t *testing.T) {
 	h.msg(4, to, ping{4})
 	h.msg(5, to, ping{55})
 	h.msg(2, to, ping{22})
-	h.send(h.in, KindWatch, 6, bX.String(), to, "", nil)
+	h.send(h.in, KindWatch, 6, bX.String(), to, "", AppendWatch(nil, 1))
 	h.send(h.in, KindLookup, 7, bX.String(), "lockstep://a/user/y#0", "", nil)
 	h.core.Frame(h.in, frame(Frame{Kind: KindMsg, Seq: 8, Sender: bX.String(), Recipient: to, Type: "test.ping",
 		Payload: jsonOf(t, ping{8}), Headers: []engine.Header{{Key: "k", Value: "v"}}}))
@@ -238,6 +267,7 @@ func TestSequenceRule(t *testing.T) {
 		"discard peer=b conn=3 kind=MSG seq=4 reason=late",
 		"discard peer=b conn=3 kind=MSG seq=5 reason=late",
 		"discard peer=b conn=3 kind=MSG seq=2 reason=late",
+		"dial peer=b conn=1 attempt=1", // the answer to the LOOKUP
 	})
 	same(t, "host", h.takeEvents(), []string{
 		"inbound 1 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#2 {1}",
@@ -669,7 +699,7 @@ func TestDecodeAndWrongTypeRuntime(t *testing.T) {
 	}
 	// The failure goes out once the session to b is up.
 	l := h.drv.links[0]
-	h.core.Frame(l, welcome("b", "a", 9, "json"))
+	h.core.Frame(l, welcome("b", "a", 7, "json"))
 	f := lastData(t, l)
 	fl, _ := ParseFailure(f.Payload)
 	if f.Kind != KindFail || f.Recipient != addrText(bAsk) || !strings.Contains(fl.Message, lockstep.ErrTerminated.Error()) {

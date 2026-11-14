@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/codec"
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
@@ -25,6 +26,7 @@ import (
 var (
 	errFrameTooLarge = errors.New("remote: frame too large")
 	errUnreachable   = errors.New("remote: node unreachable")
+	errPeerRestarted = errors.New("remote: peer restarted")
 	errCodeFive      = errors.New("an error with code 5")
 )
 
@@ -40,7 +42,7 @@ func (testErrors) Unreachable(node string) error {
 }
 
 func (testErrors) PeerRestarted(node string) error {
-	return errors.New("remote: peer restarted: " + node)
+	return fmt.Errorf("%w: %s (%w)", errPeerRestarted, node, lockstep.ErrTerminated)
 }
 
 func (testErrors) FrameTooLarge(size, limit int) error {
@@ -48,8 +50,13 @@ func (testErrors) FrameTooLarge(size, limit int) error {
 }
 
 func (testErrors) Code(err error) uint8 {
-	if errors.Is(err, errCodeFive) {
+	switch {
+	case errors.Is(err, errCodeFive):
 		return 5
+	case errors.Is(err, lockstep.ErrNotFound):
+		return 3
+	case errors.Is(err, lockstep.ErrWrongType):
+		return 4
 	}
 	return 0
 }
@@ -275,7 +282,7 @@ func TestDeliverKinds(t *testing.T) {
 			want string
 		}{
 			{engine.Envelope{From: sender, To: target, Payload: "text"}, "remoting: payload of type string is not a runtime payload"},
-			{engine.Envelope{From: sender, To: target, Payload: hooks.RemotePayload{Kind: hooks.RemoteWatch}}, "remoting: WATCH envelopes are not supported"},
+			{engine.Envelope{From: sender, To: target, Payload: hooks.RemotePayload{Kind: hooks.RemoteWatch}}, "remoting: WATCH envelope with watch number 0"},
 			{engine.Envelope{From: sender, To: target, Payload: hooks.RemotePayload{Kind: 9}}, "remoting: unknown remote envelope kind 9"},
 			{engine.Envelope{From: sender, To: bAsk, Payload: hooks.RemotePayload{Kind: hooks.RemoteFail}}, "remoting: FAIL envelope without an error"},
 			{toNode(msgEnv(ping{1}), "a"), `remoting: cannot send to node "a"`},

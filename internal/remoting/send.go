@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
@@ -21,7 +22,9 @@ type Errors interface {
 	Remote(node string, code uint8, msg string) error
 	// Unreachable returns the failure of an ask whose request the core could not send to node.
 	Unreachable(node string) error
-	// PeerRestarted returns the failure of an ask that node lost by restarting.
+	// PeerRestarted returns the failure of the asks, lookups and watches that node lost by
+	// restarting. It must match both lockstep.ErrTerminated and package remote's ErrPeerRestarted
+	// with errors.Is.
 	PeerRestarted(node string) error
 	// FrameTooLarge returns the error of a frame of size bytes, its length without the prefix,
 	// that exceeds limit; it reads "remote: frame too large: <size> bytes > max <limit>".
@@ -35,6 +38,8 @@ const (
 	DeadQueueFull       = "queue-full"         // the peer's queue held OutboundQueue frames already
 	DeadUnknownNode     = "unknown-node"       // the driver knows no address for the peer
 	DeadTooLargeForPeer = "too-large-for-peer" // the frame exceeds the frame limit the peer announced
+	DeadPeerRestarted   = "peer-restarted"     // the frame was queued for an incarnation of the peer that restarted
+	DeadShutdown        = "shutdown"           // the frame was not written before Shutdown, or came after it
 )
 
 // labelFail is the timer that fails asks whose requests were dead letters (REM-145).
@@ -70,9 +75,10 @@ type outFrame struct {
 	b        []byte // the frame with its length prefix; the sequence number is set when written
 	kind     Kind
 	from, to engine.Address
-	typ      string         // the wire name, or empty
-	msg      any            // what a dead letter carries: the message, the answer or the failure
-	ask      engine.Address // ASK: the ask address, failed when the frame is a dead letter
+	typ      string         // the wire name or the LOOKUP's type key, or empty
+	msg      any            // what a dead letter carries: the message, the answer, the failure, the stop reason or the looked-up path
+	ask      engine.Address // ASK and LOOKUP: the ask address, failed when the frame is a dead letter
+	watch    uint64         // WATCH, UNWATCH and TERMINATED: the watch number
 	inc      uint32         // the peer's known incarnation when the frame was queued, 0 if unknown (REM-130)
 	dropped  int            // the headers dropped because they break the header limits (REM-055)
 }
@@ -101,6 +107,11 @@ type askFailure struct {
 // that break the header limits are dropped and the frame is sent without them, with one warning
 // per session.
 //
+// A RemoteWatch or RemoteUnwatch envelope also starts or ends an outgoing watch, which the core
+// keeps until a TERMINATED with its watch number arrives: a session that comes up to the same
+// incarnation of the peer writes the WATCH of every such watch again. After Shutdown every
+// envelope becomes a dead letter "shutdown".
+//
 // Call it in engine context, inside a turn or a callback, holding no lock of the runtime.
 func (c *Core) Deliver(env engine.Envelope) error {
 	node := env.To.Node
@@ -113,6 +124,10 @@ func (c *Core) Deliver(env engine.Envelope) error {
 	}
 	c.mu.Lock()
 	defer c.unlock()
+	if c.shut {
+		c.deadLetters([]*outFrame{f}, DeadShutdown)
+		return nil
+	}
 	c.enqueue(node, f)
 	return nil
 }
@@ -161,11 +176,23 @@ func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 		// The message is cut so that the frame fits MaxFrame: a failure is always sent.
 		out.b = c.failFrame(&f, Failure{Code: c.errs.Code(p.Err), Message: p.Err.Error()})
 		out.msg = p.Err
+	case KindWatch, KindUnwatch:
+		if p.Seq == 0 {
+			return nil, fmt.Errorf("remoting: %s envelope with watch number 0", k)
+		}
+		f.Payload = AppendWatch(nil, p.Seq)
+		out.watch = p.Seq
+	case KindTerminated:
+		r, ok := p.Reason.(lockstep.StopReason)
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("remoting: TERMINATED envelope with a reason of type %T", p.Reason)
+		case p.Seq == 0:
+			return nil, errors.New("remoting: TERMINATED envelope with watch number 0")
+		}
+		return c.terminatedFrame(env.From, env.To, p.Seq, r), nil
 	case 0:
 		return nil, fmt.Errorf("remoting: unknown remote envelope kind %d", p.Kind)
-	default:
-		// WATCH, UNWATCH and TERMINATED carry a watch number that the watch path adds.
-		return nil, fmt.Errorf("remoting: %s envelopes are not supported", k)
 	}
 	// The sequence number stays 0 until flush writes the frame.
 	if out.b == nil {
@@ -191,9 +218,21 @@ func addrText(a engine.Address) string {
 
 // enqueue queues f for node and writes or dials (REM-130 to REM-140). A full queue makes f a dead
 // letter "queue-full"; a driver that knows no address for node makes the queue, f included, dead
-// letters "unknown-node".
+// letters "unknown-node". A WATCH starts the outgoing watch it names and an UNWATCH ends it, even
+// when the frame becomes a dead letter: a later session writes the WATCH again (REM-284).
 func (c *Core) enqueue(node string, f *outFrame) {
 	p := c.peer(node)
+	switch pair := (watchPair{watcher: f.from, watched: f.to}); f.kind {
+	case KindWatch:
+		if p.watches == nil {
+			p.watches = make(map[watchPair]uint64)
+		}
+		p.watches[pair] = f.watch
+	case KindUnwatch:
+		if n, ok := p.watches[pair]; ok && n == f.watch {
+			delete(p.watches, pair)
+		}
+	}
 	if len(p.queue) >= c.set.OutboundQueue {
 		c.drop([]*outFrame{f}, DeadQueueFull, func() error { return c.errs.Unreachable(node) })
 		return
@@ -210,8 +249,14 @@ func (c *Core) enqueue(node string, f *outFrame) {
 		switch {
 		case err == nil:
 		case errors.Is(err, ErrUnknownNode):
-			// No failure is counted, as Connect counts none: nothing is retried.
+			// No failure is counted, as Connect counts none: nothing is retried, unless outgoing
+			// watches wait for the peer, which a later dial may find.
 			c.dropQueue(p, DeadUnknownNode)
+			if c.waiting(p) {
+				p.failures++
+				c.armRedial(p)
+				return
+			}
 			c.tidy(p)
 		default:
 			c.dialFailed(p, err)
@@ -286,27 +331,40 @@ type failTimer struct {
 }
 
 // drop makes frames dead letters with reason, in order, once the lock is released, and fails the
-// asks among them with the error askErr builds, called once and only when there is an ask, in one
-// later lockstep/remote/fail callback (REM-145). None of the frames took a sequence number.
+// asks and lookups among them with the error askErr builds, called once and only when there is
+// one, in one later lockstep/remote/fail callback (REM-145). None of the frames took a sequence
+// number. After Shutdown nothing is failed: the timer could not run.
 func (c *Core) drop(frames []*outFrame, reason string, askErr func() error) {
 	var fails []askFailure
 	var err error
+	c.deadLetters(frames, reason)
 	for _, f := range frames {
-		c.deferred = append(c.deferred, func() { c.dead(f.from, f.to, reason, f.msg) })
-		if f.kind == KindAsk {
-			if err == nil {
-				err = askErr()
-			}
-			fails = append(fails, askFailure{target: f.to, ask: f.ask, err: err})
+		if f.kind != KindAsk && f.kind != KindLookup {
+			continue
 		}
+		if f.kind == KindLookup {
+			c.forgetLookup(c.peers[f.to.Node], f.ask)
+		}
+		if err == nil {
+			err = askErr()
+		}
+		fails = append(fails, askFailure{target: f.to, ask: f.ask, err: err})
 	}
-	if len(fails) == 0 {
+	if len(fails) == 0 || c.shut {
 		return
 	}
 	t := &failTimer{fails: fails}
 	// The callback cannot run before the lock is released, so t.cancel is set by then.
 	t.cancel = c.clock.AfterFunc(0, labelFail, func() { c.failFired(t) })
 	c.failTimers = append(c.failTimers, t)
+}
+
+// deadLetters makes frames dead letters with reason, in order, once the lock is released. It
+// fails no ask: the caller does, or the runtime has already.
+func (c *Core) deadLetters(frames []*outFrame, reason string) {
+	for _, f := range frames {
+		c.deferred = append(c.deferred, func() { c.dead(f.from, f.to, reason, f.msg) })
+	}
 }
 
 // failFired fails t's asks through the host, in order, without the lock.

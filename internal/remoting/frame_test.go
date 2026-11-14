@@ -131,24 +131,24 @@ var golden = []struct {
 	},
 	{
 		name:  "WATCH",
-		frame: remoting.Frame{Kind: remoting.KindWatch, Seq: 5, Sender: addrA, Recipient: addrB},
-		bytes: hx("00000030", "01 14 0000 0000000000000005", "00", "10"+hs(addrA), "10"+hs(addrB), "00"),
+		frame: remoting.Frame{Kind: remoting.KindWatch, Seq: 5, Sender: addrA, Recipient: addrB, Payload: remoting.AppendWatch(nil, 3)},
+		bytes: hx("00000031", "01 14 0000 0000000000000005", "00", "10"+hs(addrA), "10"+hs(addrB), "00", "03"),
 	},
 	{
 		name:  "UNWATCH",
-		frame: remoting.Frame{Kind: remoting.KindUnwatch, Seq: 6, Sender: addrA, Recipient: addrB},
-		bytes: hx("00000030", "01 15 0000 0000000000000006", "00", "10"+hs(addrA), "10"+hs(addrB), "00"),
+		frame: remoting.Frame{Kind: remoting.KindUnwatch, Seq: 6, Sender: addrA, Recipient: addrB, Payload: remoting.AppendWatch(nil, 300)},
+		bytes: hx("00000032", "01 15 0000 0000000000000006", "00", "10"+hs(addrA), "10"+hs(addrB), "00", "ac02"),
 	},
 	{
 		name: "TERMINATED",
 		frame: remoting.Frame{
 			Kind: remoting.KindTerminated, Seq: 7, Sender: addrB, Recipient: addrA,
 			Payload: remoting.AppendTerminated(nil, &remoting.Terminated{
-				Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 0, Message: "boom"},
+				Watch: 3, Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 0, Message: "boom"},
 			}),
 		},
-		bytes: hx("00000036", "01 16 0000 0000000000000007", "00",
-			"10"+hs(addrB), "10"+hs(addrA), "00", "01 00"+hs("boom")),
+		bytes: hx("00000037", "01 16 0000 0000000000000007", "00",
+			"10"+hs(addrB), "10"+hs(addrA), "00", "03", "01 00"+hs("boom")),
 	},
 	{
 		name: "LOOKUP",
@@ -228,7 +228,8 @@ func TestFrameRoundTrip(t *testing.T) {
 		{Kind: remoting.KindAsk, Seq: 3, Payload: remoting.AppendAsk(nil, "", nil)},
 		{Kind: remoting.KindReject, Payload: []byte(strings.Repeat("~", remoting.MaxReason))},
 		{Kind: remoting.KindClose, Payload: []byte(remoting.CloseUnknownConnection)},
-		{Kind: remoting.KindTerminated, Seq: 4, Payload: remoting.AppendTerminated(nil, &remoting.Terminated{Kind: remoting.StopNoActor})},
+		{Kind: remoting.KindTerminated, Seq: 4, Payload: remoting.AppendTerminated(nil, &remoting.Terminated{Watch: 1<<64 - 1, Kind: remoting.StopNoActor})},
+		{Kind: remoting.KindWatch, Seq: 6, Payload: remoting.AppendWatch(nil, 1<<64-1)},
 		{Kind: remoting.KindFail, Seq: 5, Payload: remoting.AppendFailure(nil, &remoting.Failure{Code: 200})},
 	} {
 		b := remoting.AppendFrame([]byte("prefix"), &f)
@@ -318,7 +319,7 @@ func TestFrameViolations(t *testing.T) {
 		{"type on FAIL", frame(remoting.Frame{Kind: remoting.KindFail, Seq: 1, Type: "t", Payload: []byte{1}}), maxFrame, remoting.FieldType},
 		{"type on WATCH", frame(remoting.Frame{Kind: remoting.KindWatch, Seq: 1, Type: "t"}), maxFrame, remoting.FieldType},
 		{"type on UNWATCH", frame(remoting.Frame{Kind: remoting.KindUnwatch, Seq: 1, Type: "t"}), maxFrame, remoting.FieldType},
-		{"type on TERMINATED", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1, Type: "t", Payload: []byte{0}}), maxFrame, remoting.FieldType},
+		{"type on TERMINATED", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1, Type: "t", Payload: hx("01 00")}), maxFrame, remoting.FieldType},
 		{"sender overruns", hx("00000010", "01 10 0000 0000000000000001", "00 7f 00 00"), maxFrame, remoting.FieldSender},
 		{"recipient overruns", hx("00000010", "01 10 0000 0000000000000001", "00 00 02 00"), maxFrame, remoting.FieldRecipient},
 		{"type overruns", hx("00000010", "01 10 0000 0000000000000001", "00 00 00 01"), maxFrame, remoting.FieldType},
@@ -326,8 +327,12 @@ func TestFrameViolations(t *testing.T) {
 
 		{"payload on PING", cat(hx("00000011"), ping[4:], hx("00")), maxFrame, remoting.FieldPayload},
 		{"payload on PONG", frame(remoting.Frame{Kind: remoting.KindPong, Payload: []byte{0}}), maxFrame, remoting.FieldPayload},
-		{"payload on WATCH", frame(remoting.Frame{Kind: remoting.KindWatch, Seq: 1, Payload: []byte{0}}), maxFrame, remoting.FieldPayload},
-		{"payload on UNWATCH", frame(remoting.Frame{Kind: remoting.KindUnwatch, Seq: 1, Payload: []byte{0}}), maxFrame, remoting.FieldPayload},
+		{"WATCH without watch number", frame(remoting.Frame{Kind: remoting.KindWatch, Seq: 1}), maxFrame, remoting.FieldPayload},
+		{"WATCH watch number 0", frame(remoting.Frame{Kind: remoting.KindWatch, Seq: 1, Payload: []byte{0}}), maxFrame, remoting.FieldPayload},
+		{"WATCH watch number unterminated", frame(remoting.Frame{Kind: remoting.KindWatch, Seq: 1, Payload: hx("80")}), maxFrame, remoting.FieldPayload},
+		{"WATCH trailing byte", frame(remoting.Frame{Kind: remoting.KindWatch, Seq: 1, Payload: hx("01 00")}), maxFrame, remoting.FieldPayload},
+		{"UNWATCH without watch number", frame(remoting.Frame{Kind: remoting.KindUnwatch, Seq: 1}), maxFrame, remoting.FieldPayload},
+		{"UNWATCH watch number 0", frame(remoting.Frame{Kind: remoting.KindUnwatch, Seq: 1, Payload: []byte{0}}), maxFrame, remoting.FieldPayload},
 		{"payload on LOOKUP", frame(remoting.Frame{Kind: remoting.KindLookup, Seq: 1, Payload: []byte{0}}), maxFrame, remoting.FieldPayload},
 		{"REJECT without reason", frame(remoting.Frame{Kind: remoting.KindReject}), maxFrame, remoting.FieldPayload},
 		{"CLOSE reason of 65 bytes", frame(remoting.Frame{Kind: remoting.KindClose, Payload: bytes.Repeat([]byte("a"), remoting.MaxReason+1)}), maxFrame, remoting.FieldPayload},
@@ -340,7 +345,9 @@ func TestFrameViolations(t *testing.T) {
 		{"FAIL without payload", frame(remoting.Frame{Kind: remoting.KindFail, Seq: 1}), maxFrame, remoting.FieldPayload},
 		{"FAIL message not UTF-8", frame(remoting.Frame{Kind: remoting.KindFail, Seq: 1, Payload: hx("01 ff")}), maxFrame, remoting.FieldPayload},
 		{"TERMINATED without payload", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1}), maxFrame, remoting.FieldPayload},
-		{"TERMINATED stop kind 5", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1, Payload: hx("05")}), maxFrame, remoting.FieldPayload},
+		{"TERMINATED watch number 0", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1, Payload: hx("00 00")}), maxFrame, remoting.FieldPayload},
+		{"TERMINATED without stop kind", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1, Payload: hx("05")}), maxFrame, remoting.FieldPayload},
+		{"TERMINATED stop kind 5", frame(remoting.Frame{Kind: remoting.KindTerminated, Seq: 1, Payload: hx("01 05")}), maxFrame, remoting.FieldPayload},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, err := remoting.ParseFrame(tc.b, tc.max)
@@ -695,12 +702,12 @@ func TestFailAndTerminatedRoundTrip(t *testing.T) {
 		t remoting.Terminated
 		b []byte
 	}{
-		{remoting.Terminated{Kind: remoting.StopNormal}, hx("00")},
-		{remoting.Terminated{Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 7, Message: "stopped"}}, hx("01 07", hs("stopped"))},
-		{remoting.Terminated{Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 99}}, hx("01 63")},
-		{remoting.Terminated{Kind: remoting.StopParentStopping}, hx("02")},
-		{remoting.Terminated{Kind: remoting.StopShutdown}, hx("03")},
-		{remoting.Terminated{Kind: remoting.StopNoActor}, hx("04")},
+		{remoting.Terminated{Watch: 1, Kind: remoting.StopNormal}, hx("01 00")},
+		{remoting.Terminated{Watch: 2, Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 7, Message: "stopped"}}, hx("02 01 07", hs("stopped"))},
+		{remoting.Terminated{Watch: 300, Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 99}}, hx("ac02 01 63")},
+		{remoting.Terminated{Watch: 1, Kind: remoting.StopParentStopping}, hx("01 02")},
+		{remoting.Terminated{Watch: 1, Kind: remoting.StopShutdown}, hx("01 03")},
+		{remoting.Terminated{Watch: 127, Kind: remoting.StopNoActor}, hx("7f 04")},
 	} {
 		if b := remoting.AppendTerminated(nil, &tc.t); !bytes.Equal(b, tc.b) {
 			t.Errorf("AppendTerminated(%+v) = %x, want %x", tc.t, b, tc.b)
@@ -710,9 +717,26 @@ func TestFailAndTerminatedRoundTrip(t *testing.T) {
 		}
 	}
 	// A failure is written only for StopFailed.
-	shutdown := remoting.Terminated{Kind: remoting.StopShutdown, Failure: remoting.Failure{Code: 1, Message: "x"}}
-	if b := remoting.AppendTerminated(nil, &shutdown); !bytes.Equal(b, hx("03")) {
-		t.Errorf("AppendTerminated(shutdown with a failure) = %x, want 03", b)
+	shutdown := remoting.Terminated{Watch: 1, Kind: remoting.StopShutdown, Failure: remoting.Failure{Code: 1, Message: "x"}}
+	if b := remoting.AppendTerminated(nil, &shutdown); !bytes.Equal(b, hx("01 03")) {
+		t.Errorf("AppendTerminated(shutdown with a failure) = %x, want 01 03", b)
+	}
+
+	// WATCH and UNWATCH carry the watch number alone.
+	for _, tc := range []struct {
+		n uint64
+		b []byte
+	}{{1, hx("01")}, {127, hx("7f")}, {128, hx("8001")}, {1<<64 - 1, hx("ffffffffffffffffff01")}} {
+		if b := remoting.AppendWatch(nil, tc.n); !bytes.Equal(b, tc.b) {
+			t.Errorf("AppendWatch(%d) = %x, want %x", tc.n, b, tc.b)
+		}
+		if got, err := remoting.ParseWatch(tc.b); err != nil || got != tc.n {
+			t.Errorf("ParseWatch(%x) = %d, %v; want %d", tc.b, got, err, tc.n)
+		}
+	}
+	// A non-minimal uvarint is accepted, as the frame's other uvarints are.
+	if got, err := remoting.ParseWatch(hx("8100")); err != nil || got != 1 {
+		t.Errorf("ParseWatch(8100) = %d, %v; want 1", got, err)
 	}
 }
 
@@ -725,21 +749,31 @@ func TestFailAndTerminatedViolations(t *testing.T) {
 		}
 	}
 	for _, b := range [][]byte{
-		nil,            // no stop kind
-		hx("05"),       // unknown stop kind
-		hx("ff"),       // unknown stop kind
-		hx("05 00"),    // unknown stop kind with bytes after it
-		hx("01"),       // failed without a code byte
-		hx("01 00 ff"), // failed with a message that is not UTF-8
-		hx("00 00"),    // normal with a trailing byte
-		hx("02 01"),    // parent-stopping with a trailing byte
-		hx("03 00"),    // shutdown with a trailing byte
-		hx("04 6162"),  // no-actor with trailing bytes
+		nil,               // no watch number
+		hx("80"),          // watch number unterminated
+		hx("00 00"),       // watch number 0
+		hx("01"),          // no stop kind
+		hx("01 05"),       // unknown stop kind
+		hx("01 ff"),       // unknown stop kind
+		hx("01 05 00"),    // unknown stop kind with bytes after it
+		hx("01 01"),       // failed without a code byte
+		hx("01 01 00 ff"), // failed with a message that is not UTF-8
+		hx("01 00 00"),    // normal with a trailing byte
+		hx("01 02 01"),    // parent-stopping with a trailing byte
+		hx("01 03 00"),    // shutdown with a trailing byte
+		hx("01 04 6162"),  // no-actor with trailing bytes
 	} {
 		tm, err := remoting.ParseTerminated(b)
 		var pe *remoting.ProtocolError
 		if !errors.As(err, &pe) || pe.Field != remoting.FieldPayload || tm != (remoting.Terminated{}) {
 			t.Errorf("ParseTerminated(%x) = %+v, %v; want a payload error", b, tm, err)
+		}
+	}
+	for _, b := range [][]byte{nil, hx("00"), hx("80"), hx("01 00"), hx("ffffffffffffffffffff01")} {
+		n, err := remoting.ParseWatch(b)
+		var pe *remoting.ProtocolError
+		if !errors.As(err, &pe) || pe.Field != remoting.FieldPayload || n != 0 {
+			t.Errorf("ParseWatch(%x) = %d, %v; want a payload error", b, n, err)
 		}
 	}
 }
