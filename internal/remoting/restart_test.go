@@ -101,13 +101,20 @@ func TestPeerRestartSteps(t *testing.T) {
 	}
 }
 
-// TestPeerRestartOnWelcome checks a restart seen by the outgoing session's WELCOME: the frames
-// queued while b's incarnation was unknown are kept and written to the new incarnation, and the
-// incoming session of the old one closes.
+// TestPeerRestartOnWelcome checks a restart seen by the outgoing session's WELCOME: the messages
+// queued while b's incarnation was unknown are kept and written to the new incarnation, the WATCH,
+// UNWATCH and LOOKUP frames are dead letters whatever their stamp, and the incoming session of the
+// old one closes.
 func TestPeerRestartOnWelcome(t *testing.T) {
 	h := newWatchHarness(t)
 	h.core.peers["b"].inc = 0 // b's incarnation is not known yet
 	h.deliver(msgEnv(ping{1}))
+	bV := engine.Address{Node: "b", Path: "/user/v", UID: 4}
+	h.deliver(engine.Envelope{From: aY, To: bV, Payload: hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 1}})
+	h.deliver(engine.Envelope{From: aZ, To: bV, Payload: hooks.RemotePayload{Kind: hooks.RemoteUnwatch, Seq: 2}})
+	if err := h.core.Lookup(askAddr, "b", "/user/v", ""); err != nil {
+		t.Fatal(err)
+	}
 	h.core.peers["b"].inc = 7 // known now, from the incoming session
 	h.deliver(msgEnv(ping{2}))
 	h.recs()
@@ -119,7 +126,12 @@ func TestPeerRestartOnWelcome(t *testing.T) {
 		"up peer=b conn=1 dir=out peer-inc=8 max-frame=8192",
 		"send kind=MSG seq=1 from=lockstep://a/user/x#1 to=lockstep://b/user/y#2 type=test.ping bytes=78",
 	})
-	same(t, "dead letters", h.takeDead(), []string{"peer-restarted lockstep://a/user/x#1 -> lockstep://b/user/y#2 {2}"})
+	same(t, "dead letters", h.takeDead(), []string{
+		"peer-restarted lockstep://a/user/y#2 -> lockstep://b/user/v#4 <nil>",
+		"peer-restarted lockstep://a/user/z#3 -> lockstep://b/user/v#4 <nil>",
+		"peer-restarted lockstep://a/temp/1#3 -> lockstep://b/user/v#0 /user/v",
+		"peer-restarted lockstep://a/user/x#1 -> lockstep://b/user/y#2 {2}",
+	})
 	same(t, "old incoming session", h.in.kinds(), []string{"WELCOME", "CLOSE replaced"})
 }
 

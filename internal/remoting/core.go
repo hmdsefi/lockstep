@@ -157,6 +157,9 @@ type Core struct {
 	// failTimers holds the armed lockstep/remote/fail timers, in arming order, so a shutdown can
 	// stop them.
 	failTimers []*failTimer
+	// maxWatchers bounds the watches of one peer's actors on local actors (REM-280): maxWatchers,
+	// lowered by tests.
+	maxWatchers int
 }
 
 // New checks cfg and returns a Core that has not started. Every error text starts with
@@ -219,6 +222,8 @@ func New(cfg Config) (*Core, error) {
 		peers:     make(map[string]*peer),
 		links:     make(map[Link]*session),
 		closed:    make(map[Link]*session),
+
+		maxWatchers: maxWatchers,
 	}
 	if cfg.Tracer != nil && cfg.Tracer.Enabled() {
 		c.tracer = cfg.Tracer

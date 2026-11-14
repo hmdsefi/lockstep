@@ -17,7 +17,8 @@ const recordRestart = "lockstep.remote.restart"
 // replaced by inc, in the one event that saw it (REM-294):
 //
 //  1. it records lockstep.remote.restart;
-//  2. the frames queued for the old incarnation become dead letters "peer-restarted";
+//  2. the frames queued for the old incarnation, and every queued WATCH, UNWATCH and LOOKUP,
+//     whose state the restart ends, become dead letters "peer-restarted";
 //  3. hooks.FailAsks fails every pending ask of an actor on p with Errors.PeerRestarted;
 //  4. hooks.WatchesDown ends every watch of a local actor on an actor of p with that error;
 //  5. the outgoing watches are dropped, the watches of p's actors on local actors are cancelled,
@@ -26,7 +27,7 @@ const recordRestart = "lockstep.remote.restart"
 //  7. the up sessions of the old incarnation other than s close with CLOSE replaced.
 //
 // The dead letters, the hooks, the cancels and the failed lookups run once the lock is released,
-// in that order. Frames queued while p's incarnation was unknown are kept.
+// in that order. Other frames queued while p's incarnation was unknown are kept.
 func (c *Core) restart(p *peer, inc uint32, s *session) {
 	old := p.inc
 	if c.tracer != nil {
@@ -40,7 +41,7 @@ func (c *Core) restart(p *peer, inc uint32, s *session) {
 
 	var dead, keep []*outFrame
 	for _, f := range p.queue {
-		if f.inc == old {
+		if f.inc == old || f.kind == KindWatch || f.kind == KindUnwatch || f.kind == KindLookup {
 			dead = append(dead, f)
 		} else {
 			keep = append(keep, f)

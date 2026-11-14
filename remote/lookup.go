@@ -25,7 +25,8 @@ import (
 // ErrUnreachable, which says so, when remoting is not enabled on sys; a *Error from the other
 // node, whose code is CodeNotFound (it unwraps to lockstep.ErrNotFound) when no actor is
 // registered at path and CodeWrongType (lockstep.ErrWrongType) when its message type is not M; a
-// failure matching ErrPeerRestarted when the node restarts first; and the errors of Reply.Await,
+// failure matching ErrPeerRestarted when the node restarts first; an error wrapping
+// lockstep.ErrStopped when sys, and so its remoting, has stopped; and the errors of Reply.Await,
 // lockstep.ErrTimeout among them. Lookup panics if sys is nil.
 func Lookup[M any](ctx context.Context, sys *lockstep.System, node, path string) (lockstep.PID[M], error) {
 	if sys == nil {

@@ -353,6 +353,11 @@ func TestRemoteWatchOutgoing(t *testing.T) {
 	watchEnv := func(k hooks.RemoteKind, from, to engine.Address, n uint64) engine.Envelope {
 		return engine.Envelope{From: from, To: to, Payload: hooks.RemotePayload{Kind: k, Seq: n}}
 	}
+	// The session is up, so each frame is written as it comes (TestWatchesResent covers the queue).
+	if err := h.core.Connect("b"); err != nil {
+		t.Fatal(err)
+	}
+	l := h.up()
 	h.deliver(watchEnv(hooks.RemoteWatch, sender, target, 5))
 	h.deliver(watchEnv(hooks.RemoteWatch, aY, target, 6))
 	h.deliver(watchEnv(hooks.RemoteUnwatch, sender, target, 4)) // another number: the watch stays
@@ -370,7 +375,6 @@ func TestRemoteWatchOutgoing(t *testing.T) {
 	}
 	tEnv.Payload = hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: lockstep.NoActor, Seq: 3}
 	h.deliver(tEnv)
-	l := h.up()
 	var got []string
 	for _, f := range l.frames {
 		switch f.Kind {
@@ -589,4 +593,122 @@ func TestRemoteWatchAfterShutdown(t *testing.T) {
 	if len(h.drv.links) != 0 {
 		t.Error("a TERMINATED was sent after Shutdown")
 	}
+}
+
+// TestRemoteWatchTooMany checks the bound on one peer's watches: a WATCH of a new pair beyond it
+// registers nothing and is answered at once with TERMINATED failed, code overloaded; a WATCH that
+// replaces one of the peer's watches, and one after an UNWATCH, are taken.
+func TestRemoteWatchTooMany(t *testing.T) {
+	h := newWatchHarness(t)
+	if h.core.maxWatchers != 1<<16 {
+		t.Errorf("maxWatchers = %d, want 65536", h.core.maxWatchers)
+	}
+	h.core.maxWatchers = 2
+	h.watch(false, bX, aY, 1)
+	h.watch(false, bW, aY, 2)
+	h.watch(false, bX, aZ, 3) // the third pair: refused
+	h.watch(false, bX, aY, 4) // replaces the first
+	same(t, "hook calls", h.sys.takeCalls(), []string{
+		"WatchFor lockstep://b/user/x#1 -> lockstep://a/user/y#2",
+		"WatchFor lockstep://b/user/w#7 -> lockstep://a/user/y#2",
+		"WatchFor lockstep://b/user/x#1 -> lockstep://a/user/y#2",
+	})
+	l := h.outLink()
+	same(t, "TERMINATED frames", terminated(t, l), []string{
+		"lockstep://a/user/z#3 -> lockstep://b/user/x#1 #3 1 6 remote: too many watches from b",
+	})
+	if !strings.Contains(h.log.String(), "remoting: watch refused") {
+		t.Errorf("no warning logged: %s", h.log.String())
+	}
+	h.watch(true, bW, aY, 2)
+	h.watch(false, bX, aZ, 5)
+	same(t, "hook calls after UNWATCH", h.sys.takeCalls(), []string{
+		"cancel lockstep://b/user/w#7 -> lockstep://a/user/y#2",
+		"WatchFor lockstep://b/user/x#1 -> lockstep://a/user/z#3",
+	})
+}
+
+// lockErr is an error whose methods report a call made with the core's lock held, as a user's
+// error type could block or call back into the runtime.
+type lockErr struct {
+	t    *testing.T
+	core **Core
+}
+
+func (e lockErr) check(what string) {
+	if !(*e.core).mu.TryLock() {
+		e.t.Errorf("%s called with the core's lock held", what)
+		return
+	}
+	(*e.core).mu.Unlock()
+}
+
+func (e lockErr) Error() string {
+	e.check("Error")
+	return "user error"
+}
+
+func (e lockErr) Is(error) bool {
+	e.check("Is")
+	return false
+}
+
+// TestRemoteWatchFailureOutsideLock checks that the TERMINATED of a failed actor is built, with the
+// error's Error and Errors.Code, before the core takes its lock.
+func TestRemoteWatchFailureOutsideLock(t *testing.T) {
+	h := newWatchHarness(t)
+	h.watch(false, bX, aY, 1)
+	h.sys.stop("/user/y", lockstep.Failed(lockErr{t: t, core: &h.core}))
+	same(t, "TERMINATED frames", terminated(t, h.outLink()), []string{"lockstep://a/user/y#2 -> lockstep://b/user/x#1 #1 1 0 user error"})
+}
+
+// TestWatchesResentStale checks that a reconnect drops the stale WATCH and UNWATCH frames of the
+// queue: a WATCH whose number is not the pair's outgoing watch, and an UNWATCH of a pair that has
+// one, so the peer ends up watching under the current number. With a queue of one frame, an
+// UNWATCH and a newer WATCH that find the queue full become dead letters while the old WATCH stays
+// queued; the session then writes only the current WATCH.
+func TestWatchesResentStale(t *testing.T) {
+	t.Run("queue full", func(t *testing.T) {
+		h := newSendHarness(t, func(c *Config) { c.Settings.OutboundQueue = 1 })
+		env := func(k hooks.RemoteKind, n uint64) engine.Envelope {
+			return engine.Envelope{From: sender, To: target, Payload: hooks.RemotePayload{Kind: k, Seq: n}}
+		}
+		h.deliver(env(hooks.RemoteWatch, 1))   // queued while dialing
+		h.deliver(env(hooks.RemoteUnwatch, 1)) // queue-full
+		h.deliver(env(hooks.RemoteWatch, 2))   // queue-full; the outgoing watch is 2
+		same(t, "dead letters", h.takeDead(), []string{
+			"queue-full lockstep://a/user/x#1 -> lockstep://b/user/y#2 <nil>",
+			"queue-full lockstep://a/user/x#1 -> lockstep://b/user/y#2 <nil>",
+		})
+		l := h.up()
+		var got []string
+		for _, f := range l.frames {
+			if f.Kind.Data() {
+				n, _ := ParseWatch(f.Payload)
+				got = append(got, fmt.Sprintf("%s #%d", f.Kind, n))
+			}
+		}
+		same(t, "frames", got, []string{"WATCH #2"})
+	})
+	t.Run("unwatch and watch again while down", func(t *testing.T) {
+		h := newSendHarness(t, nil)
+		env := func(k hooks.RemoteKind, n uint64) engine.Envelope {
+			return engine.Envelope{From: sender, To: target, Payload: hooks.RemotePayload{Kind: k, Seq: n}}
+		}
+		h.deliver(env(hooks.RemoteWatch, 1))
+		l := h.up()
+		h.core.Closed(l, nil) // dials again at once
+		h.deliver(env(hooks.RemoteUnwatch, 1))
+		h.deliver(env(hooks.RemoteWatch, 2))
+		h.deliver(env(hooks.RemoteWatch, 3)) // a third Watch call after an Unwatch the runtime sent
+		l2 := h.up()
+		var got []string
+		for _, f := range l2.frames {
+			if f.Kind.Data() {
+				n, _ := ParseWatch(f.Payload)
+				got = append(got, fmt.Sprintf("%s #%d", f.Kind, n))
+			}
+		}
+		same(t, "frames", got, []string{"WATCH #3"})
+	})
 }

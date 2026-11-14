@@ -4,7 +4,6 @@
 package remoting
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -14,8 +13,9 @@ import (
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
-// errShutDown is the error of the calls that need a core that has not shut down.
-var errShutDown = errors.New("remoting: shut down")
+// errShutDown is the error of the calls that need a core that has not shut down. It wraps
+// lockstep.ErrStopped: a core shuts down with its system.
+var errShutDown = fmt.Errorf("remoting: shut down: %w", lockstep.ErrStopped)
 
 // lookup is one lookup sent to a peer and not answered yet (REM-290).
 type lookup struct {
@@ -33,8 +33,8 @@ type lookup struct {
 //
 // Lookup returns an error, and sends nothing, when node is this node or not a valid node name,
 // when reply is not an address of this node with a uid, when the frame exceeds MaxFrame (the
-// error of Errors.FrameTooLarge), and after Shutdown. Call it in engine context or from any
-// goroutine that may call Deliver.
+// error of Errors.FrameTooLarge), and after Shutdown (an error wrapping lockstep.ErrStopped). Call
+// it in engine context or from any goroutine that may call Deliver.
 func (c *Core) Lookup(reply engine.Address, node, path, typeKey string) error {
 	if node == c.node || !engine.ValidNodeName(node) {
 		return fmt.Errorf("remoting: cannot look up on node %q", node)

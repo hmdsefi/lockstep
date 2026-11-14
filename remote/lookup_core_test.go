@@ -194,20 +194,89 @@ func TestLookupRemoteNode(t *testing.T) {
 	}
 }
 
-// TestLookupRemoteTimeout checks that Lookup on another node waits no longer than ctx's deadline:
-// the ask times out with lockstep.ErrTimeout, and a deadline that has passed returns
-// context.DeadlineExceeded without sending.
+// deadlineOnly is a context with a deadline whose Done never closes, so that only the ask's timeout
+// can end the wait.
+type deadlineOnly struct {
+	context.Context
+	at time.Time
+}
+
+func (d deadlineOnly) Deadline() (time.Time, bool) { return d.at, true }
+
+// TestLookupRemoteTimeout checks that ctx's deadline is the ask's timeout: with a context that
+// never ends, the ask times out with lockstep.ErrTimeout; a context that ends first returns its
+// error; a deadline that has passed returns context.DeadlineExceeded without sending.
 func TestLookupRemoteTimeout(t *testing.T) {
 	sys, core, link := remoteSystem(t)
 	welcome(core, link)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := remote.Lookup[ping](ctx, sys, "b", "/user/p"); !errors.Is(err, lockstep.ErrTimeout) && !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Lookup = %v, want a timeout", err)
+	ctx := deadlineOnly{Context: context.Background(), at: time.Now().Add(50 * time.Millisecond)}
+	if _, err := remote.Lookup[ping](ctx, sys, "b", "/user/p"); !errors.Is(err, lockstep.ErrTimeout) {
+		t.Errorf("Lookup = %v, want the ask's timeout, lockstep.ErrTimeout", err)
+	}
+	ctx2, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+	time.AfterFunc(50*time.Millisecond, cancel)
+	if _, err := remote.Lookup[ping](ctx2, sys, "b", "/user/q"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Lookup = %v, want ctx's error, context.Canceled", err)
 	}
 	past, cancel2 := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel2()
-	if _, err := remote.Lookup[ping](past, sys, "b", "/user/q"); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := remote.Lookup[ping](past, sys, "b", "/user/r"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Lookup with a passed deadline = %v, want context.DeadlineExceeded", err)
 	}
+	link.mu.Lock()
+	defer link.mu.Unlock()
+	for _, f := range *link.frames {
+		if f.Recipient == "lockstep://b/user/r#0" {
+			t.Error("a LOOKUP was sent for a deadline that had passed")
+		}
+	}
+}
+
+// TestLookupShutDownCore checks that a core that shut down between the table lookup and the send
+// gives an error wrapping lockstep.ErrStopped.
+func TestLookupShutDownCore(t *testing.T) {
+	sys, core, _ := remoteSystem(t)
+	core.Shutdown()
+	if !remoting.Register(core) { // as if Lookup had found it just before Shutdown
+		t.Fatal("Register failed")
+	}
+	defer remoting.Unregister(sys)
+	if _, err := remote.Lookup[ping](context.Background(), sys, "b", "/user/p"); !errors.Is(err, lockstep.ErrStopped) {
+		t.Errorf("Lookup = %v, want an error wrapping lockstep.ErrStopped", err)
+	}
+}
+
+// lookupActor runs remote.Lookup in its turn and reports the error.
+type lookupActor struct {
+	sys  *lockstep.System
+	errs chan error
+}
+
+func (a lookupActor) Receive(*lockstep.Context[ping], ping) {
+	_, err := remote.Lookup[ping](context.Background(), a.sys, "b", "/user/p")
+	a.errs <- err
+}
+
+// TestLookupInTurn checks that Lookup inside a turn sends the LOOKUP, then returns
+// lockstep.ErrAwaitInActor instead of waiting.
+func TestLookupInTurn(t *testing.T) {
+	sys, core, link := remoteSystem(t)
+	welcome(core, link)
+	errs := make(chan error, 1)
+	pid, err := lockstep.Spawn(sys, "l", func() lockstep.Actor[ping] { return lookupActor{sys, errs} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lockstep.Send(sys, pid, ping{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errs:
+		if !errors.Is(err, lockstep.ErrAwaitInActor) {
+			t.Errorf("Lookup in a turn = %v, want lockstep.ErrAwaitInActor", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the actor did not report")
+	}
+	lookupFrame(t, link, "lockstep://b/user/p#0")
 }

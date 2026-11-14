@@ -8,7 +8,7 @@ import (
 	"slices"
 )
 
-// Shutdown ends remoting on this node (REM-296). In order:
+// Shutdown ends remoting on this node. In order:
 //
 //  1. every up outgoing session writes the frames queued for its peer, as far as its link takes
 //     them;

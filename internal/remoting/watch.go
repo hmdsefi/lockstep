@@ -39,12 +39,29 @@ type inWatch struct {
 	ended bool
 }
 
+// maxWatchers is the most watches of one peer's actors on local actors that the core registers
+// (Core.maxWatchers, which tests lower).
+const maxWatchers = 1 << 16
+
+// codeOverloaded is the failure code byte of remote.CodeOverloaded.
+const codeOverloaded uint8 = 6
+
 // receiveWatch applies a WATCH of pair numbered n from the peer p (REM-280): the watch replaces
 // one of the same pair, and is registered with hooks.WatchFor once the lock is released. If the
 // watched actor is not alive the watcher gets TERMINATED no-actor at once; otherwise it gets
-// TERMINATED with the actor's stop reason when the actor ends, unless an UNWATCH comes first.
+// TERMINATED with the actor's stop reason when the actor ends, unless an UNWATCH comes first. A
+// WATCH of a new pair from a peer that has c.maxWatchers watches already registers nothing and is
+// answered at once with TERMINATED failed, code overloaded.
 func (c *Core) receiveWatch(p *peer, pair watchPair, n uint64) {
-	if old := p.watchers[pair]; old != nil {
+	old := p.watchers[pair]
+	if old == nil && len(p.watchers) >= c.maxWatchers {
+		msg := "remote: too many watches from " + p.name
+		c.warn("remoting: watch refused", "node", c.node, "peer", p.name, "watcher", addrText(pair.watcher),
+			"watched", addrText(pair.watched), "watches", len(p.watchers))
+		c.enqueueTerminated(pair, c.failedFrame(pair, n, Failure{Code: codeOverloaded, Message: msg}))
+		return
+	}
+	if old != nil {
 		// hooks.WatchFor replaces the old registration: its function will not run, and its cancel
 		// would do nothing.
 		old.ended = true
@@ -98,6 +115,10 @@ func (c *Core) register(p *peer, pair watchPair, w *inWatch) {
 	alive, cancel := hooks.WatchFor(c.sys, pair.watcher, pair.watched, func(reason any) {
 		c.watchEnded(p, pair, w, reason)
 	})
+	var noActor *outFrame
+	if !alive {
+		noActor = c.terminatedFrame(pair.watched, pair.watcher, w.n, lockstep.NoActor)
+	}
 	c.mu.Lock()
 	defer c.unlock()
 	switch {
@@ -107,7 +128,7 @@ func (c *Core) register(p *peer, pair watchPair, w *inWatch) {
 		}
 		if !w.ended {
 			w.ended = true
-			c.sendTerminated(pair, lockstep.NoActor, w.n)
+			c.enqueueTerminated(pair, noActor)
 		}
 	case w.ended:
 		c.deferred = append(c.deferred, cancel)
@@ -118,8 +139,11 @@ func (c *Core) register(p *peer, pair watchPair, w *inWatch) {
 
 // watchEnded is the function of w's registration: the watched actor ended with reason, a
 // lockstep.StopReason. Unless w ended already, the watcher gets TERMINATED with the reason and w's
-// number. It runs in engine context, without the lock.
+// number. It runs in engine context, without the lock. The frame is built before the lock is
+// taken: a failure's error is user code (Error, and errors.Is in Errors.Code).
 func (c *Core) watchEnded(p *peer, pair watchPair, w *inWatch, reason any) {
+	r, _ := reason.(lockstep.StopReason) // the runtime passes the stop reason
+	f := c.terminatedFrame(pair.watched, pair.watcher, w.n, r)
 	c.mu.Lock()
 	defer c.unlock()
 	if w.ended {
@@ -130,17 +154,24 @@ func (c *Core) watchEnded(p *peer, pair watchPair, w *inWatch, reason any) {
 	if p.watchers[pair] == w {
 		delete(p.watchers, pair)
 	}
-	r, _ := reason.(lockstep.StopReason) // the runtime passes the stop reason
-	c.sendTerminated(pair, r, w.n)
+	c.enqueueTerminated(pair, f)
 }
 
-// sendTerminated queues a TERMINATED of pair numbered n with reason r for the watcher's node.
-// After Shutdown it sends nothing.
-func (c *Core) sendTerminated(pair watchPair, r lockstep.StopReason, n uint64) {
+// enqueueTerminated queues f, a TERMINATED of pair, for the watcher's node. After Shutdown it
+// sends nothing.
+func (c *Core) enqueueTerminated(pair watchPair, f *outFrame) {
 	if c.shut {
 		return
 	}
-	c.enqueue(pair.watcher.Node, c.terminatedFrame(pair.watched, pair.watcher, n, r))
+	c.enqueue(pair.watcher.Node, f)
+}
+
+// failedFrame returns the TERMINATED of pair numbered n with reason failed and the failure fl,
+// which needs no cut: it is the core's own.
+func (c *Core) failedFrame(pair watchPair, n uint64, fl Failure) *outFrame {
+	t := Terminated{Watch: n, Kind: StopFailed, Failure: fl}
+	f := Frame{Kind: KindTerminated, Sender: addrText(pair.watched), Recipient: addrText(pair.watcher), Payload: AppendTerminated(nil, &t)}
+	return &outFrame{b: AppendFrame(nil, &f), kind: KindTerminated, from: pair.watched, to: pair.watcher, msg: fl.Message, watch: n}
 }
 
 // terminatedFrame returns the TERMINATED frame from watched to watcher that ends the watch
@@ -220,18 +251,34 @@ func watchFrame(k Kind, pair watchPair, n uint64, inc uint32) *outFrame {
 }
 
 // resendWatches puts in front of p's queue a WATCH for every outgoing watch on p's actors whose
-// WATCH is not queued already, in comparePairs order (REM-284). An outgoing session that comes up
-// calls it before it writes the queue, so a session to the same incarnation of p carries every
-// watch again, whatever the last session lost; a restart has ended them all before.
+// WATCH is not queued already, in comparePairs order (REM-284), after it drops the stale WATCH and
+// UNWATCH frames of the queue. An outgoing session that comes up calls it before it writes the
+// queue, so a session to the same incarnation of p carries every watch again, under its current
+// number, whatever the last session lost; a restart has ended them all before.
 func (c *Core) resendWatches(p *peer) {
-	if len(p.watches) == 0 {
-		return
-	}
+	// A queued WATCH of a number that is not the pair's outgoing watch, and a queued UNWATCH of a
+	// pair that has an outgoing watch, are stale: the WATCH of the outgoing watch, queued or
+	// written below, replaces whatever the peer holds for the pair. Writing them could leave the
+	// peer watching under an old number. They are dropped without a dead letter.
 	queued := make(map[watchPair]uint64)
+	keep := p.queue[:0]
 	for _, f := range p.queue {
-		if f.kind == KindWatch {
-			queued[watchPair{watcher: f.from, watched: f.to}] = f.watch
+		pair := watchPair{watcher: f.from, watched: f.to}
+		n, watched := p.watches[pair]
+		switch {
+		case f.kind == KindWatch && (!watched || f.watch != n):
+			continue
+		case f.kind == KindUnwatch && watched:
+			continue
+		case f.kind == KindWatch:
+			queued[pair] = n
 		}
+		keep = append(keep, f)
+	}
+	clear(p.queue[len(keep):])
+	p.queue = keep
+	if len(p.queue) == 0 {
+		p.queue = nil
 	}
 	var fs []*outFrame
 	for _, pair := range sortedPairs(p.watches) {
