@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,23 +90,44 @@ func watchEnvelopes(t *testing.T, n *remoteNode, from int) []string {
 		default:
 			t.Fatalf("envelope with kind %d, want a watch kind", p.Kind)
 		}
-		if p != (hooks.RemotePayload{Kind: p.Kind}) {
-			t.Errorf("%s payload %+v carries more than its kind", kind, p)
+		if p.Seq == 0 || p != (hooks.RemotePayload{Kind: p.Kind, Seq: p.Seq}) {
+			t.Errorf("%s payload %+v, want its kind and a watch number only", kind, p)
 		}
 		out = append(out, kind+" "+env.From.String()+" "+env.To.String())
 	}
 	return out
 }
 
-// terminate hands n's Host.Inbound a RemoteTerminated from watched to watcher with reason, as the
-// remoting core does for a TERMINATED frame, and runs n until idle.
-func terminate(n *remoteNode, watched, watcher lockstep.Address, reason lockstep.StopReason) {
+// watchSeq returns the watch number of the last RemoteWatch from watcher to watched that n handed
+// its transport, or 0 if there is none.
+func watchSeq(t *testing.T, n *remoteNode, watcher, watched lockstep.Address) uint64 {
+	t.Helper()
+	var seq uint64
+	for _, env := range n.eng.Delivered() {
+		p, ok := hooks.Payload(env.Payload)
+		if ok && p.Kind == hooks.RemoteWatch && env.From == eaddr(watcher) && env.To == eaddr(watched) {
+			seq = p.Seq
+		}
+	}
+	return seq
+}
+
+// terminate hands n's Host.Inbound a RemoteTerminated from watched to watcher with reason that
+// echoes the number of watcher's last RemoteWatch of watched, as the remoting core does for a
+// TERMINATED frame, and runs n until idle.
+func terminate(t *testing.T, n *remoteNode, watched, watcher lockstep.Address, reason lockstep.StopReason) {
+	t.Helper()
+	terminateSeq(n, watched, watcher, reason, watchSeq(t, n, watcher, watched))
+}
+
+// terminateSeq is terminate with the echoed watch number seq.
+func terminateSeq(n *remoteNode, watched, watcher lockstep.Address, reason lockstep.StopReason, seq uint64) {
 	n.seq++
 	n.eng.Inbound(engine.Envelope{
 		From:    eaddr(watched),
 		To:      eaddr(watcher),
 		Seq:     n.seq,
-		Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: reason}),
+		Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: reason, Seq: seq}),
 	})
 	n.eng.RunUntilIdle()
 }
@@ -147,11 +170,11 @@ func TestRemoteActorHooksSet(t *testing.T) {
 // RemoteTerminated needs a lockstep.StopReason.
 func TestRemoteWatchPayloads(t *testing.T) {
 	for _, p := range []hooks.RemotePayload{
-		{Kind: hooks.RemoteWatch},
-		{Kind: hooks.RemoteUnwatch},
-		{Kind: hooks.RemoteTerminated, Reason: lockstep.Normal},
-		{Kind: hooks.RemoteTerminated, Reason: lockstep.NoActor},
-		{Kind: hooks.RemoteTerminated, Reason: lockstep.Failed(errDown)},
+		{Kind: hooks.RemoteWatch, Seq: 3},
+		{Kind: hooks.RemoteUnwatch, Seq: 3},
+		{Kind: hooks.RemoteTerminated, Reason: lockstep.Normal, Seq: 4},
+		{Kind: hooks.RemoteTerminated, Reason: lockstep.NoActor, Seq: 1},
+		{Kind: hooks.RemoteTerminated, Reason: lockstep.Failed(errDown), Seq: 9},
 	} {
 		got, ok := hooks.Payload(hooks.NewPayload(p))
 		if !ok || got != p {
@@ -197,8 +220,8 @@ func TestATACT37RemoteWatch(t *testing.T) {
 			t.Errorf("lockstep.watch records %v, want one %v", recs, wantRec)
 		}
 
-		terminate(n1, b, w.Address(), lockstep.Normal)
-		terminate(n1, b, w.Address(), lockstep.Normal) // a duplicate: the watch has ended
+		terminate(t, n1, b, w.Address(), lockstep.Normal)
+		terminate(t, n1, b, w.Address(), lockstep.Normal) // a duplicate: the watch has ended
 		if want := []string{"/user/w1 " + b.String() + " normal"}; !slices.Equal(log, want) {
 			t.Errorf("Terminated signals %q, want %q", log, want)
 		}
@@ -229,7 +252,7 @@ func TestATACT37RemoteWatch(t *testing.T) {
 		if recs := recordsSince(n1, r, "lockstep.unwatch"); len(recs) != 1 || recs[0]["addr"] != b.String() {
 			t.Errorf("lockstep.unwatch records %v, want one for %v", recs, b)
 		}
-		terminate(n1, b, w.Address(), lockstep.Normal)
+		terminate(t, n1, b, w.Address(), lockstep.Normal)
 		if len(log) != 0 {
 			t.Errorf("Terminated signals after Unwatch %q, want none", log)
 		}
@@ -241,7 +264,7 @@ func TestATACT37RemoteWatch(t *testing.T) {
 		n1.eng.SetDeliverError(errLink)
 		unwatchIn(t, n1, w, b)
 		n1.eng.SetDeliverError(nil)
-		terminate(n1, b, w.Address(), lockstep.Normal)
+		terminate(t, n1, b, w.Address(), lockstep.Normal)
 		if len(log) != 0 {
 			t.Errorf("Terminated signals after a failed RemoteUnwatch %q, want none", log)
 		}
@@ -281,7 +304,7 @@ func TestATACT37RemoteWatch(t *testing.T) {
 		if got := watchEnvelopes(t, n1, d); !slices.Equal(got, want) {
 			t.Errorf("envelopes at the restart %q, want %q", got, want)
 		}
-		terminate(n1, b, w.Address(), lockstep.Normal)
+		terminate(t, n1, b, w.Address(), lockstep.Normal)
 		if len(log) != 0 {
 			t.Errorf("Terminated signals after the restart %q, want none", log)
 		}
@@ -337,7 +360,7 @@ func TestRemoteWatchDeliverError(t *testing.T) {
 	if recs := recordsSince(n1, r, "lockstep.watch"); len(recs) != 0 {
 		t.Errorf("lockstep.watch records %v, want none", recs)
 	}
-	terminate(n1, b, w.Address(), lockstep.Normal)
+	terminate(t, n1, b, w.Address(), lockstep.Normal)
 	if len(log) != 0 {
 		t.Errorf("Terminated signals %q, want none", log)
 	}
@@ -398,10 +421,10 @@ func (c *watchCore) pump(t *testing.T) {
 		key := [2]engine.Address{env.From, env.To}
 		switch p.Kind {
 		case hooks.RemoteWatch:
-			watcher, watched := env.From, env.To
+			watcher, watched, seq := env.From, env.To, p.Seq
 			end := func(reason any) {
 				c.back = append(c.back, engine.Envelope{From: watched, To: watcher,
-					Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: reason})})
+					Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: reason, Seq: seq})})
 			}
 			alive, cancel := hooks.WatchFor(c.dst.sys, watcher, watched, func(reason any) {
 				if !c.dst.eng.Engine().Scheduler.InTurn() {
@@ -591,8 +614,8 @@ func TestWatchesDown(t *testing.T) {
 	log = nil
 	hooks.WatchesDown(n1.sys, "n2", errDown)
 	hooks.WatchesDown(n1.sys, "", errDown)
-	terminate(n1, b, w1.Address(), lockstep.Normal)
-	terminate(n1, c, w3.Address(), lockstep.Normal)
+	terminate(t, n1, b, w1.Address(), lockstep.Normal)
+	terminate(t, n1, c, w3.Address(), lockstep.Normal)
 	if want := []string{"/user/w3 " + c.String() + " normal"}; !slices.Equal(log, want) {
 		t.Errorf("Terminated signals %q, want %q", log, want)
 	}
@@ -886,5 +909,168 @@ func TestAttachTransportProduction(t *testing.T) {
 	toText := to.String()
 	if want := []string{"peer-restarted " + toText, "peer-restarted " + toText, "shutdown " + toText}; !slices.Equal(reasons, want) {
 		t.Errorf("dead letter log events %q, want %q", reasons, want)
+	}
+}
+
+// ACT-630, REM-282: a RemoteTerminated names the watch it ends by the watcher's number. After
+// Unwatch and a new Watch of the same address, a TERMINATED still in flight for the old watch is
+// dropped and leaves the new watch in effect; the new watch's own TERMINATED is delivered.
+func TestRemoteTerminatedStaleWatch(t *testing.T) {
+	n1 := newRemoteNode(t, "n1")
+	var log []string
+	w := spawnWatcher(t, n1, "w", &log)
+	b := lockstep.PIDAt[int]("n2", "/user/b").Address()
+	if err := watchIn(t, n1, w, b); err != nil {
+		t.Fatal(err)
+	}
+	old := watchSeq(t, n1, w.Address(), b)
+	during(t, n1, w, func(ctx *lockstep.Context[rwFunc]) {
+		lockstep.Unwatch(ctx, b)
+		if err := lockstep.Watch(ctx, b); err != nil {
+			t.Error(err)
+		}
+	})
+	cur := watchSeq(t, n1, w.Address(), b)
+	if cur == old || old == 0 {
+		t.Fatalf("watch numbers %d then %d, want two different non-zero numbers", old, cur)
+	}
+	terminateSeq(n1, b, w.Address(), lockstep.Normal, old)
+	if len(log) != 0 {
+		t.Errorf("Terminated signals %q for the old watch's TERMINATED, want none", log)
+	}
+	terminateSeq(n1, b, w.Address(), lockstep.Failed(errDown), cur)
+	if want := []string{"/user/w " + b.String() + " " + lockstep.Failed(errDown).String()}; !slices.Equal(log, want) {
+		t.Errorf("Terminated signals %q, want %q", log, want)
+	}
+}
+
+// inbound hands n's Host.Inbound an envelope from from to to with the watch payload p, and runs n
+// until idle.
+func inbound(n *remoteNode, from, to engine.Address, p hooks.RemotePayload) {
+	n.seq++
+	n.eng.Inbound(engine.Envelope{From: from, To: to, Seq: n.seq, Payload: hooks.NewPayload(p)})
+	n.eng.RunUntilIdle()
+}
+
+// ACT-605, REM-280: a transport that passes runtime payloads by reference hands Host.Inbound the
+// RemoteWatch and RemoteUnwatch envelopes themselves. The system registers the watch, answers a
+// not-alive target at once with NoActor, sends the watched actor's end back as a RemoteTerminated
+// that echoes the watch number, and cancels on a RemoteUnwatch with that number only.
+func TestRemoteInboundWatch(t *testing.T) {
+	n2 := newRemoteNode(t, "n2")
+	var got []int
+	b := spawnAt(t, n2, "b", func() lockstep.Actor[int] { return collector{&got} }).Address()
+	c := spawnAt(t, n2, "c", func() lockstep.Actor[int] { return collector{&got} }).Address()
+	watcher := engine.Address{Node: "n1", Path: "/user/w", UID: 7}
+	none := engine.Address{Node: "n2", Path: "/user/none"}
+	// sent returns the RemoteTerminated envelopes n2 handed its transport from index from on.
+	sent := func(from int) []string {
+		var out []string
+		for _, env := range n2.eng.Delivered()[from:] {
+			p, ok := hooks.Payload(env.Payload)
+			if !ok || p.Kind != hooks.RemoteTerminated {
+				t.Fatalf("n2 delivered %+v, want only RemoteTerminated", env.Payload)
+			}
+			out = append(out, fmt.Sprintf("%s->%s %v #%d", env.From, env.To, p.Reason, p.Seq))
+		}
+		return out
+	}
+
+	inbound(n2, watcher, eaddr(b), hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 5})
+	inbound(n2, watcher, none, hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 6})
+	if want := []string{none.String() + "->" + watcher.String() + " no-actor #6"}; !slices.Equal(sent(0), want) {
+		t.Errorf("sent %q, want %q", sent(0), want)
+	}
+	inbound(n2, watcher, eaddr(c), hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 8})
+	inbound(n2, watcher, eaddr(b), hooks.RemotePayload{Kind: hooks.RemoteUnwatch, Seq: 4}) // another watch's number
+	inbound(n2, watcher, eaddr(c), hooks.RemotePayload{Kind: hooks.RemoteUnwatch, Seq: 8})
+	// A watcher on n2 itself is dropped.
+	inbound(n2, engine.Address{Node: "n2", Path: "/user/x", UID: 3}, eaddr(b), hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 1})
+
+	d := len(n2.eng.Delivered())
+	for _, a := range []lockstep.Address{b, c} {
+		if err := lockstep.Stop(n2.sys, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n2.eng.RunUntilIdle()
+	if want := []string{b.String() + "->" + watcher.String() + " normal #5"}; !slices.Equal(sent(d), want) {
+		t.Errorf("sent at the stops %q, want %q", sent(d), want)
+	}
+}
+
+// ACT-605, -race: on a production system a WatchFor cancel that races the target's final stop
+// runs fn at most once.
+func TestRemoteWatchForRace(t *testing.T) {
+	sys := newProdSystem(t, lockstep.WithNodeName("n1"))
+	watcher := engine.Address{Node: "n2", Path: "/user/w", UID: 7}
+	var got []int
+	for i := range 50 {
+		name := fmt.Sprintf("t%d", i)
+		pid, err := lockstep.Spawn(sys, name, func() lockstep.Actor[int] { return collector{&got} })
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ran atomic.Int32
+		alive, cancel := hooks.WatchFor(sys, watcher, eaddr(pid.Address()), func(any) { ran.Add(1) })
+		if !alive {
+			t.Fatalf("WatchFor(%v) reports not alive", pid)
+		}
+		var wg sync.WaitGroup
+		wg.Go(cancel)
+		wg.Go(func() {
+			if err := lockstep.Stop(sys, pid.Address()); err != nil {
+				t.Error(err)
+			}
+		})
+		wg.Wait()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := lockstep.Lookup[int](sys, "/user/"+name); errors.Is(err, lockstep.ErrNotFound) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%v did not stop", pid)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+		if n := ran.Load(); n > 1 {
+			t.Fatalf("fn ran %d times, want at most once", n)
+		}
+	}
+}
+
+// ACT-050, -race: AttachTransport racing Shutdown on a production system is either refused with
+// ErrStopped, and then stop never runs, or succeeds, and then stop has run once when Shutdown
+// returns.
+func TestAttachTransportShutdownRace(t *testing.T) {
+	var got []int
+	for range 20 {
+		sys := lockstep.New(lockstep.WithNodeName("n1"))
+		if _, err := lockstep.Spawn(sys, "i", func() lockstep.Actor[int] { return collector{&got} }); err != nil {
+			t.Fatal(err)
+		}
+		var stops atomic.Int32
+		var attachErr error
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_, attachErr = hooks.AttachTransport(sys, &fakeTransport{}, func() { stops.Add(1) })
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := sys.Shutdown(ctx)
+		cancel()
+		wg.Wait()
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		switch n := stops.Load(); {
+		case attachErr == nil && n != 1:
+			t.Fatalf("attached, and stop ran %d times by the end of Shutdown, want once", n)
+		case attachErr != nil && !errors.Is(attachErr, lockstep.ErrStopped):
+			t.Fatalf("AttachTransport = %v, want nil or ErrStopped", attachErr)
+		case attachErr != nil && n != 0:
+			t.Fatalf("refused, and stop ran %d times, want never", n)
+		}
 	}
 }

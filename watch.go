@@ -72,16 +72,16 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 
 // watchRemote is Watch's branch for an address on another node (ACT-602): addr joins the watched
 // set and the system's outgoing watches under seq, and tr gets a RemoteWatch envelope from the
-// watcher to addr. A Deliver error takes addr out again and is returned wrapped, with no record;
-// otherwise lockstep.watch is recorded with alive=remote. The Terminated comes back with seq,
-// through Host.Inbound (remoteTerminated) or hooks.WatchesDown.
+// watcher to addr carrying seq. A Deliver error takes addr out again and is returned wrapped, with
+// no record; otherwise lockstep.watch is recorded with alive=remote. The Terminated comes back with
+// seq, through Host.Inbound (remoteTerminated) or hooks.WatchesDown.
 func watchRemote[M any](ctx *Context[M], tr engine.Transport, addr Address, seq uint64) error {
 	c := ctx.cell
 	sys := c.sys
 	ctx.watched.add(addr, seq)
 	// Listed before Deliver, so a WatchesDown that runs meanwhile ends this watch too.
 	sys.rwatch.addOut(c.addr, addr, seq)
-	err := tr.Deliver(engine.Envelope{From: c.addr.engine(), To: addr.engine(), Payload: watchPayload{kind: hooks.RemoteWatch}})
+	err := tr.Deliver(engine.Envelope{From: c.addr.engine(), To: addr.engine(), Payload: watchPayload{kind: hooks.RemoteWatch, seq: seq}})
 	if err != nil {
 		ctx.watched.remove(addr)
 		sys.rwatch.removeOut(c.addr, addr, seq)
@@ -96,6 +96,7 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 	ctx.mustInTurn()
 	// An address that is not in the watched set, the zero address among them, is a no-op
 	// (ACT-630).
+	seq, _ := ctx.watched.seq(addr)
 	if !ctx.watched.remove(addr) {
 		return
 	}
@@ -103,7 +104,7 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 	if addr.node != c.sys.node {
 		// ACT-630: the transport gets a RemoteUnwatch. A Deliver error changes nothing: the watch
 		// has left the set, so a Terminated that still comes is skipped.
-		c.sys.unwatchRemote(c.addr, addr)
+		c.sys.unwatchRemote(c.addr, addr, seq)
 		c.sys.recordUnwatch(c.addr, addr)
 		return
 	}
@@ -226,7 +227,8 @@ func indexNearEnds[E any](s []E, match func(E) bool) int {
 	return -1
 }
 
-// recordWatch emits lockstep.watch (ACT-660, ACT §8). alive is "true" or "false".
+// recordWatch emits lockstep.watch (ACT-660, ACT §8). alive is "true" or "false", or "remote" for
+// an address on another node (ACT-602).
 func (s *System) recordWatch(watcher, addr Address, alive string) {
 	tr := s.eng.Tracer
 	if !tr.Enabled() {
@@ -251,13 +253,13 @@ func (s *System) recordUnwatch(watcher, addr Address) {
 	)
 }
 
-// unwatchRemote ends the watch of watcher, a local actor, of addr on another node: the watch
-// leaves the outgoing watches and the transport gets a RemoteUnwatch envelope from watcher to
-// addr, whose Deliver error is ignored (ACT-630, ACT-640).
-func (s *System) unwatchRemote(watcher, addr Address) {
-	s.rwatch.removeOut(watcher, addr, 0)
+// unwatchRemote ends the watch of watcher, a local actor, of addr on another node, whose watch
+// number is seq: the watch leaves the outgoing watches and the transport gets a RemoteUnwatch
+// envelope from watcher to addr carrying seq, whose Deliver error is ignored (ACT-630, ACT-640).
+func (s *System) unwatchRemote(watcher, addr Address, seq uint64) {
+	s.rwatch.removeOut(watcher, addr, seq)
 	if tr := s.transportOf(); tr != nil { // always: a transport never detaches
-		_ = tr.Deliver(engine.Envelope{From: watcher.engine(), To: addr.engine(), Payload: watchPayload{kind: hooks.RemoteUnwatch}})
+		_ = tr.Deliver(engine.Envelope{From: watcher.engine(), To: addr.engine(), Payload: watchPayload{kind: hooks.RemoteUnwatch, seq: seq}})
 	}
 }
 
@@ -267,20 +269,65 @@ func (s *System) unwatchRemote(watcher, addr Address) {
 func (s *System) unwatchAllRemote(watcher Address, w *watchedSet) {
 	for _, a := range w.list {
 		if a.node != s.node {
-			s.unwatchRemote(watcher, a)
+			seq, _ := w.seq(a)
+			s.unwatchRemote(watcher, a, seq)
 		}
 	}
 }
 
-// remoteTerminated applies an inbound RemoteTerminated from watched to watcher (REM-282, ACT-630).
-// If watcher's watch of watched is an outgoing watch, it leaves the outgoing watches and
-// Terminated{watched, reason} is pushed to watcher's system queue with the watch's sequence
-// number: so it is pushed at most once per watch, and its delivery skips it when Unwatch or the
-// end of the incarnation came first. Otherwise it is dropped.
-func (s *System) remoteTerminated(watcher, watched Address, reason StopReason) {
+// remoteTerminated applies an inbound RemoteTerminated from watched to watcher that echoes the
+// watch number seq (REM-282, ACT-630). If watcher's watch of watched is an outgoing watch under
+// exactly that number, it leaves the outgoing watches and Terminated{watched, reason} is pushed to
+// watcher's system queue with the number: so it is pushed at most once per watch, and its delivery
+// skips it when Unwatch or the end of the incarnation came first. Otherwise it is dropped, also
+// when it answers an earlier watch of the pair that Unwatch ended before a new Watch.
+func (s *System) remoteTerminated(watcher, watched Address, reason StopReason, seq uint64) {
 	p := remotePair{watcher: watcher, watched: watched}
-	if seq, ok := s.rwatch.takeOut(p); ok {
+	if s.rwatch.takeOut(p, seq) {
 		s.pushRemoteTerminated(p, seq, reason)
+	}
+}
+
+// inboundWatch applies a RemoteWatch or RemoteUnwatch from watcher, on another node, of watched on
+// this one, as the remoting core does with WATCH and UNWATCH frames. Only a transport that hands
+// runtime payloads through by reference, as the simulation's does until remoting carries its
+// traffic, gives Host.Inbound such a payload. A RemoteWatch registers the watch (watchFor); its
+// end, or a not-alive target at once with NoActor, goes back to watcher through the system's
+// transport as a RemoteTerminated echoing p.seq. A RemoteUnwatch cancels the watch it names by
+// number. A watcher on this node is dropped.
+func (s *System) inboundWatch(watcher, watched Address, p watchPayload) {
+	if watcher.IsZero() || watcher.node == s.node {
+		return
+	}
+	pair := remotePair{watcher: watcher, watched: watched}
+	r := &s.rwatch
+	switch p.kind {
+	case hooks.RemoteWatch:
+		alive, cancel := false, func() {}
+		if watched.node == s.node {
+			alive, cancel = s.watchFor(watcher, watched, func(reason any) {
+				r.takeRef(pair, p.seq)       // the watch has ended: its cancel would do nothing
+				sr, _ := reason.(StopReason) // always one: endRemoteWatch passes the stop reason
+				s.sendTerminated(pair, sr, p.seq)
+			})
+		}
+		if !alive {
+			s.sendTerminated(pair, NoActor, p.seq)
+			return
+		}
+		r.setRef(pair, p.seq, cancel)
+	case hooks.RemoteUnwatch:
+		if cancel := r.takeRef(pair, p.seq); cancel != nil {
+			cancel()
+		}
+	}
+}
+
+// sendTerminated hands the transport a RemoteTerminated from p.watched to p.watcher with reason,
+// echoing the watch number seq; a Deliver error is ignored, as loss on the network is.
+func (s *System) sendTerminated(p remotePair, reason StopReason, seq uint64) {
+	if tr := s.transportOf(); tr != nil {
+		_ = tr.Deliver(engine.Envelope{From: p.watched.engine(), To: p.watcher.engine(), Payload: terminatedPayload{reason: reason, seq: seq}})
 	}
 }
 
@@ -314,12 +361,14 @@ type remotePair struct{ watcher, watched Address }
 // number: the sets belong to turns, and an inbound RemoteTerminated or WatchesDown runs outside
 // them. in holds the watches of actors on other nodes on local actors (hooks.WatchFor), each with
 // the sequence number of its entry on the target's watcher list and the function its end runs.
-// Both maps are read by key; only downs ranges over out, and it sorts what it finds. mu is taken
+// refs holds the cancel of each watch that inboundWatch registered, with the watcher's number for
+// it. The maps are read by key; only downs ranges over out, and it sorts what it finds. mu is taken
 // before the registry's lock and never while another lock is held.
 type remoteWatches struct {
 	mu   sync.Mutex
 	out  map[remotePair]uint64
 	in   map[remotePair]remoteWatcher
+	refs map[remotePair]remoteRef
 	next uint64 // the sequence number of the last WatchFor registration
 }
 
@@ -327,6 +376,34 @@ type remoteWatches struct {
 type remoteWatcher struct {
 	seq uint64
 	fn  func(reason any)
+}
+
+// remoteRef is one watch of inboundWatch: the watcher's number for it and its cancel.
+type remoteRef struct {
+	seq    uint64
+	cancel func()
+}
+
+// setRef keeps cancel as the cancel of the inbound watch p with the watcher's number seq,
+// replacing an earlier one of the pair.
+func (r *remoteWatches) setRef(p remotePair, seq uint64, cancel func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.refs == nil {
+		r.refs = make(map[remotePair]remoteRef)
+	}
+	r.refs[p] = remoteRef{seq: seq, cancel: cancel}
+}
+
+// takeRef removes and returns the cancel of the inbound watch p if its number is seq, else nil.
+func (r *remoteWatches) takeRef(p remotePair, seq uint64) func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.refs[p]; ok && e.seq == seq {
+		delete(r.refs, p)
+		return e.cancel
+	}
+	return nil
 }
 
 // addOut lists watcher's watch of watched under seq.
@@ -339,27 +416,21 @@ func (r *remoteWatches) addOut(watcher, watched Address, seq uint64) {
 	r.out[remotePair{watcher: watcher, watched: watched}] = seq
 }
 
-// removeOut removes watcher's watch of watched if it is listed under seq, or under any number when
-// seq is 0.
+// removeOut removes watcher's watch of watched if it is listed under seq.
 func (r *remoteWatches) removeOut(watcher, watched Address, seq uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p := remotePair{watcher: watcher, watched: watched}
-	if s, ok := r.out[p]; ok && (seq == 0 || s == seq) {
-		delete(r.out, p)
-	}
+	r.takeOut(remotePair{watcher: watcher, watched: watched}, seq)
 }
 
-// takeOut removes the outgoing watch p and returns its sequence number, or false if it is not
-// listed.
-func (r *remoteWatches) takeOut(p remotePair) (uint64, bool) {
+// takeOut removes the outgoing watch p and reports whether it was listed under seq; a watch listed
+// under another number stays.
+func (r *remoteWatches) takeOut(p remotePair, seq uint64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	seq, ok := r.out[p]
-	if ok {
+	if s, ok := r.out[p]; ok && s == seq {
 		delete(r.out, p)
+		return true
 	}
-	return seq, ok
+	return false
 }
 
 // downs removes every outgoing watch of an address on node and returns them in ascending

@@ -135,39 +135,49 @@ func (t *askTable) pendingReply(ask Address) resolver {
 
 // watchPayload is the payload of a RemoteWatch or RemoteUnwatch envelope, which Watch, Unwatch and
 // the end of an incarnation hand the transport (ACT-602, ACT-630, ACT-640): From watches, or stops
-// watching, To.
-type watchPayload struct{ kind hooks.RemoteKind }
+// watching, To. seq is the watcher's number for the watch (ACT-630), which a RemoteTerminated
+// echoes back.
+type watchPayload struct {
+	kind hooks.RemoteKind
+	seq  uint64
+}
 
-// terminatedPayload is the payload of an inbound RemoteTerminated envelope: From ended with reason,
-// and To is the watcher (host.Inbound, remoteTerminated).
-type terminatedPayload struct{ reason StopReason }
+// terminatedPayload is the payload of a RemoteTerminated envelope: From ended with reason, To is
+// the watcher, and seq the watcher's number for the watch that ended (host.Inbound,
+// remoteTerminated).
+type terminatedPayload struct {
+	reason StopReason
+	seq    uint64
+}
 
 // watchPayloadOf is hooks.Payload for the watch kinds: a watchPayload is its RemoteWatch or
-// RemoteUnwatch, a terminatedPayload RemoteTerminated with its StopReason. It reports false for
-// anything else.
+// RemoteUnwatch, a terminatedPayload RemoteTerminated with its StopReason; each carries its watch
+// number. It reports false for anything else.
 func watchPayloadOf(p any) (hooks.RemotePayload, bool) {
 	switch p := p.(type) {
 	case watchPayload:
-		return hooks.RemotePayload{Kind: p.kind}, true
+		return hooks.RemotePayload{Kind: p.kind, Seq: p.seq}, true
 	case terminatedPayload:
-		return hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: p.reason}, true
+		return hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: p.reason, Seq: p.seq}, true
 	}
 	return hooks.RemotePayload{}, false
 }
 
-// newWatchPayload is hooks.NewPayload for the watch kinds. A RemoteTerminated becomes the payload
-// host.Inbound pushes to the watcher as a Terminated (remoteTerminated); it panics if its Reason
-// is not a StopReason, which the core never builds. A RemoteWatch or RemoteUnwatch becomes a
-// watchPayload, which host.Inbound drops: the core registers other nodes' watches with WatchFor.
+// newWatchPayload is hooks.NewPayload for the watch kinds, each with its watch number. A
+// RemoteTerminated becomes the payload host.Inbound pushes to the watcher as a Terminated
+// (remoteTerminated); it panics if its Reason is not a StopReason, which the core never builds. A
+// RemoteWatch or RemoteUnwatch becomes a watchPayload, which host.Inbound applies itself
+// (inboundWatch); the core never hands one over, since it registers other nodes' watches with
+// WatchFor.
 func newWatchPayload(p hooks.RemotePayload) any {
 	if p.Kind != hooks.RemoteTerminated {
-		return watchPayload{kind: p.Kind}
+		return watchPayload{kind: p.Kind, seq: p.Seq}
 	}
 	r, ok := p.Reason.(StopReason)
 	if !ok {
 		panic(fmt.Sprintf("lockstep: hooks.NewPayload: RemoteTerminated with a reason of type %T, want lockstep.StopReason", p.Reason))
 	}
-	return terminatedPayload{reason: r}
+	return terminatedPayload{reason: r, seq: p.Seq}
 }
 
 // actorAssignable is the registry's half of hooks.Assignable: whether to names a live actor of s,
@@ -201,7 +211,8 @@ func assignableTo(v any, t reflect.Type) bool {
 
 // attachTransportHook is hooks.AttachTransport (ACT-050): it attaches t to sys (attachTransport)
 // and returns what the transport needs of the system. The attachment's DeadLetter is
-// remoteDeadLetter. It panics if t is nil.
+// remoteDeadLetter. The send paths read t as soon as attachTransport stores it, so t's Deliver may
+// run, on any sending goroutine, before this returns. It panics if t is nil.
 func attachTransportHook(sys any, t engine.Transport, stop func()) (hooks.Attachment, error) {
 	s := hookSystem("AttachTransport", sys)
 	if t == nil {

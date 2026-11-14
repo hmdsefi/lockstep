@@ -395,8 +395,8 @@ func (s *System) resolve(to Address, typ reflect.Type) (actorCell, Address, dead
 	return c, Address{node: s.node, path: to.path, uid: uid}, 0
 }
 
-// sendRemote routes r to another node: to the transport, or to a dead letter when the engine has
-// none (ENG-080). A transport error comes back wrapped (MSG-110), with nothing sent.
+// sendRemote routes r to another node: to the system's transport, or to a dead letter when the
+// system has none (ENG-080). A transport error comes back wrapped (MSG-110), with nothing sent.
 func (s *System) sendRemote(r routeRequest) outcome {
 	tr := s.transportOf()
 	if tr == nil {
