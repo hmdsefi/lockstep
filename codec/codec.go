@@ -92,7 +92,9 @@ type Codec interface {
 	// Marshal returns the bytes of v. Equal values give equal bytes.
 	Marshal(v any) ([]byte, error)
 
-	// Unmarshal decodes data into the value v points to; v is a non-nil pointer.
+	// Unmarshal decodes data into the value v points to; v is a non-nil pointer. The decoded
+	// value must not refer to data, and Unmarshal must not keep data after it returns: the caller
+	// may reuse the buffer, as the remoting drivers do with the frames they read.
 	Unmarshal(data []byte, v any) error
 }
 

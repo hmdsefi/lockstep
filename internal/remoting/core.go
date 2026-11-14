@@ -337,6 +337,9 @@ func (c *Core) Writable(link Link) {
 // context.
 func (c *Core) Frame(link Link, b []byte) {
 	// Parsing and decoding read only settings that do not change, so they run without the lock.
+	// A frame that turns out to be dropped (a link the core does not know, a session not up, a
+	// late or misrouted frame) is decoded for nothing; knowing that first would take the lock
+	// twice for every frame, and such frames are rare.
 	f, err := ParseFrame(b, c.set.MaxFrame)
 	var in *inbound
 	if err == nil {

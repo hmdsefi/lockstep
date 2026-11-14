@@ -6,9 +6,13 @@ package remoting
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/codec"
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
@@ -56,21 +60,20 @@ func (c *Core) decodeFrame(f *Frame) *inbound {
 		return nil
 	}
 	in := &inbound{}
-	var err error
-	in.to, err = parseAddress(f.Recipient)
-	in.toOK = err == nil
-	if in.from, err = parseAddress(f.Sender); err != nil {
-		in.err = fmt.Errorf("sender: %w", err)
+	var ok bool
+	in.to, in.toOK = parseAddress(f.Recipient)
+	if in.from, ok = parseAddress(f.Sender); !ok {
+		in.err = fmt.Errorf("sender %s is not an address", quoted(f.Sender))
 	}
 	body := f.Payload
 	switch f.Kind {
 	case KindAsk:
 		var text string
 		text, body, _ = ParseAsk(f.Payload) // ParseFrame checked the layout
-		switch in.ask, err = parseAddress(text); {
+		switch in.ask, ok = parseAddress(text); {
 		case in.err != nil:
-		case err != nil:
-			in.err = fmt.Errorf("ask address: %w", err)
+		case !ok:
+			in.err = fmt.Errorf("ask address %s is not an address", quoted(text))
 		case text == "":
 			in.err = errors.New("ask address is empty")
 		}
@@ -83,19 +86,50 @@ func (c *Core) decodeFrame(f *Frame) *inbound {
 	case f.Kind == KindReply && f.Type == "" && len(body) == 0:
 		// A nil answer, for an R of interface type.
 	default:
+		// An unknown wire name is reported here, quoted and cut, rather than by Decode, whose
+		// error would quote all of it. The decode errors of known names name the local type.
+		if _, err := c.set.Registry.TypeOf(f.Type); err != nil {
+			in.err = fmt.Errorf("%w: wire name %s", codec.ErrNotRegistered, quoted(f.Type))
+			break
+		}
 		in.value, in.err = c.set.Registry.Decode(c.set.Codec, f.Type, body)
 	}
 	return in
 }
 
-// parseAddress parses an address in the text form of Address.MarshalText; empty text is the zero
-// address.
-func parseAddress(text string) (engine.Address, error) {
+// parseAddress parses an address in the text form of Address.MarshalText, and reports false for
+// text in another form; empty text is the zero address.
+func parseAddress(text string) (engine.Address, bool) {
 	var a lockstep.Address
 	if err := a.UnmarshalText([]byte(text)); err != nil {
-		return engine.Address{}, err
+		return engine.Address{}, false
 	}
-	return engine.Address{Node: a.Node(), Path: a.Path(), UID: a.UID()}, nil
+	return engine.Address{Node: a.Node(), Path: a.Path(), UID: a.UID()}, true
+}
+
+// maxQuoted is the most bytes of text from a peer, a wire name or an address, that the core's
+// logs and errors quote.
+const maxQuoted = 256
+
+// quoted returns s quoted with strconv.Quote, cut to maxQuoted bytes at a rune boundary and
+// followed by "..." when it is longer.
+func quoted(s string) string {
+	if len(s) <= maxQuoted {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(cutUTF8(s, maxQuoted)) + "..."
+}
+
+// cutUTF8 returns the longest prefix of s of at most n bytes that does not end inside a UTF-8
+// sequence.
+func cutUTF8(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // receive applies a data frame received on s, an up incoming session, in its decoded form in
@@ -105,8 +139,13 @@ func parseAddress(text string) (engine.Address, error) {
 // discarded misrouted (REM-210, REM-220), one that does not decode is discarded decode (REM-230),
 // and the rest are checked against their recipients and handed to the host (REM-160, REM-260 to
 // REM-268). The host, the dead-letter function and the Failer run after the lock is released, in
-// frame order.
+// frame order. A frame numbered math.MaxUint64 is the last one a session takes: any data frame
+// after it closes the session as a protocol error.
 func (c *Core) receive(s *session, f *Frame, in *inbound) {
+	if s.recvSeq == math.MaxUint64 {
+		c.protocolError(s, protoErr(FieldSeq, "%s frame after sequence number %d, the last", f.Kind, s.recvSeq))
+		return
+	}
 	want := s.recvSeq + 1
 	switch {
 	case f.Seq < want:
@@ -130,7 +169,12 @@ func (c *Core) receive(s *session, f *Frame, in *inbound) {
 		return
 	case in.err != nil:
 		c.discard(s, f, DiscardDecode)
-		c.fail(s, f, c.recvError(s, f, in.err))
+		err := c.recvError(s, f, in.err)
+		if (f.Kind == KindReply || f.Kind == KindFail) && hooks.Pending(c.sys, in.to) {
+			// The ask would otherwise wait for its timeout: it fails with the decode error.
+			c.inbound(s, f, in, hooks.RemotePayload{Kind: hooks.RemoteFail, Err: err})
+		}
+		c.fail(s, f, err)
 		return
 	}
 	switch f.Kind {
@@ -146,15 +190,26 @@ func (c *Core) receive(s *session, f *Frame, in *inbound) {
 
 // receiveMessage hands a MSG or ASK to the host, unless its recipient is a live actor whose
 // message type does not take the value: then it is discarded wrong-type, becomes a dead letter
-// wrong-type and fails the seed (REM-230, REM-240). A recipient that is not a live actor gets the
-// frame all the same, so that the runtime makes it a dead letter and fails an ask request back
-// with ErrTerminated (MSG-350).
+// wrong-type and fails the seed (REM-230, REM-240), and an ASK fails back to its asker with an
+// error wrapping lockstep.ErrWrongType, as the runtime fails back a request it dead-letters
+// (MSG-350). A recipient that is not a live actor gets the frame all the same, so that the
+// runtime makes it a dead letter and fails an ask request back with ErrTerminated.
+//
+// Assignable and LookupPath are two reads, so in production an actor that starts or stops at the
+// path between them can make a frame wrong-type that the runtime would have dead-lettered, or the
+// other way round. In simulation nothing runs between them.
 func (c *Core) receiveMessage(s *session, f *Frame, in *inbound) {
 	if !hooks.Assignable(c.sys, in.to, in.value) && c.live(in.to) {
 		c.discard(s, f, DiscardWrongType)
-		from, to, v := in.from, in.to, in.value
+		from, to, ask, v := in.from, in.to, in.ask, in.value
+		cause := fmt.Errorf("%w: the actor at %s does not take it", lockstep.ErrWrongType, quoted(to.String()))
 		c.deferred = append(c.deferred, func() { c.dead(from, to, DeadWrongType, v) })
-		c.fail(s, f, c.recvError(s, f, fmt.Errorf("%w: the actor at %s does not take it", lockstep.ErrWrongType, to)))
+		if f.Kind == KindAsk {
+			fail := hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteFail, Err: cause})
+			// Like the runtime's reply attempts, the failure has no caller to report an error to.
+			c.deferred = append(c.deferred, func() { _ = c.Deliver(engine.Envelope{From: to, To: ask, Payload: fail}) })
+		}
+		c.fail(s, f, c.recvError(s, f, cause))
 		return
 	}
 	p := hooks.RemotePayload{Kind: hooks.RemoteMsg, Value: in.value}
@@ -175,10 +230,15 @@ func (c *Core) live(to engine.Address) bool {
 // host gets a failure wrapping lockstep.ErrWrongType instead, the frame is discarded wrong-type
 // and the seed fails (REM-264, REM-268). An answer for an ask that is not pending is not checked:
 // it stays a late reply.
+//
+// Assignable is read first and Pending only when it refuses. Assignable is false for an ask that
+// is no longer pending, and an ask never becomes pending again, so an ask that resolves (a
+// timeout, say) at any point of the check gives a late reply, never a wrong-type failure; reading
+// Pending first would leave that window open.
 func (c *Core) receiveReply(s *session, f *Frame, in *inbound) {
-	if hooks.Pending(c.sys, in.to) && !hooks.Assignable(c.sys, in.to, in.value) {
+	if !hooks.Assignable(c.sys, in.to, in.value) && hooks.Pending(c.sys, in.to) {
 		c.discard(s, f, DiscardWrongType)
-		err := c.recvError(s, f, fmt.Errorf("%w: the ask %s does not take it", lockstep.ErrWrongType, in.to))
+		err := c.recvError(s, f, fmt.Errorf("%w: the ask %s does not take it", lockstep.ErrWrongType, quoted(in.to.String())))
 		c.inbound(s, f, in, hooks.RemotePayload{Kind: hooks.RemoteFail, Err: err})
 		c.fail(s, f, err)
 		return
@@ -200,12 +260,12 @@ func (c *Core) inbound(s *session, f *Frame, in *inbound, p hooks.RemotePayload)
 }
 
 // recvError returns the error of a frame that s received and the core discarded or failed:
-// "lockstep: remote: <node>: <kind> from <peer>: <wire name>: <cause>", without the wire name
-// when the frame has none.
+// "lockstep: remote: <node>: <kind> from <peer>: <wire name>: <cause>", with the wire name
+// quoted, and without it when the frame has none.
 func (c *Core) recvError(s *session, f *Frame, cause error) error {
 	typ := ""
 	if f.Type != "" {
-		typ = f.Type + ": "
+		typ = quoted(f.Type) + ": "
 	}
 	return fmt.Errorf("lockstep: remote: %s: %s from %s: %s%w", c.node, f.Kind, s.peer.name, typ, cause)
 }
@@ -221,23 +281,42 @@ func (c *Core) fail(s *session, f *Frame, err error) {
 }
 
 // replyFailed returns the FAIL frame that goes in place of the REPLY of env, whose answer v did
-// not encode or whose frame exceeded MaxFrame with err: code other and err's text. It reports err
-// to the Failer (REM-266). It runs without the lock, as encode does.
-func (c *Core) replyFailed(env engine.Envelope, v any, err error) *outFrame {
+// not encode or whose frame exceeded MaxFrame with err: code other and err's text, cut to fit
+// MaxFrame. It logs a warning and reports err to the Failer (REM-266). It runs without the lock,
+// as encode does. It returns the frame-size error when even a FAIL with an empty message does not
+// fit.
+func (c *Core) replyFailed(env engine.Envelope, v any, err error) (*outFrame, error) {
 	name, nerr := c.set.Registry.NameOf(v)
 	if nerr != nil {
 		name = fmt.Sprintf("%T", v)
 	}
+	c.log.Warn("remoting: reply sent as a failure", "node", c.node, "peer", env.To.Node, "type", name,
+		"err", quoted(err.Error()))
 	if c.failer != nil {
 		c.failer.Fail(fmt.Errorf("lockstep: remote: %s: REPLY to %s: %s: %w", c.node, env.To.Node, name, err))
 	}
-	f := Frame{
-		Kind:      KindFail,
-		Sender:    addrText(env.From),
-		Recipient: addrText(env.To),
-		Payload:   AppendFailure(nil, &Failure{Code: codeOther, Message: err.Error()}),
+	f := Frame{Kind: KindFail, Sender: addrText(env.From), Recipient: addrText(env.To)}
+	out := &outFrame{b: c.failFrame(&f, Failure{Code: codeOther, Message: err.Error()}), kind: KindFail, from: env.From, to: env.To, msg: err}
+	if n := out.size(); n > c.set.MaxFrame {
+		return nil, c.errs.FrameTooLarge(n, c.set.MaxFrame)
 	}
-	return &outFrame{b: AppendFrame(nil, &f), kind: KindFail, from: env.From, to: env.To, msg: err}
+	return out, nil
+}
+
+// failFrame encodes f, a FAIL frame, with the failure fl, cutting fl's message at a rune
+// boundary so that the frame fits MaxFrame, if an empty message fits.
+func (c *Core) failFrame(f *Frame, fl Failure) []byte {
+	fl.Message = strings.ToValidUTF8(fl.Message, "�")
+	f.Payload = AppendFailure(nil, &fl)
+	b := AppendFrame(nil, f)
+	// The failure is the rest of the frame, so each byte cut from the message is one byte less.
+	over := len(b) - prefixLen - c.set.MaxFrame
+	if over <= 0 {
+		return b
+	}
+	fl.Message = cutUTF8(fl.Message, max(len(fl.Message)-over, 0))
+	f.Payload = AppendFailure(nil, &fl)
+	return AppendFrame(nil, f)
 }
 
 // discard records that s discarded f with reason.

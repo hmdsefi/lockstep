@@ -139,7 +139,7 @@ func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 		}
 		if err != nil {
 			if k == KindReply {
-				return c.replyFailed(env, p.Value, err), nil
+				return c.replyFailed(env, p.Value, err)
 			}
 			return nil, err
 		}
@@ -158,7 +158,8 @@ func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 		if p.Err == nil {
 			return nil, errors.New("remoting: FAIL envelope without an error")
 		}
-		f.Payload = AppendFailure(nil, &Failure{Code: c.errs.Code(p.Err), Message: p.Err.Error()})
+		// The message is cut so that the frame fits MaxFrame: a failure is always sent.
+		out.b = c.failFrame(&f, Failure{Code: c.errs.Code(p.Err), Message: p.Err.Error()})
 		out.msg = p.Err
 	case 0:
 		return nil, fmt.Errorf("remoting: unknown remote envelope kind %d", p.Kind)
@@ -167,11 +168,13 @@ func (c *Core) encode(env engine.Envelope) (*outFrame, error) {
 		return nil, fmt.Errorf("remoting: %s envelopes are not supported", k)
 	}
 	// The sequence number stays 0 until flush writes the frame.
-	out.b = AppendFrame(nil, &f)
+	if out.b == nil {
+		out.b = AppendFrame(nil, &f)
+	}
 	if n := out.size(); n > c.set.MaxFrame {
 		err := c.errs.FrameTooLarge(n, c.set.MaxFrame)
 		if k == KindReply {
-			return c.replyFailed(env, p.Value, err), nil
+			return c.replyFailed(env, p.Value, err)
 		}
 		return nil, err
 	}

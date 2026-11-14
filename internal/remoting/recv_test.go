@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -266,6 +268,20 @@ func TestSequenceRule(t *testing.T) {
 	})
 }
 
+// TestSequenceRuleLast checks that a frame numbered math.MaxUint64 is the last one a session
+// takes: any data frame after it closes the session with CLOSE protocol.
+func TestSequenceRuleLast(t *testing.T) {
+	h := newRecvHarness(t)
+	h.msg(math.MaxUint64, aY.String(), ping{1})
+	h.msg(1, aY.String(), ping{2})
+	same(t, "records", h.recs(), []string{
+		"gap peer=b conn=3 want=1 got=18446744073709551615",
+		"down peer=b conn=3 dir=in reason=protocol",
+	})
+	same(t, "frames", h.in.kinds(), []string{"WELCOME", "CLOSE protocol"})
+	same(t, "host", h.takeEvents(), []string{"inbound 1 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#2 {1}"})
+}
+
 // TestMisrouted checks REM-210 and REM-220: a recipient on another node, or one that is not an
 // address, and an ASK whose ask address is on this node are discarded misrouted, without a
 // failure; the frame still takes its sequence number.
@@ -294,10 +310,12 @@ func TestMisrouted(t *testing.T) {
 }
 
 // TestDecodeAndWrongType checks REM-230 and REM-240: a frame whose sender, ask address or codec
-// bytes do not decode is discarded decode and fails the seed; a MSG or ASK whose live recipient
-// does not take its value is discarded wrong-type, is a dead letter wrong-type and fails the
-// seed. A recipient that is not a live actor gets the frame, so that the runtime handles it.
-// The host and the Failer run without the core's lock, in frame order.
+// bytes do not decode is discarded decode and fails the seed, and a REPLY of that kind for a
+// pending ask fails the ask; a MSG or ASK whose live recipient does not take its value is
+// discarded wrong-type, is a dead letter wrong-type and fails the seed, and the ASK fails back to
+// its asker. A recipient that is not a live actor gets the frame, so that the runtime handles it.
+// The host and the Failer run without the core's lock, in frame order. Peer text in the errors is
+// quoted and cut to 256 bytes.
 func TestDecodeAndWrongType(t *testing.T) {
 	h := newRecvHarness(t)
 	to := aY.String()
@@ -312,6 +330,10 @@ func TestDecodeAndWrongType(t *testing.T) {
 	h.send(h.in, KindAsk, 8, bX.String(), to, "test.blob", AppendAsk(nil, addrText(bAsk), jsonOf(t, blob{"y"})))
 	h.msg(9, "lockstep://a/user/gone#7", blob{"z"}) // no actor at the path
 	h.msg(10, "lockstep://a/user/y#9", blob{"w"})   // an earlier incarnation of /user/y
+	long := strings.Repeat("é", 200)                // 400 bytes
+	h.send(h.in, KindMsg, 11, bX.String(), to, long, ping1)
+	h.send(h.in, KindMsg, 12, long, to, "test.ping", ping1)
+	h.send(h.in, KindReply, 13, bX.String(), "lockstep://a/temp/77#99", "test.ping", []byte("{")) // not pending
 	same(t, "records", h.recs(), []string{
 		"discard peer=b conn=3 kind=MSG seq=1 reason=decode",
 		"discard peer=b conn=3 kind=MSG seq=2 reason=decode",
@@ -320,19 +342,29 @@ func TestDecodeAndWrongType(t *testing.T) {
 		"discard peer=b conn=3 kind=REPLY seq=5 reason=decode",
 		"discard peer=b conn=3 kind=MSG seq=7 reason=wrong-type",
 		"discard peer=b conn=3 kind=ASK seq=8 reason=wrong-type",
+		"dial peer=b conn=1 attempt=1", // the ASK's failure goes back to b
+		"discard peer=b conn=3 kind=MSG seq=11 reason=decode",
+		"discard peer=b conn=3 kind=MSG seq=12 reason=decode",
+		"discard peer=b conn=3 kind=REPLY seq=13 reason=decode",
 	})
 	_, jsonErr := testRegistry().Decode(codec.JSON{}, "test.ping", []byte("{"))
+	replyErr := `lockstep: remote: a: REPLY from b: "test.ping": ` + jsonErr.Error()
+	cut := strconv.Quote(strings.Repeat("é", 128)) + "..."
 	same(t, "host and failer", h.takeEvents(), []string{
-		`fail lockstep: remote: a: MSG from b: test.nope: codec: type not registered: name "test.nope"`,
-		`fail lockstep: remote: a: MSG from b: test.ping: sender: lockstep: invalid address "bogus"`,
-		`fail lockstep: remote: a: ASK from b: test.ping: ask address: lockstep: invalid address "lockstep://b/temp"`,
-		`fail lockstep: remote: a: ASK from b: test.ping: ask address is empty`,
-		`fail lockstep: remote: a: REPLY from b: test.ping: ` + jsonErr.Error(),
-		"inbound 1 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#2 {6}",
-		"fail lockstep: remote: a: MSG from b: test.blob: lockstep: wrong message type: the actor at lockstep://a/user/y#2 does not take it",
-		"fail lockstep: remote: a: ASK from b: test.blob: lockstep: wrong message type: the actor at lockstep://a/user/y#2 does not take it",
-		"inbound 2 MSG lockstep://b/user/x#1 -> lockstep://a/user/gone#7 {z}",
-		"inbound 3 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#9 {w}",
+		`fail lockstep: remote: a: MSG from b: "test.nope": codec: type not registered: wire name "test.nope"`,
+		`fail lockstep: remote: a: MSG from b: "test.ping": sender "bogus" is not an address`,
+		`fail lockstep: remote: a: ASK from b: "test.ping": ask address "lockstep://b/temp" is not an address`,
+		`fail lockstep: remote: a: ASK from b: "test.ping": ask address is empty`,
+		"inbound 1 FAIL lockstep://b/user/x#1 -> lockstep://a/temp/1#3 " + replyErr,
+		"fail " + replyErr,
+		"inbound 2 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#2 {6}",
+		`fail lockstep: remote: a: MSG from b: "test.blob": lockstep: wrong message type: the actor at "lockstep://a/user/y#2" does not take it`,
+		`fail lockstep: remote: a: ASK from b: "test.blob": lockstep: wrong message type: the actor at "lockstep://a/user/y#2" does not take it`,
+		"inbound 3 MSG lockstep://b/user/x#1 -> lockstep://a/user/gone#7 {z}",
+		"inbound 4 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#9 {w}",
+		"fail lockstep: remote: a: MSG from b: " + cut + ": codec: type not registered: wire name " + cut,
+		`fail lockstep: remote: a: MSG from b: "test.ping": sender ` + cut + " is not an address",
+		`fail lockstep: remote: a: REPLY from b: "test.ping": ` + jsonErr.Error(),
 	})
 	same(t, "dead letters", h.takeDead(), []string{
 		"wrong-type lockstep://b/user/x#1 -> lockstep://a/user/y#2 {x}",
@@ -340,6 +372,37 @@ func TestDecodeAndWrongType(t *testing.T) {
 	})
 	if !strings.Contains(h.log.String(), "remoting: frame not applied") {
 		t.Errorf("no warning logged:\n%s", h.log.String())
+	}
+	// The wrong-type ASK fails back from its target to its ask address once b is up.
+	l := h.up()
+	f := lastData(t, l)
+	fl, _ := ParseFailure(f.Payload)
+	want := `lockstep: wrong message type: the actor at "lockstep://a/user/y#2" does not take it`
+	if f.Kind != KindFail || f.Sender != to || f.Recipient != addrText(bAsk) || fl.Message != want {
+		t.Errorf("sent %s %s -> %s %q; want FAIL %s -> %s %q", f.Kind, f.Sender, f.Recipient, fl.Message, to, addrText(bAsk), want)
+	}
+}
+
+// TestDecodeAndWrongTypeQuoted checks the bounds on peer text: quoted cuts at 256 bytes, at a rune
+// boundary, and cutUTF8 never ends inside a UTF-8 sequence.
+func TestDecodeAndWrongTypeQuoted(t *testing.T) {
+	for _, c := range []struct{ s, want string }{
+		{"abc", `"abc"`},
+		{strings.Repeat("a", 256), strconv.Quote(strings.Repeat("a", 256))},
+		{strings.Repeat("a", 255) + "é", strconv.Quote(strings.Repeat("a", 255)) + "..."},
+	} {
+		if got := quoted(c.s); got != c.want {
+			t.Errorf("quoted(%d bytes) = %s, want %s", len(c.s), got, c.want)
+		}
+	}
+	for _, c := range []struct {
+		s    string
+		n    int
+		want string
+	}{{"aé", 2, "a"}, {"aé", 3, "aé"}, {"aé", 9, "aé"}, {"éé", 1, ""}, {"ab", 0, ""}} {
+		if got := cutUTF8(c.s, c.n); got != c.want {
+			t.Errorf("cutUTF8(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+		}
 	}
 }
 
@@ -373,7 +436,7 @@ func TestPathAddressed(t *testing.T) {
 	})
 	same(t, "host", h.takeEvents(), []string{
 		"inbound 1 MSG lockstep://b/user/x#1 -> lockstep://a/user/y#0 {1}",
-		"fail lockstep: remote: a: MSG from b: test.blob: lockstep: wrong message type: the actor at lockstep://a/user/y#0 does not take it",
+		`fail lockstep: remote: a: MSG from b: "test.blob": lockstep: wrong message type: the actor at "lockstep://a/user/y#0" does not take it`,
 		"inbound 2 MSG lockstep://b/user/x#1 -> lockstep://a/user/none#0 {c}",
 		"inbound 3 ASK lockstep://b/user/x#1 -> lockstep://a/user/y#0 {5} ask=lockstep://b/temp/9#5",
 	})
@@ -395,8 +458,9 @@ func TestReplyAndFail(t *testing.T) {
 	h.send(h.in, KindReply, 6, bX.String(), anyAsk, "", nil)
 	h.send(h.in, KindReply, 7, bX.String(), ask, "", nil)
 	h.send(h.in, KindReply, 8, bX.String(), anyAsk, "", []byte("{}"))
-	wrong := "lockstep: remote: a: REPLY from b: test.blob: lockstep: wrong message type: the ask lockstep://a/temp/1#3 does not take it"
-	wrongNil := "lockstep: remote: a: REPLY from b: lockstep: wrong message type: the ask lockstep://a/temp/1#3 does not take it"
+	wrong := `lockstep: remote: a: REPLY from b: "test.blob": lockstep: wrong message type: the ask "lockstep://a/temp/1#3" does not take it`
+	wrongNil := `lockstep: remote: a: REPLY from b: lockstep: wrong message type: the ask "lockstep://a/temp/1#3" does not take it`
+	undecoded := `lockstep: remote: a: REPLY from b: codec: type not registered: wire name ""`
 	same(t, "records", h.recs(), []string{
 		"discard peer=b conn=3 kind=REPLY seq=2 reason=wrong-type",
 		"discard peer=b conn=3 kind=REPLY seq=7 reason=wrong-type",
@@ -412,7 +476,8 @@ func TestReplyAndFail(t *testing.T) {
 		"inbound 6 REPLY lockstep://b/user/x#1 -> lockstep://a/temp/2#4 <nil>",
 		"inbound 7 FAIL lockstep://b/user/x#1 -> lockstep://a/temp/1#3 " + wrongNil,
 		"fail " + wrongNil,
-		`fail lockstep: remote: a: REPLY from b: codec: type not registered: name ""`,
+		"inbound 8 FAIL lockstep://b/user/x#1 -> lockstep://a/temp/2#4 " + undecoded,
+		"fail " + undecoded,
 	})
 	if p, _ := h.ev.envs[1].Payload.(hooks.RemotePayload); !errors.Is(p.Err, lockstep.ErrWrongType) {
 		t.Errorf("wrong-type reply fails with %v, which does not wrap lockstep.ErrWrongType", p.Err)
@@ -455,7 +520,7 @@ func TestReplyAndFailRuntime(t *testing.T) {
 	h.skip()
 	reply(a2, KindReply, "test.blob", jsonOf(t, blob{"b"}))
 	_, err = result(r2)
-	want := "lockstep: remote: a: REPLY from b: test.blob: lockstep: wrong message type: the ask " + a2.String() + " does not take it"
+	want := `lockstep: remote: a: REPLY from b: "test.blob": lockstep: wrong message type: the ask "` + a2.String() + `" does not take it`
 	if !errors.Is(err, lockstep.ErrWrongType) || err.Error() != want {
 		t.Errorf("wrong-type answer: %v; want %q wrapping lockstep.ErrWrongType", err, want)
 	}
@@ -667,6 +732,41 @@ func TestReplyEncodeFailure(t *testing.T) {
 	if err := h.core.Deliver(msgEnv(stray{1})); !errors.Is(err, codec.ErrNotRegistered) {
 		t.Errorf("Deliver(MSG of an unregistered type) = %v, want the encode error", err)
 	}
+	if !strings.Contains(h.log.String(), "remoting: reply sent as a failure") {
+		t.Errorf("no warning logged:\n%s", h.log.String())
+	}
+}
+
+// TestReplyEncodeFailureFits checks that a FAIL frame always fits MaxFrame: its message is cut at
+// a rune boundary, for ReplyTo.Fail and for the FAIL that replaces a reply; only addresses too
+// long for any FAIL give the frame-size error.
+func TestReplyEncodeFailureFits(t *testing.T) {
+	h := newSendHarness(t, func(c *Config) { c.Settings.MaxFrame = MinFrameLimit })
+	from := engine.Address{Node: "a", Path: "/user/x", UID: 1}
+	msg := "x" + strings.Repeat("é", 3000) // 6001 bytes; the cut must not split an "é"
+	h.deliver(engine.Envelope{From: from, To: bAsk, Payload: hooks.RemotePayload{Kind: hooks.RemoteFail, Err: errors.New(msg)}})
+	l := h.up()
+	f := lastData(t, l)
+	fl, err := ParseFailure(f.Payload)
+	if err != nil || len(frame(f))-prefixLen != MinFrameLimit || !strings.HasPrefix(msg, fl.Message) {
+		t.Errorf("FAIL of %d bytes with a %d-byte message (%v); want %d bytes and a prefix of the message",
+			len(frame(f))-prefixLen, len(fl.Message), err, MinFrameLimit)
+	}
+
+	// A reply whose answer is too large is replaced by a FAIL cut the same way.
+	h.deliver(engine.Envelope{From: from, To: bAsk, Payload: hooks.RemotePayload{Kind: hooks.RemoteReply, Value: blob{strings.Repeat("y", MinFrameLimit)}}})
+	if f := lastData(t, l); f.Kind != KindFail || len(frame(f))-prefixLen > MinFrameLimit {
+		t.Errorf("sent %s of %d bytes, want a FAIL that fits", f.Kind, len(frame(f))-prefixLen)
+	}
+
+	// Addresses too long for even an empty failure: the frame-size error, nothing sent.
+	far := engine.Address{Node: "a", Path: "/user/" + strings.Repeat("z", MinFrameLimit), UID: 1}
+	for _, p := range []hooks.RemotePayload{{Kind: hooks.RemoteFail, Err: errors.New("e")}, {Kind: hooks.RemoteReply, Value: stray{1}}} {
+		if err := h.core.Deliver(engine.Envelope{From: far, To: bAsk, Payload: p}); !errors.Is(err, errFrameTooLarge) {
+			t.Errorf("Deliver(%s from a long path) = %v, want the frame-size error", frameKind(p.Kind), err)
+		}
+	}
+	same(t, "frames", data(l), []string{"FAIL seq=1", "FAIL seq=2"})
 }
 
 // TestClosedSession checks REM-250: frames on the link of an incoming session the core closed are
