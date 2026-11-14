@@ -13,6 +13,7 @@ import (
 
 	"github.com/hmdsefi/lockstep/codec"
 	"github.com/hmdsefi/lockstep/internal/engine"
+	"github.com/hmdsefi/lockstep/internal/remoting"
 )
 
 // ProtocolVersion is the version byte of every frame.
@@ -20,12 +21,6 @@ const ProtocolVersion = 1
 
 // DefaultMaxFrame is the default largest frame, in bytes: 1 MiB.
 const DefaultMaxFrame = 1 << 20
-
-// Frame size bounds that Config.Validate enforces on MaxFrame.
-const (
-	minMaxFrame = 4096
-	maxMaxFrame = 64 << 20
-)
 
 // Defaults filled in for the zero fields of a Config.
 const (
@@ -133,8 +128,8 @@ func (c *Config) Validate() error {
 
 	const p = "remote: invalid config: "
 	switch {
-	case c.MaxFrame < minMaxFrame || c.MaxFrame > maxMaxFrame:
-		return fmt.Errorf(p+"MaxFrame %d out of range [%d, %d]", c.MaxFrame, minMaxFrame, maxMaxFrame)
+	case c.MaxFrame < remoting.MinFrameLimit || c.MaxFrame > remoting.MaxFrameLimit:
+		return fmt.Errorf(p+"MaxFrame %d out of range [%d, %d]", c.MaxFrame, remoting.MinFrameLimit, remoting.MaxFrameLimit)
 	case c.OutboundQueue < 1:
 		return fmt.Errorf(p+"OutboundQueue %d is less than 1", c.OutboundQueue)
 	case c.Heartbeat <= 0:
