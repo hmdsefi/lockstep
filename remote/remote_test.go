@@ -371,9 +371,16 @@ func TestATREM02SendAndAsk(t *testing.T) {
 	}
 }
 
+// longName is the JSON codec under a name longer than HELLO can carry.
+type longName struct{ codec.JSON }
+
+func (longName) Name() string { return strings.Repeat("j", 65) }
+
 // TestATREM03EnableErrors checks Enable's errors in their order (REM-010): already enabled,
-// Validate, Listen required, the registry's check, the listen error, and a stopped system; after
-// any of them nothing is open, and the system can still be enabled.
+// Validate, Listen required, the registry's check, the codec name and the advertise address that
+// HELLO must carry, the listen error, and a stopped system. Each case's config also breaks every
+// later check, so the error shows which check runs first. After any of them nothing is open, and
+// the system can still be enabled.
 func TestATREM03EnableErrors(t *testing.T) {
 	reg := newRegistry()
 	bad := codec.NewRegistry()
@@ -395,10 +402,15 @@ func TestATREM03EnableErrors(t *testing.T) {
 		cfg  remote.Config
 		want string // the error text, or its prefix when it ends with ": "
 	}{
-		{"Validate", remote.Config{MaxFrame: 1, Registry: bad, Listen: busy.Addr().String()},
+		{"Validate", remote.Config{MaxFrame: 1, Registry: bad},
 			"remote: invalid config: MaxFrame 1 out of range [4096, 67108864]"},
 		{"ListenRequired", remote.Config{Registry: bad}, "remote: Listen is required"},
-		{"RegistryCheck", remote.Config{Registry: bad, Listen: busy.Addr().String()}, checkErr.Error()},
+		{"RegistryCheck", remote.Config{Registry: bad, Codec: longName{}, Advertise: strings.Repeat("x", 256), Listen: busy.Addr().String()},
+			bad.Check(longName{}).Error()},
+		{"CodecName", remote.Config{Registry: reg, Codec: longName{}, Advertise: strings.Repeat("x", 256), Listen: busy.Addr().String()},
+			`remote: codec name "` + longName{}.Name() + `" is not 1 to 64 bytes`},
+		{"Advertise", remote.Config{Registry: reg, Advertise: strings.Repeat("x", 256), Listen: busy.Addr().String()},
+			"remote: advertise address of 256 bytes exceeds 255"},
 		{"Listen", remote.Config{Registry: reg, Listen: busy.Addr().String()}, "remote: listen " + busy.Addr().String() + ": "},
 	} {
 		err := remote.Enable(n.sys, tc.cfg)
@@ -451,16 +463,20 @@ func TestATCOD14UnsupportedTypeFailsEnable(t *testing.T) {
 }
 
 // TestATREM09FIFO checks that 1,000 messages from one system to an actor on another arrive once
-// each and in order, with the default connection buffer and with one so small that every frame
-// waits for the one before it to be written (back-pressure through Writable).
+// each and in order: with the default limits; with a connection buffer so small that every frame
+// waits for the one before it to be written (back-pressure through Writable); and with an inbound
+// limit so small that the reader waits for the core to take every frame before it reads the next.
 func TestATREM09FIFO(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		buffer int
-	}{{"Default", 0}, {"BackPressure", 1}} {
+		name            string
+		buffer, inbound int
+	}{{"Default", 0, 0}, {"BackPressure", 1, 0}, {"InboundBackPressure", 0, 1}} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.buffer > 0 {
 				defer remote.SetLinkBuffer(tc.buffer)()
+			}
+			if tc.inbound > 0 {
+				defer remote.SetInboundLimit(tc.inbound)()
 			}
 			reg := newRegistry()
 			b := startNode(t, "b", reg, nil)

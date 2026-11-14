@@ -10,3 +10,12 @@ func SetLinkBuffer(n int) (restore func()) {
 	linkBuffer = n
 	return func() { linkBuffer = old }
 }
+
+// SetInboundLimit makes the readers of the systems enabled from now on stop reading once more than
+// n bytes of their frames wait for the core, and returns the function that restores the previous
+// limit.
+func SetInboundLimit(n int) (restore func()) {
+	old := inboundLimit
+	inboundLimit = n
+	return func() { inboundLimit = old }
+}

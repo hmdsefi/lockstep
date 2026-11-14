@@ -35,8 +35,11 @@ var enableMu sync.Mutex
 // last actor has stopped, and returns after the goroutines of remoting have exited. Messages
 // still queued for a peer then become dead letters.
 //
-// c.Resolve is called while remoting holds a lock that every send to another node takes, so it
-// should return quickly and must not send to sys. Enable panics if sys is nil.
+// When c.Advertise is empty, peers are told the address the listener got, unless it listens on
+// every interface (an unspecified host such as 0.0.0.0 or [::]): then they are told nothing, so
+// set c.Advertise. c.Resolve is called while remoting holds a lock that every send to another
+// node takes, so it must return quickly, must not block and must never send to sys. Enable panics
+// if sys is nil.
 func Enable(sys *lockstep.System, c Config) error {
 	if sys == nil {
 		panic("remote: Enable with nil System")
@@ -68,7 +71,7 @@ func Enable(sys *lockstep.System, c Config) error {
 	}
 	listenAddr := ln.Addr().String()
 	advertise := c.Advertise
-	if advertise == "" {
+	if advertise == "" && !wildcard(ln.Addr()) {
 		advertise = listenAddr
 	}
 	if len(advertise) > remoting.MaxAdvertise {
@@ -143,6 +146,13 @@ func Enable(sys *lockstep.System, c Config) error {
 	d.log.Info("remote: listening", "node", att.Node, "addr", listenAddr)
 	d.startAccepting()
 	return nil
+}
+
+// wildcard reports whether a is a TCP address on every interface (0.0.0.0 or [::]), which peers
+// cannot dial back.
+func wildcard(a net.Addr) bool {
+	ta, ok := a.(*net.TCPAddr)
+	return ok && (ta.IP == nil || ta.IP.IsUnspecified())
 }
 
 // listen opens c's listener, with TLS when c.TLS is set.
@@ -232,3 +242,8 @@ var discardLog = slog.New(slog.DiscardHandler)
 // a frame; a connection with an empty buffer takes any frame. Enable reads it; tests make it
 // smaller.
 var linkBuffer = 256 << 10
+
+// inboundLimit is the number of bytes of a connection's frames that the core has not yet taken
+// beyond which its reader stops reading until the drain catches up; a reader always posts the
+// frame it has read. Enable reads it; tests make it smaller.
+var inboundLimit = 4 << 20

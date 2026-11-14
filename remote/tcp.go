@@ -31,8 +31,11 @@ const (
 	// for the peer to close its side, so that the peer reads every frame before the connection
 	// goes away.
 	closeLinger = time.Second
-	// readBuffer is the size of each connection's read buffer.
+	// readBuffer is the size of each connection's read buffer, and the most a reader allocates
+	// for a frame before its bytes have arrived.
 	readBuffer = 64 << 10
+	// drainBatch is the most events one drain callback hands to the core.
+	drainBatch = 1024
 	// maxAcceptDelay bounds the wait before accepting again after Accept failed.
 	maxAcceptDelay = time.Second
 )
@@ -64,6 +67,7 @@ type driver struct {
 	writeWait   time.Duration // the write deadline: IdleTimeout
 	maxFrame    int
 	bufLimit    int
+	inLimit     int
 	clock       engine.Clock // set by Enable before any goroutine starts
 	node        string
 	log         *slog.Logger
@@ -95,6 +99,7 @@ func newDriver(c Config, ln net.Listener) *driver {
 		writeWait:   c.IdleTimeout,
 		maxFrame:    c.MaxFrame,
 		bufLimit:    linkBuffer,
+		inLimit:     inboundLimit,
 		log:         discardLog,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -170,8 +175,8 @@ func (d *driver) untrack(l *link) {
 }
 
 // accept accepts connections until the listener closes. Each accepted connection is handed to
-// the core with Accepted, which waits DialTimeout for its HELLO; a TLS handshake happens on its
-// first read, within that time.
+// the core with Accepted, which waits DialTimeout for its HELLO; with TLS its reader runs the
+// handshake first, within DialTimeout.
 func (d *driver) accept() {
 	defer d.wg.Done()
 	var delay time.Duration
@@ -183,12 +188,23 @@ func (d *driver) accept() {
 			}
 			delay = min(max(2*delay, 5*time.Millisecond), maxAcceptDelay)
 			d.log.Warn("remote: accept failed", "node", d.node, "err", err, "retry", delay)
-			time.Sleep(delay)
+			t := time.NewTimer(delay)
+			select {
+			case <-t.C:
+			case <-d.ctx.Done():
+				t.Stop()
+				return
+			}
 			continue
 		}
 		delay = 0
 		l := d.newLink()
+		l.ctx, l.cancel = context.WithCancel(d.ctx)
+		if _, ok := conn.(*tls.Conn); ok {
+			l.handshook = make(chan struct{})
+		}
 		if !d.track(l, 2) {
+			l.cancel()
 			_ = conn.Close()
 			return
 		}
@@ -196,6 +212,7 @@ func (d *driver) accept() {
 		go l.read(conn)
 		go func() {
 			defer d.wg.Done()
+			defer l.cancel()
 			l.write(conn)
 		}()
 	}
@@ -299,13 +316,15 @@ func (d *driver) post(e event) {
 }
 
 // drain hands the queued events to the core, in order, in engine context. Only one drain is armed
-// or running at a time, so the events reach the core one at a time. Events posted meanwhile are
-// handed over by another callback, so a busy network does not hold a worker indefinitely. Once
+// or running at a time, so the events reach the core one at a time. It hands over at most
+// drainBatch events and leaves the rest, and those posted meanwhile, to another callback, so a
+// busy network does not hold a worker indefinitely. Once
 // the engine stops, the callback no longer runs: the core has shut down by then.
 func (d *driver) drain() {
 	d.qmu.Lock()
-	batch := d.events
-	d.events = nil
+	n := min(len(d.events), drainBatch)
+	batch := d.events[:n:n]
+	d.events = d.events[n:]
 	d.qmu.Unlock()
 	core := d.core.Load()
 	for i := range batch {
@@ -315,6 +334,7 @@ func (d *driver) drain() {
 			core.Accepted(e.link)
 		case eventFrame:
 			core.Frame(e.link, e.frame)
+			e.link.taken(len(e.frame))
 		case eventWritable:
 			core.Writable(e.link)
 		case eventClosed:
@@ -324,6 +344,7 @@ func (d *driver) drain() {
 	}
 	d.qmu.Lock()
 	if len(d.events) == 0 {
+		d.events = nil
 		d.armed = false
 		d.qmu.Unlock()
 		return
@@ -337,10 +358,14 @@ func (d *driver) drain() {
 // frames. Every event about the link is posted under its mutex, and none after Closed, so the core
 // gets them in order and Closed last.
 type link struct {
-	d      *driver
-	id     uint64
-	ctx    context.Context // dialed links: cancelled by Close, ends the dial and the handshake
+	d  *driver
+	id uint64
+	// ctx is cancelled by Close and by the driver's stop: it ends a dial and a TLS handshake.
+	ctx    context.Context
 	cancel context.CancelFunc
+	// handshook, for an accepted TLS connection, is closed once its reader's handshake ended;
+	// the writer writes nothing before, so it never waits on a handshake.
+	handshook chan struct{}
 
 	mu       sync.Mutex
 	cond     sync.Cond // on mu: signals the writer
@@ -350,6 +375,7 @@ type link struct {
 	closing  bool      // Close ran: write buf, then close
 	ended    bool      // the connection failed or ended: nothing more is written
 	reported bool      // Closed was posted: nothing more is posted
+	pending  int       // bytes of frames posted that the core has not taken yet
 }
 
 func (l *link) ID() uint64 { return l.id }
@@ -374,7 +400,7 @@ func (l *link) Write(frame []byte) bool {
 
 // Close makes the writer write the frames taken so far, then close the connection's writing side;
 // the reader closes the connection once the peer has closed its side, or after closeLinger. A
-// dial still in progress is abandoned.
+// dial or a TLS handshake still in progress is abandoned.
 func (l *link) Close() {
 	l.mu.Lock()
 	if l.closing {
@@ -384,8 +410,29 @@ func (l *link) Close() {
 	l.closing = true
 	l.cond.Broadcast()
 	l.mu.Unlock()
-	if l.cancel != nil {
-		l.cancel()
+	l.cancel()
+}
+
+// taken tells the reader that the core has taken n bytes of its frames.
+func (l *link) taken(n int) {
+	l.mu.Lock()
+	l.pending -= n
+	l.cond.Broadcast()
+	l.mu.Unlock()
+}
+
+// post posts frame, then waits while the frames the core has not taken exceed inLimit bytes,
+// unless the link is closing or ended.
+func (l *link) post(frame []byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.reported {
+		return
+	}
+	l.pending += len(frame)
+	l.d.post(event{kind: eventFrame, link: l, frame: frame})
+	for l.pending > l.d.inLimit && !l.closing && !l.ended {
+		l.cond.Wait()
 	}
 }
 
@@ -447,6 +494,14 @@ func (l *link) dial(addr string) {
 // what follows it is dropped.
 func (l *link) read(conn net.Conn) {
 	defer l.d.wg.Done()
+	if l.handshook != nil {
+		err := l.handshake(conn)
+		close(l.handshook)
+		if err != nil {
+			l.end(conn, err)
+			return
+		}
+	}
 	r := bufio.NewReaderSize(conn, readBuffer)
 	var prefix [4]byte
 	for {
@@ -455,29 +510,62 @@ func (l *link) read(conn net.Conn) {
 			return
 		}
 		if _, _, err := remoting.SplitFrame(prefix[:], l.d.maxFrame); err != nil {
-			l.report(event{kind: eventFrame, link: l, frame: slices.Clone(prefix[:])})
+			l.post(slices.Clone(prefix[:]))
 			_, err := io.Copy(io.Discard, r)
 			l.end(conn, err)
 			return
 		}
-		frame := make([]byte, len(prefix)+int(binary.BigEndian.Uint32(prefix[:])))
-		copy(frame, prefix[:])
-		if _, err := io.ReadFull(r, frame[len(prefix):]); err != nil {
-			if errors.Is(err, io.EOF) {
-				err = io.ErrUnexpectedEOF
-			}
+		frame, err := readBody(r, prefix, int(binary.BigEndian.Uint32(prefix[:])))
+		if err != nil {
 			l.end(conn, err)
 			return
 		}
-		l.report(event{kind: eventFrame, link: l, frame: frame})
+		l.post(frame)
 	}
 }
 
+// handshake runs the server side of an accepted TLS connection's handshake, within DialTimeout,
+// and abandons it when the link closes or the driver stops.
+func (l *link) handshake(conn net.Conn) error {
+	tc, ok := conn.(*tls.Conn)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(l.ctx, l.d.dialTimeout)
+	defer cancel()
+	return tc.HandshakeContext(ctx)
+}
+
+// readBody reads the n bytes after prefix and returns the whole frame. It allocates as the bytes
+// arrive, at most readBuffer ahead of them, so a peer cannot make it allocate a large frame it
+// never sends.
+func readBody(r io.Reader, prefix [4]byte, n int) ([]byte, error) {
+	total := len(prefix) + n
+	frame := make([]byte, 0, min(total, readBuffer))
+	frame = append(frame, prefix[:]...)
+	for len(frame) < total {
+		k := min(total-len(frame), readBuffer)
+		frame = slices.Grow(frame, k)
+		m, err := io.ReadFull(r, frame[len(frame):len(frame)+k])
+		frame = frame[:len(frame)+m]
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+	return frame, nil
+}
+
 // write writes the frames the link takes, in order, each batch within the write deadline, until
-// the link closes or ends. A refused frame makes it post Writable once it has taken the buffer.
+// the link closes or ends; on an accepted TLS connection it first waits for the handshake to end. A refused frame makes it post Writable once it has taken the buffer.
 // A write error ends the link. After Close it closes the connection's writing side and gives the
 // reader closeLinger to see the peer close its side.
 func (l *link) write(conn net.Conn) {
+	if l.handshook != nil {
+		<-l.handshook
+	}
 	l.mu.Lock()
 	for {
 		for len(l.buf) == 0 && !l.closing && !l.ended {
@@ -509,7 +597,8 @@ func (l *link) write(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	if cw, ok := conn.(interface{ CloseWrite() error }); !ok || cw.CloseWrite() != nil ||
+	cw, ok := conn.(interface{ CloseWrite() error })
+	if !ok || conn.SetWriteDeadline(time.Now().Add(l.d.writeWait)) != nil || cw.CloseWrite() != nil ||
 		conn.SetReadDeadline(time.Now().Add(closeLinger)) != nil {
 		_ = conn.Close()
 	}

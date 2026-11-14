@@ -49,11 +49,15 @@ var (
 type Config struct {
 	// Listen is the host:port this node listens on. Enable requires it in production.
 	Listen string
-	// Advertise is the host:port peers dial back. Empty means the listener's address.
+	// Advertise is the host:port peers dial back. Empty means the listener's address, unless the
+	// listener is on every interface (an unspecified host such as 0.0.0.0 or [::]): then no
+	// address is announced, so set Advertise.
 	Advertise string
 	// Peers maps a node name to its host:port.
 	Peers map[string]string
-	// Resolve is asked for a node that is not in Peers. Nil means none.
+	// Resolve is asked for a node that is not in Peers. Nil means none. It is called while
+	// remoting holds a lock that every send to another node takes, so it must return quickly,
+	// must not block (no network lookups) and must never send to the system.
 	Resolve func(node string) (string, error)
 	// TLS, when not nil, makes both the listener and the dialer use TLS. Nil means plain TCP.
 	TLS *tls.Config

@@ -18,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
+	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/remoting"
 	"github.com/hmdsefi/lockstep/remote"
 )
@@ -106,5 +109,82 @@ func TestTCPProtocolErrors(t *testing.T) {
 	defer cancel()
 	if v, err := ask(a.sys, "hi", 10*time.Second).Await(ctx); err != nil || v != "hi from b" {
 		t.Errorf("Ask after the protocol error = %q, %v", v, err)
+	}
+}
+
+// TestTCPTLSSilentPeerShutdown checks that Shutdown of a node listening with TLS returns promptly,
+// with every goroutine gone, while peers hold connections whose TLS handshake never completes:
+// one that sends nothing and one that stops halfway through its ClientHello. The dial timeout is
+// far longer than the bound, so the shutdown itself must end the handshakes.
+func TestTCPTLSSilentPeerShutdown(t *testing.T) {
+	leaks := goleak.IgnoreCurrent()
+	n := newNode(t, "a")
+	n.enable(t, remote.Config{Listen: "127.0.0.1:0", Registry: newRegistry(), TLS: testTLS(t), DialTimeout: time.Minute})
+
+	silent, err := net.Dial("tcp", n.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	partial, err := net.Dial("tcp", n.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer partial.Close()
+	// A TLS record header announcing a 512-byte handshake record, and only part of it.
+	if _, err := partial.Write([]byte{0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // let the node accept both and start their handshakes
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		done <- n.sys.Shutdown(ctx)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return within 10 s")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("Shutdown took %v, want at most 5 s", d)
+	}
+	goleak.VerifyNone(t, leaks)
+}
+
+// TestTCPWildcardAdvertise checks that a node listening on every interface, with no Advertise,
+// announces no address in its HELLO, while one listening on a specific host announces it.
+func TestTCPWildcardAdvertise(t *testing.T) {
+	for _, tc := range []struct {
+		name, listen string
+		wildcard     bool
+	}{{"Wildcard", "0.0.0.0:0", true}, {"Loopback", "127.0.0.1:0", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			peer := rawListener(t)
+			n := startNode(t, "a", newRegistry(), func(c *remote.Config) {
+				c.Listen = tc.listen
+				c.Peers = map[string]string{"b": peer.Addr().String()}
+			})
+			if err := lockstep.Send(n.sys, lockstep.PIDAt[Note]("b", "/user/x"), Note{}); err != nil {
+				t.Fatal(err)
+			}
+			conn := acceptWithin(t, peer, 10*time.Second)
+			if conn == nil {
+				t.Fatal("a did not dial b")
+			}
+			h, err := remoting.ParseHello(mustRead(t, conn, remoting.KindHello).Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]string{true: "", false: n.addr}[tc.wildcard]; h.Advertise != want {
+				t.Errorf("HELLO announces %q, want %q", h.Advertise, want)
+			}
+		})
 	}
 }
