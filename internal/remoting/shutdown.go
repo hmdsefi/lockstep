@@ -84,7 +84,7 @@ func (c *Core) Shutdown() {
 			p.redial = nil
 		}
 		p.want = false
-		p.watches = nil
+		p.watches, p.registered = nil, nil
 		c.endWatches(p)
 		p.lookups = nil
 		p.closedIn = nil

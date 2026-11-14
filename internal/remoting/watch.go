@@ -51,13 +51,20 @@ const codeOverloaded uint8 = 6
 // watched actor is not alive the watcher gets TERMINATED no-actor at once; otherwise it gets
 // TERMINATED with the actor's stop reason when the actor ends, unless an UNWATCH comes first. A
 // WATCH of a new pair from a peer that has c.maxWatchers watches already registers nothing and is
-// answered at once with TERMINATED failed, code overloaded.
+// answered at once with TERMINATED failed, code overloaded. The first such WATCH since the peer
+// last held fewer watches than the bound logs a warning; the others log nothing.
 func (c *Core) receiveWatch(p *peer, pair watchPair, n uint64) {
 	old := p.watchers[pair]
+	if len(p.watchers) < c.maxWatchers {
+		p.refusedWarned = false
+	}
 	if old == nil && len(p.watchers) >= c.maxWatchers {
+		if !p.refusedWarned {
+			p.refusedWarned = true
+			c.warn("remoting: watch refused", "node", c.node, "peer", p.name, "watcher", addrText(pair.watcher),
+				"watched", addrText(pair.watched), "watches", len(p.watchers))
+		}
 		msg := "remote: too many watches from " + p.name
-		c.warn("remoting: watch refused", "node", c.node, "peer", p.name, "watcher", addrText(pair.watcher),
-			"watched", addrText(pair.watched), "watches", len(p.watchers))
 		c.enqueueTerminated(pair, c.failedFrame(pair, n, Failure{Code: codeOverloaded, Message: msg}))
 		return
 	}
@@ -241,6 +248,9 @@ func (c *Core) receiveTerminated(s *session, f *Frame, in *inbound) {
 	if n, ok := p.watches[pair]; ok && n == in.term.Watch {
 		delete(p.watches, pair)
 	}
+	if n, ok := p.registered[pair]; ok && n == in.term.Watch {
+		delete(p.registered, pair)
+	}
 	c.inbound(s, f, in, hooks.RemotePayload{Kind: hooks.RemoteTerminated, Reason: c.stopReason(p.name, &in.term), Seq: in.term.Watch})
 }
 
@@ -255,12 +265,19 @@ func watchFrame(k Kind, pair watchPair, n uint64, inc uint32) *outFrame {
 // UNWATCH frames of the queue. An outgoing session that comes up calls it before it writes the
 // queue, so a session to the same incarnation of p carries every watch again, under its current
 // number, whatever the last session lost; a restart has ended them all before.
+//
+// Behind those WATCH frames it puts an UNWATCH for every watch the peer may still hold
+// (peer.registered) whose pair has no outgoing watch any more and whose UNWATCH is not queued,
+// in comparePairs order: its UNWATCH became a dead letter (queue-full, unknown-node) or was
+// dropped as stale, and the peer would otherwise keep the registration, which counts against its
+// bound on this node's watches.
 func (c *Core) resendWatches(p *peer) {
 	// A queued WATCH of a number that is not the pair's outgoing watch, and a queued UNWATCH of a
 	// pair that has an outgoing watch, are stale: the WATCH of the outgoing watch, queued or
 	// written below, replaces whatever the peer holds for the pair. Writing them could leave the
 	// peer watching under an old number. They are dropped without a dead letter.
 	queued := make(map[watchPair]uint64)
+	unwatched := make(map[watchPair]uint64)
 	keep := p.queue[:0]
 	for _, f := range p.queue {
 		pair := watchPair{watcher: f.from, watched: f.to}
@@ -272,6 +289,8 @@ func (c *Core) resendWatches(p *peer) {
 			continue
 		case f.kind == KindWatch:
 			queued[pair] = n
+		case f.kind == KindUnwatch:
+			unwatched[pair] = f.watch
 		}
 		keep = append(keep, f)
 	}
@@ -288,5 +307,32 @@ func (c *Core) resendWatches(p *peer) {
 		}
 		fs = append(fs, watchFrame(KindWatch, pair, n, p.inc))
 	}
+	for _, pair := range sortedPairs(p.registered) {
+		n := p.registered[pair]
+		if _, watched := p.watches[pair]; watched {
+			continue
+		}
+		if q, ok := unwatched[pair]; ok && q == n {
+			continue
+		}
+		fs = append(fs, watchFrame(KindUnwatch, pair, n, p.inc))
+	}
 	p.queue = append(fs, p.queue...)
+}
+
+// wroteWatch notes that f, a frame just written to p, starts or ends a registration on p
+// (peer.registered).
+func (p *peer) wroteWatch(f *outFrame) {
+	pair := watchPair{watcher: f.from, watched: f.to}
+	switch f.kind {
+	case KindWatch:
+		if p.registered == nil {
+			p.registered = make(map[watchPair]uint64)
+		}
+		p.registered[pair] = f.watch
+	case KindUnwatch:
+		if n, ok := p.registered[pair]; ok && n == f.watch {
+			delete(p.registered, pair)
+		}
+	}
 }

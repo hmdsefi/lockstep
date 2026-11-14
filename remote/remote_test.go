@@ -5,7 +5,6 @@ package remote_test
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -250,93 +249,6 @@ func (d *directory) resolve(node string) (string, error) {
 		return a, nil
 	}
 	return "", fmt.Errorf("directory: no address for %q", node)
-}
-
-// rawListener listens on loopback for a raw peer: test code that speaks frames itself.
-func rawListener(t *testing.T) net.Listener {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	return ln
-}
-
-// acceptWithin accepts a connection on ln within d, or returns nil.
-func acceptWithin(t *testing.T, ln net.Listener, d time.Duration) net.Conn {
-	t.Helper()
-	tl, ok := ln.(*net.TCPListener)
-	if !ok {
-		t.Fatalf("listener %T is not TCP", ln)
-	}
-	if err := tl.SetDeadline(time.Now().Add(d)); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := ln.Accept()
-	if err != nil {
-		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
-			return nil
-		}
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
-}
-
-// readFrame reads one frame from conn within 10 s.
-func readFrame(t *testing.T, conn net.Conn) (remoting.Frame, error) {
-	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	var prefix [4]byte
-	if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-		return remoting.Frame{}, err
-	}
-	b := make([]byte, 4+int(binary.BigEndian.Uint32(prefix[:])))
-	copy(b, prefix[:])
-	if _, err := io.ReadFull(conn, b[4:]); err != nil {
-		return remoting.Frame{}, err
-	}
-	f, err := remoting.ParseFrame(b, remoting.MaxFrameLimit)
-	if err != nil {
-		t.Fatalf("frame from the node: %v", err)
-	}
-	return f, nil
-}
-
-// mustRead reads a frame of kind k from conn, skipping PINGs.
-func mustRead(t *testing.T, conn net.Conn, k remoting.Kind) remoting.Frame {
-	t.Helper()
-	for {
-		f, err := readFrame(t, conn)
-		if err != nil {
-			t.Fatalf("reading a %s frame: %v", k, err)
-		}
-		if f.Kind == remoting.KindPing && k != remoting.KindPing {
-			continue
-		}
-		if f.Kind != k {
-			t.Fatalf("read a %s frame, want %s", f.Kind, k)
-		}
-		return f
-	}
-}
-
-func writeFrame(t *testing.T, conn net.Conn, f *remoting.Frame) {
-	t.Helper()
-	if _, err := conn.Write(remoting.AppendFrame(nil, f)); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// helloFrame is a HELLO or WELCOME (k) from raw peer sender to receiver.
-func helloFrame(k remoting.Kind, sender, receiver, advertise string) *remoting.Frame {
-	return &remoting.Frame{Kind: k, Payload: remoting.AppendHello(nil, &remoting.Hello{
-		Sender: sender, Receiver: receiver, Incarnation: 9, FrameLimit: remote.DefaultMaxFrame, Codec: "json", Advertise: advertise,
-	})}
 }
 
 // TestATREM02SendAndAsk checks two systems over loopback TCP: a Send arrives as a decoded copy of

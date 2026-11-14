@@ -55,7 +55,7 @@ func (c *Core) restart(p *peer, inc uint32, s *session) {
 		func() { hooks.FailAsks(sys, node, err) },
 		func() { hooks.WatchesDown(sys, node, err) },
 	)
-	p.watches = nil
+	p.watches, p.registered = nil, nil
 	c.endWatches(p)
 	c.failLookups(p, err)
 	p.inc = inc
