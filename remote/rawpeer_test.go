@@ -134,7 +134,10 @@ const rawInc = 9
 type rawPeer struct {
 	t    *testing.T
 	conn net.Conn
-	seq  uint64 // the sequence number of the last data frame send wrote
+	// pings is set on a connection the system dialed, the only kind on which it writes PING
+	// (REM-080): reads skip PINGs there, and fail on any other connection.
+	pings bool
+	seq   uint64 // the sequence number of the last data frame send wrote
 }
 
 // dialRaw connects a raw peer to the system listening on addr.
@@ -155,7 +158,36 @@ func acceptRaw(t *testing.T, ln net.Listener) *rawPeer {
 	if conn == nil {
 		t.Fatalf("no connection to %s within %s", ln.Addr(), rawWait)
 	}
-	return &rawPeer{t: t, conn: conn}
+	return &rawPeer{t: t, conn: conn, pings: true}
+}
+
+// skip reports whether a frame of kind k, read where a frame of kind want was expected, is a PING
+// to skip: one on a connection the system dialed, when want is not PING.
+func (p *rawPeer) skip(k, want remoting.Kind) bool {
+	return p.pings && k == remoting.KindPing && want != remoting.KindPing
+}
+
+// waitLogs waits until n has logged count records with message msg and the attributes of want,
+// and fails the test if it logged more, or fewer within rawWait. The core logs once it has released
+// its lock, so a raw peer can read the frames the core wrote, and the end of the connection,
+// before the record exists.
+func waitLogs(t *testing.T, n *node, msg string, want map[string]string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(rawWait)
+	for {
+		got := len(n.log.find(msg, want))
+		switch {
+		case got == count:
+			return
+		case got > count:
+			t.Errorf("%s logged %d %q records with %v, want %d", n.sys.Node(), got, msg, want, count)
+			return
+		case time.Now().After(deadline):
+			t.Errorf("%s logged %d %q records with %v within %s, want %d", n.sys.Node(), got, msg, want, rawWait, count)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // writeBytes writes b as it is.
@@ -192,13 +224,13 @@ func (p *rawPeer) next() ([]byte, remoting.Frame) {
 	return b, f
 }
 
-// expect reads the next frame, skipping PINGs unless k is PING, and fails the test unless it is
-// of kind k.
+// expect reads the next frame, skipping PINGs on a connection the system dialed unless k is PING,
+// and fails the test unless it is of kind k.
 func (p *rawPeer) expect(k remoting.Kind) ([]byte, remoting.Frame) {
 	p.t.Helper()
 	for {
 		b, f := p.next()
-		if f.Kind == remoting.KindPing && k != remoting.KindPing {
+		if p.skip(f.Kind, k) {
 			continue
 		}
 		if f.Kind != k {
@@ -208,8 +240,8 @@ func (p *rawPeer) expect(k remoting.Kind) ([]byte, remoting.Frame) {
 	}
 }
 
-// expectBytes reads the next frame, skipping PINGs unless want is one, and fails the test unless
-// it is want, byte for byte.
+// expectBytes reads the next frame as expect does for want's kind, and fails the test unless it
+// is want, byte for byte.
 func (p *rawPeer) expectBytes(what string, want []byte) remoting.Frame {
 	p.t.Helper()
 	b, f := p.expect(remoting.Kind(want[5]))
@@ -217,8 +249,8 @@ func (p *rawPeer) expectBytes(what string, want []byte) remoting.Frame {
 	return f
 }
 
-// expectEOF reads until the system closes the connection, then closes it. Any frame but a PING
-// fails the test.
+// expectEOF reads until the system closes the connection, then closes it. Any frame fails the
+// test, but a PING on a connection the system dialed.
 func (p *rawPeer) expectEOF() {
 	p.t.Helper()
 	for {
@@ -230,7 +262,7 @@ func (p *rawPeer) expectEOF() {
 			_ = p.conn.Close()
 			return
 		}
-		if len(b) < 6 || remoting.Kind(b[5]) != remoting.KindPing {
+		if len(b) < 6 || !p.skip(remoting.Kind(b[5]), 0) {
 			p.t.Fatalf("read % x, want EOF", b)
 		}
 	}

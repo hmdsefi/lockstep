@@ -140,10 +140,13 @@ func TestATREM24TLS(t *testing.T) {
 		tc := tls.Client(conn, cfg)
 		if err := tc.Handshake(); err == nil {
 			// A TLS 1.3 client finishes before the server checks its certificate; the server's
-			// refusal arrives with the first read.
-			writeFrame(t, tc, helloFrame(remoting.KindHello, "r", "b", ""))
-			if got, err := readRaw(t, tc); err == nil {
-				t.Fatalf("b answered a peer whose certificate another authority signed: % x", got)
+			// refusal arrives with the next read, or fails the write when it came first. Either is
+			// the refusal.
+			_, err := tc.Write(remoting.AppendFrame(nil, helloFrame(remoting.KindHello, "r", "b", "")))
+			if err == nil {
+				if got, err := readRaw(t, tc); err == nil {
+					t.Fatalf("b answered a peer whose certificate another authority signed: % x", got)
+				}
 			}
 		}
 		waitClosed(t, b, "", before, "certificate")

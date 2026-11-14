@@ -154,9 +154,7 @@ func TestATREM05RejectReasons(t *testing.T) {
 		second.expect(remoting.KindHello)
 		second.write(*helloFrame(remoting.KindWelcome, "q", "b", ""))
 		second.expectEOF()
-		if len(b.log.find("remoting: welcome from the wrong node", map[string]string{"peer": "r", "sender": "q"})) != 1 {
-			t.Error("no warning about the WELCOME from the wrong node")
-		}
+		waitLogs(t, b, "remoting: welcome from the wrong node", map[string]string{"peer": "r", "sender": "q"}, 1)
 		// The next session comes up and carries the message.
 		third := acceptRaw(t, ln)
 		third.welcome("b")
@@ -229,6 +227,12 @@ func TestATREM07MalformedFrames(t *testing.T) {
 	for i := range many {
 		many[i] = engine.Header{Key: fmt.Sprintf("k%d", i)}
 	}
+	longKey := strings.Repeat("k", remoting.MaxHeaderKey+1)
+	longValue := strings.Repeat("v", remoting.MaxHeaderValue+1)
+	// typed returns the frame of kind k with payload whose type field is not empty.
+	typed := func(k remoting.Kind, payload string) []byte {
+		return wire(dataHead(k, 1, sender, recipient, "remotetest.Note"), payload)
+	}
 	cases := []struct {
 		name  string
 		frame []byte
@@ -242,6 +246,12 @@ func TestATREM07MalformedFrames(t *testing.T) {
 		{"headers on WATCH", wire(fmt.Sprintf("01 %02x 0000", byte(remoting.KindWatch)), h64(1), "01 01"+hs("k")+"00", hstr(sender), hstr(recipient), "00", "01")},
 		{"33 headers", msg(func(f *remoting.Frame) { f.Headers = many })},
 		{"header key empty", msg(func(f *remoting.Frame) { f.Headers = []engine.Header{{Value: "v"}} })},
+		{"header key of 257 bytes", msg(func(f *remoting.Frame) { f.Headers = []engine.Header{{Key: longKey}} })},
+		{"header value of 8193 bytes", msg(func(f *remoting.Frame) { f.Headers = []engine.Header{{Key: "k", Value: longValue}} })},
+		{"CLOSE reason of 65 bytes", wire(control(remoting.KindClose), hs(strings.Repeat("x", remoting.MaxReason+1)))},
+		{"type on WATCH", typed(remoting.KindWatch, "01")},
+		{"type on FAIL", typed(remoting.KindFail, "00"+hs("no"))},
+		{"type on TERMINATED", typed(remoting.KindTerminated, "01 00")},
 		{"sender past the end", wire(fmt.Sprintf("01 %02x 0000", byte(remoting.KindMsg)), h64(1), "00", "7f"+hs("lockstep://r/x#1"))},
 		{"length that overflows", wire(fmt.Sprintf("01 %02x 0000", byte(remoting.KindMsg)), h64(1), "00", "ffffffffffffffffffff01")},
 		{"CLOSE reason not printable", wire(control(remoting.KindClose), "01")},
@@ -265,9 +275,7 @@ func TestATREM07MalformedFrames(t *testing.T) {
 			r.writeBytes(tc.frame)
 			r.expectClose(remoting.CloseProtocol)
 			warnings++
-			if n := len(b.log.find("remoting: protocol error", map[string]string{"peer": "r", "dir": "in"})); n != warnings {
-				t.Errorf("%d protocol-error warnings, want %d", n, warnings)
-			}
+			waitLogs(t, b, "remoting: protocol error", map[string]string{"peer": "r", "dir": "in"}, warnings)
 		})
 	}
 
@@ -299,6 +307,7 @@ func TestATREM07MalformedFrames(t *testing.T) {
 			}
 			r.writeBytes(tc.frames)
 			r.expectClose(remoting.CloseProtocol)
+			waitLogs(t, b, "remoting: protocol error", map[string]string{"peer": "r", "dir": "out"}, out)
 			// The message of a session that never came up waits for the next one.
 			if !tc.up {
 				next := acceptRaw(t, ln)
@@ -409,8 +418,8 @@ func TestATREM29FrameSize(t *testing.T) {
 		}
 		r := acceptRaw(t, ln)
 		r.welcome("b")
-		if _, f := r.expect(remoting.KindMsg); f.Seq != 1 {
-			t.Errorf("first MSG has seq %d, want 1", f.Seq)
+		if _, f := r.expect(remoting.KindMsg); f.Seq != 1 || string(f.Payload) != `{"N":1,"Items":null}` {
+			t.Errorf("first MSG: seq %d %s, want seq 1 with the small message", f.Seq, f.Payload)
 		}
 	})
 

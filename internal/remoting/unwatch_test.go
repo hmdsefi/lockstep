@@ -97,6 +97,30 @@ func TestUnwatchResent(t *testing.T) {
 		h.deliver(msgEnv(ping{1}))
 		same(t, "next session", watchFrames(h.outLink()), nil)
 	})
+	t.Run("another number queued", func(t *testing.T) {
+		h := newSendHarness(t, nil)
+		h.deliver(env(hooks.RemoteWatch, 1))
+		l := h.up()
+		h.core.Closed(l, nil) // the outgoing watch makes the core dial again at once
+		// While dialing: a newer watch of the pair and its UNWATCH are queued. The peer holds
+		// number 1, which the queued UNWATCH does not end, so the session writes UNWATCH 1 too.
+		h.deliver(env(hooks.RemoteWatch, 2))
+		h.deliver(env(hooks.RemoteUnwatch, 2))
+		same(t, "next session", watchFrames(h.up()), []string{"1 UNWATCH #1", "2 UNWATCH #2"})
+	})
+	t.Run("shutdown", func(t *testing.T) {
+		h := newSendHarness(t, nil)
+		h.deliver(env(hooks.RemoteWatch, 1))
+		h.up()
+		p := h.core.peers["b"]
+		if len(p.registered) != 1 {
+			t.Fatalf("registered = %v, want the written watch", p.registered)
+		}
+		h.core.Shutdown()
+		if p.registered != nil {
+			t.Errorf("registered = %v after Shutdown, want nil", p.registered)
+		}
+	})
 	t.Run("restart", func(t *testing.T) {
 		h := newSendHarness(t, func(c *Config) { c.Settings.OutboundQueue = 1 })
 		h.deliver(env(hooks.RemoteWatch, 1))
