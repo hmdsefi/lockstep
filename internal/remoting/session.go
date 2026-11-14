@@ -49,10 +49,17 @@ type session struct {
 	lastRecv time.Time // the last frame received, or the session's start
 	lastSend time.Time // the last frame written, or the session's start
 
-	dialTimeout engine.Cancel // outgoing, until WELCOME: the dial-timeout timer
+	// dialTimeout is the dial-timeout timer, armed until the handshake completes: until WELCOME
+	// on an outgoing session, until the HELLO on an incoming one.
+	dialTimeout engine.Cancel
 
 	peerInc   uint32 // from the peer's HELLO or WELCOME
 	peerLimit uint32 // the peer's frame limit, from its HELLO or WELCOME
+
+	// blocked holds the frames the link did not take (Write returned false), in order; they are
+	// written first when the driver calls Writable. Control frames go here; the send path keeps
+	// data frames in the peer's queue, counted against OutboundQueue, and writes them after these.
+	blocked [][]byte
 
 	// The send path adds the sequence number of the last data frame written on an outgoing
 	// session here, and the receive path the next sequence number expected on an incoming one.
@@ -74,10 +81,11 @@ type peer struct {
 	out  *session // the one outgoing session, dialing or up; nil when none
 	in   *session // the up incoming session; nil when none
 
-	failures int           // consecutive failed dials since a session last came up (REM-100)
+	failures int           // consecutive failed dials since an outgoing session last came up (REM-100)
 	redial   engine.Cancel // the armed redial timer; nil when none
-	// want is set by Connect and cleared when an outgoing session comes up. The send path adds
-	// its queue of unwritten frames to waiting, and watches add the outgoing watches.
+	// want is set by Connect while no outgoing session is up, and cleared when one comes up. The
+	// send path adds its queue of unwritten frames to waiting, and watches add the outgoing
+	// watches.
 	want bool
 
 	advertise string // the address from the peer's last HELLO, or ""
@@ -106,18 +114,43 @@ func writable(d dir, k Kind) bool {
 	return d == dirOut && k.Data()
 }
 
-// write writes f on s. Writing a frame the session's direction forbids is a bug in the core.
+// write writes f on s, or keeps it in s.blocked when the link holds frames it did not take or does
+// not take this one. Writing a frame the session's direction forbids is a bug in the core.
 func (c *Core) write(s *session, f *Frame) {
 	if !writable(s.dir, f.Kind) {
 		panic("remoting: " + f.Kind.String() + " frame written on an " + s.dir.word() + " session")
 	}
-	s.link.Write(AppendFrame(nil, f))
+	b := AppendFrame(nil, f)
+	if len(s.blocked) > 0 || !s.link.Write(b) {
+		s.blocked = append(s.blocked, b)
+		return
+	}
 	s.lastSend = c.clock.Now()
 }
 
-// closeSession writes CLOSE with reason on s, then takes it down with downReason (REM-095).
+// flushBlocked writes the frames s's link did not take, in order, until the link refuses one
+// again. The send path then writes the peer's queued data frames.
+func (c *Core) flushBlocked(s *session) {
+	for len(s.blocked) > 0 {
+		if !s.link.Write(s.blocked[0]) {
+			return
+		}
+		s.blocked[0] = nil
+		s.blocked = s.blocked[1:]
+		s.lastSend = c.clock.Now()
+	}
+	s.blocked = nil
+}
+
+// closeSession writes CLOSE with reason on s, then takes it down with downReason (REM-095). The
+// CLOSE is best effort: on a link that holds frames it did not take, or that does not take the
+// CLOSE, the link is closed without it.
 func (c *Core) closeSession(s *session, reason, downReason string) {
-	c.write(s, &Frame{Kind: KindClose, Payload: []byte(reason)})
+	if len(s.blocked) == 0 {
+		if s.link.Write(AppendFrame(nil, &Frame{Kind: KindClose, Payload: []byte(reason)})) {
+			s.lastSend = c.clock.Now()
+		}
+	}
 	c.down(s, downReason)
 }
 
@@ -204,8 +237,14 @@ func (c *Core) dial(p *peer) error {
 		)
 	}
 	c.write(s, &Frame{Kind: KindHello, Payload: c.hello(p.name)})
-	s.dialTimeout = c.clock.AfterFunc(c.set.DialTimeout, labelDialTimeout, func() { c.dialTimedOut(s) })
+	c.armDialTimeout(s)
 	return nil
+}
+
+// armDialTimeout arms s's dial timeout: an outgoing session must get its WELCOME, and an
+// incoming one its HELLO, within DialTimeout.
+func (c *Core) armDialTimeout(s *session) {
+	s.dialTimeout = c.clock.AfterFunc(c.set.DialTimeout, labelDialTimeout, func() { c.dialTimedOut(s) })
 }
 
 // dialFailed counts a dial the driver could not start as a failure and redials while p has work
@@ -218,7 +257,8 @@ func (c *Core) dialFailed(p *peer, err error) {
 	}
 }
 
-// dialTimedOut takes an outgoing session down that got no WELCOME within DialTimeout.
+// dialTimedOut takes a session down whose handshake did not complete within DialTimeout: an
+// outgoing session without WELCOME, or an incoming one without HELLO. No frame is written.
 func (c *Core) dialTimedOut(s *session) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

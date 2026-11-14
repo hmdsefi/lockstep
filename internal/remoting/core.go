@@ -122,6 +122,7 @@ type Core struct {
 	driver    Driver
 
 	started bool
+	tick    engine.Cancel // the armed heartbeat tick; nil before Start
 	peers   map[string]*peer
 	links   map[Link]*session
 	serial  uint64 // sessions created so far
@@ -151,6 +152,8 @@ func New(cfg Config) (*Core, error) {
 		return nil, fmt.Errorf(p+"MaxFrame %d out of range [%d, %d]", s.MaxFrame, MinFrameLimit, MaxFrameLimit)
 	case s.Heartbeat <= 0 || s.IdleTimeout <= 0 || s.DialTimeout <= 0 || s.RedialMin <= 0:
 		return nil, errors.New(p + "Heartbeat, IdleTimeout, DialTimeout and RedialMin must be positive")
+	case s.IdleTimeout/2 < s.Heartbeat: // IdleTimeout < 2*Heartbeat without overflow
+		return nil, fmt.Errorf(p+"IdleTimeout %s is less than twice Heartbeat %s", s.IdleTimeout, s.Heartbeat)
 	case s.RedialMax < s.RedialMin:
 		return nil, fmt.Errorf(p+"RedialMax %s is less than RedialMin %s", s.RedialMax, s.RedialMin)
 	case len(s.Advertise) > MaxAdvertise:
@@ -202,23 +205,31 @@ func (c *Core) Start() {
 }
 
 // Connect makes sure an outgoing session to node exists or is on its way: it dials now unless a
-// session is up, a dial is in progress or a redial is armed. A dial that fails is retried with
-// backoff while the peer has work waiting. Connect returns an error wrapping ErrUnknownNode when
-// the driver knows no address for node, and an error for this node's own name or an invalid one.
-// Call it in engine context.
+// session is up, a dial is in progress or a redial is armed. Until a session to node comes up,
+// node has work waiting, so a dial that fails is retried with backoff; a session that is already
+// up adds no such work. Connect returns an error wrapping ErrUnknownNode when the driver knows no
+// address for node, and an error for this node's own name or an invalid one. Call it in engine
+// context.
 func (c *Core) Connect(node string) error {
 	if node == c.node || !engine.ValidNodeName(node) {
 		return fmt.Errorf("remoting: cannot connect to node %q", node)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_, known := c.peers[node]
 	p := c.peer(node)
+	if p.out != nil && p.out.up {
+		return nil
+	}
 	if p.out != nil || p.redial != nil {
 		p.want = true
 		return nil
 	}
 	if err := c.dial(p); err != nil {
 		if errors.Is(err, ErrUnknownNode) {
+			if !known {
+				delete(c.peers, node)
+			}
 			return err
 		}
 		p.want = true
@@ -229,8 +240,9 @@ func (c *Core) Connect(node string) error {
 	return nil
 }
 
-// Accepted hands the core a link that a peer opened to this node. The core waits for its HELLO.
-// Call it in engine context.
+// Accepted hands the core a link that a peer opened to this node. The core waits DialTimeout for
+// its HELLO; a link without one by then is closed, without REJECT, and goes down with reason
+// "dial-timeout". Call it in engine context.
 func (c *Core) Accepted(link Link) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -240,6 +252,18 @@ func (c *Core) Accepted(link Link) {
 	s := c.newSession(link, dirIn, nil)
 	if c.tracer != nil {
 		c.tracer.Record(recordAccept, engine.Attr{Key: "conn", Value: s.connText()})
+	}
+	c.armDialTimeout(s)
+}
+
+// Writable tells the core that link has room again after its Write returned false. The core
+// writes the frames the link did not take, in order, and resumes writing. Call it in engine
+// context.
+func (c *Core) Writable(link Link) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s := c.links[link]; s != nil {
+		c.flushBlocked(s)
 	}
 }
 
@@ -316,26 +340,27 @@ func (c *Core) sessions() []*session {
 
 // armTick arms the next heartbeat tick.
 func (c *Core) armTick() {
-	c.clock.AfterFunc(c.set.Heartbeat, labelTick, c.tick)
+	c.tick = c.clock.AfterFunc(c.set.Heartbeat, labelTick, c.onTick)
 }
 
-// tick runs once per Heartbeat (REM-090): an up session, or an incoming one still waiting for
-// its HELLO, that received nothing for IdleTimeout is closed with CLOSE idle; an up outgoing
-// session that wrote or received nothing for Heartbeat writes PING. Outgoing sessions waiting for
-// their WELCOME are left to the dial timeout.
-func (c *Core) tick() {
+// onTick runs once per Heartbeat (REM-090): an up session that received nothing for IdleTimeout
+// is closed with CLOSE idle; an up outgoing session that wrote or received nothing for Heartbeat
+// writes PING, unless its link still holds frames it did not take. Sessions in their handshake are
+// left to the dial timeout.
+func (c *Core) onTick() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.clock.Now()
 	for _, s := range c.sessions() {
-		if c.links[s.link] != s || (s.dir == dirOut && !s.up) {
+		if c.links[s.link] != s || !s.up {
 			continue
 		}
 		if now.Sub(s.lastRecv) >= c.set.IdleTimeout {
 			c.closeSession(s, CloseIdle, DownIdle)
 			continue
 		}
-		if s.dir == dirOut && (now.Sub(s.lastSend) >= c.set.Heartbeat || now.Sub(s.lastRecv) >= c.set.Heartbeat) {
+		if s.dir == dirOut && len(s.blocked) == 0 &&
+			(now.Sub(s.lastSend) >= c.set.Heartbeat || now.Sub(s.lastRecv) >= c.set.Heartbeat) {
 			c.write(s, &Frame{Kind: KindPing})
 		}
 	}

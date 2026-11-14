@@ -26,14 +26,20 @@ type fakeLink struct {
 	frames []Frame
 	events []string // "write <KIND>" and "close", in call order
 	closed bool
+	full   bool // Write refuses frames
+	tries  int  // Write calls, refused ones included
 }
 
 func (l *fakeLink) ID() uint64 { return l.id }
 
-func (l *fakeLink) Write(b []byte) {
+func (l *fakeLink) Write(b []byte) bool {
 	l.t.Helper()
+	l.tries++
 	if l.closed {
 		l.t.Errorf("conn %d: Write after Close", l.id)
+	}
+	if l.full {
+		return false
 	}
 	f, err := ParseFrame(b, MaxFrameLimit)
 	if err != nil {
@@ -41,6 +47,7 @@ func (l *fakeLink) Write(b []byte) {
 	}
 	l.frames = append(l.frames, f)
 	l.events = append(l.events, "write "+f.Kind.String())
+	return true
 }
 
 func (l *fakeLink) Close() {
@@ -248,6 +255,14 @@ func TestRemoteStart(t *testing.T) {
 		if n := count(eng.Labels(), labelTick); n != 4 {
 			t.Errorf("%d tick timers after 3 heartbeats, want 4", n)
 		}
+		// The core keeps the armed tick's Cancel, so a shutdown can stop it.
+		if c.tick == nil || !c.tick() {
+			t.Error("the core does not hold the pending tick's Cancel")
+		}
+		eng.Advance(3 * time.Second)
+		if n := count(eng.Labels(), labelTick); n != 4 {
+			t.Errorf("%d tick timers after the tick was cancelled, want 4", n)
+		}
 	})
 	t.Run("listen", func(t *testing.T) {
 		eng := enginetest.New("a", 1)
@@ -293,6 +308,7 @@ func TestRemoteStart(t *testing.T) {
 			{func(c *Config) { c.Settings.Codec = nil }, "no codec"},
 			{func(c *Config) { c.Settings.MaxFrame = 100 }, "MaxFrame 100 out of range [4096, 67108864]"},
 			{func(c *Config) { c.Settings.Heartbeat = 0 }, "Heartbeat, IdleTimeout, DialTimeout and RedialMin must be positive"},
+			{func(c *Config) { c.Settings.IdleTimeout = 1500 * time.Millisecond }, "IdleTimeout 1.5s is less than twice Heartbeat 1s"},
 			{func(c *Config) { c.Settings.RedialMax = time.Millisecond }, "RedialMax 1ms is less than RedialMin 100ms"},
 			{func(c *Config) { c.Settings.Advertise = strings.Repeat("x", 256) }, "advertise address of 256 bytes exceeds 255"},
 		} {
@@ -482,6 +498,18 @@ func TestHandshakeDialErrors(t *testing.T) {
 	if n := count(h.eng.Labels(), labelRedial); n != 0 {
 		t.Errorf("%d redials armed for an unknown node", n)
 	}
+	if _, ok := h.core.peers["c"]; ok {
+		t.Error("Connect to an unknown node left a peer entry behind")
+	}
+	h.acceptUp(60) // b is known from its HELLO; an unknown-node dial keeps the entry
+	h.drv.errs["b"] = ErrUnknownNode
+	if err := h.core.Connect("b"); !errors.Is(err, ErrUnknownNode) {
+		t.Errorf("Connect(b) = %v, want ErrUnknownNode", err)
+	}
+	if p := h.core.peers["b"]; p == nil || p.in == nil {
+		t.Error("Connect to an unknown node dropped the entry of a peer with an incoming session")
+	}
+	h.skip()
 
 	h.drv.errs["b"] = errors.New("driver busy")
 	if err := h.core.Connect("b"); err != nil {
@@ -713,9 +741,9 @@ type loopLink struct {
 
 func (l *loopLink) ID() uint64 { return l.id }
 
-func (l *loopLink) Write(b []byte) {
+func (l *loopLink) Write(b []byte) bool {
 	if l.closed {
-		return
+		return true
 	}
 	switch Kind(b[5]) {
 	case KindPing:
@@ -725,6 +753,7 @@ func (l *loopLink) Write(b []byte) {
 	}
 	o, to := l.other, l.to
 	l.n.queue = append(l.n.queue, func() { to.Frame(o, b) })
+	return true
 }
 
 func (l *loopLink) Close() {
@@ -875,8 +904,8 @@ func TestHeartbeatPing(t *testing.T) {
 }
 
 // TestHeartbeatIdle checks REM-090's idle close: at the first tick IdleTimeout after the last
-// received frame, with CLOSE idle, for up incoming and outgoing sessions and accepted ones that
-// sent no HELLO; and no redial while the peer has nothing waiting.
+// received frame, with CLOSE idle, for up incoming and outgoing sessions; no redial while the peer
+// has nothing waiting; and that an accepted link must HELLO within DialTimeout.
 func TestHeartbeatIdle(t *testing.T) {
 	t.Run("incoming", func(t *testing.T) {
 		h := newHarness(t, nil)
@@ -916,9 +945,66 @@ func TestHeartbeatIdle(t *testing.T) {
 		h := newHarness(t, nil)
 		l := &fakeLink{t: t, id: 8}
 		h.core.Accepted(l)
-		h.eng.Advance(10 * time.Second)
-		same(t, "frames", l.kinds(), []string{"CLOSE idle"})
-		same(t, "records", h.recs(), []string{"accept conn=8", "down peer= conn=8 dir=in reason=idle"})
+		h.eng.Advance(5*time.Second - 1)
+		if l.closed {
+			t.Fatal("closed before DialTimeout")
+		}
+		h.eng.Advance(1)
+		same(t, "events", l.events, []string{"close"})
+		same(t, "records", h.recs(), []string{"accept conn=8", "down peer= conn=8 dir=in reason=dial-timeout"})
+	})
+	t.Run("hello in time", func(t *testing.T) {
+		h := newHarness(t, nil)
+		l := &fakeLink{t: t, id: 8}
+		h.core.Accepted(l)
+		h.eng.Advance(5*time.Second - 1)
+		h.core.Frame(l, hello("b", "a", 9, "json", ""))
+		h.skip()
+		for range 5 { // past the dial timeout, with the dialer pinging
+			h.eng.Advance(time.Second)
+			h.core.Frame(l, ctrl(KindPing, ""))
+		}
+		if l.closed {
+			t.Errorf("an accepted session went down: %q", h.recs())
+		}
+	})
+}
+
+// TestSessionWritable checks back-pressure: frames a link refuses are kept, nothing more is
+// written on it, and Writable writes them in order; PING is skipped and CLOSE dropped while the
+// link is blocked.
+func TestSessionWritable(t *testing.T) {
+	t.Run("pong", func(t *testing.T) {
+		h := newHarness(t, nil)
+		l := h.acceptUp(1)
+		l.full = true
+		h.core.Frame(l, ctrl(KindPing, ""))
+		l.full = false
+		h.core.Frame(l, ctrl(KindPing, "")) // the first PONG is still held: this one waits too
+		same(t, "frames", l.kinds(), []string{"WELCOME"})
+		h.core.Writable(l)
+		same(t, "frames", l.kinds(), []string{"WELCOME", "PONG", "PONG"})
+		h.core.Writable(l) // nothing held: nothing written
+		same(t, "frames", l.kinds(), []string{"WELCOME", "PONG", "PONG"})
+	})
+	t.Run("blocked dialer", func(t *testing.T) {
+		h := newHarness(t, nil)
+		l := h.dialUp()
+		l.full = true
+		h.eng.Advance(time.Second) // PING refused and held
+		tries := l.tries
+		h.eng.Advance(3 * time.Second) // no PING while blocked
+		if l.tries != tries {
+			t.Errorf("%d Write calls on a blocked link", l.tries-tries)
+		}
+		l.full = false
+		h.core.Writable(l)
+		same(t, "frames", l.kinds(), []string{"HELLO", "PING"})
+		l.full = true
+		h.eng.Advance(time.Second) // PING held
+		h.core.Frame(l, ctrl(KindPing, ""))
+		same(t, "records", h.recs(), []string{"down peer=b conn=1 dir=out reason=protocol"})
+		same(t, "events", l.events, []string{"write HELLO", "write PING", "close"})
 	})
 }
 
@@ -954,12 +1040,22 @@ func TestCloseReasons(t *testing.T) {
 		same(t, "events", l.events, []string{"write WELCOME", "close"})
 		same(t, "records", h.recs(), []string{"down peer=b conn=4 dir=in reason=io"})
 	})
+	t.Run("connect while up adds no work", func(t *testing.T) {
+		h := newHarness(t, nil)
+		l := h.dialUp()
+		if err := h.core.Connect("b"); err != nil {
+			t.Fatal(err)
+		}
+		h.core.Frame(l, ctrl(KindClose, "shutdown"))
+		same(t, "records", h.recs(), []string{"down peer=b conn=1 dir=out reason=closed"})
+		if len(h.drv.links) != 1 {
+			t.Errorf("%d dials, want 1", len(h.drv.links))
+		}
+	})
 	t.Run("redial at once after an up session", func(t *testing.T) {
 		h := newHarness(t, nil)
 		l := h.dialUp()
-		if err := h.core.Connect("b"); err != nil { // work waits for b again
-			t.Fatal(err)
-		}
+		h.core.peers["b"].want = true // work waits for b, as the send path's queue will
 		h.core.Frame(l, ctrl(KindClose, "shutdown"))
 		same(t, "records", h.recs(), []string{"down peer=b conn=1 dir=out reason=closed", "dial peer=b conn=2 attempt=1"})
 	})
@@ -1029,9 +1125,7 @@ func TestBackoffSeededDelays(t *testing.T) {
 	l := h.drv.links[0]
 	same(t, "records", h.recs(), []string{"dial peer=b conn=1 attempt=14"})
 	h.core.Frame(l, welcome("b", "a", 7, "json"))
-	if err := h.core.Connect("b"); err != nil {
-		t.Fatal(err)
-	}
+	h.core.peers["b"].want = true // work waits for b, as the send path's queue will
 	h.drv.errs["b"] = errors.New("refused")
 	h.skip()
 	h.core.Closed(l, nil) // up session lost: dial at once, which fails: failure 1

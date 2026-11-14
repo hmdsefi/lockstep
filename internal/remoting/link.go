@@ -15,9 +15,14 @@ var ErrUnknownNode = errors.New("remoting: unknown node")
 //
 // The core calls Dial, and the Link methods, while it holds its lock. They must never block and
 // must never call back into the core: a driver reports what happens on a link later, through
-// Core.Accepted, Core.Frame and Core.Closed. Those calls run in engine context, as an engine
-// callback does, so a driver with goroutines of its own (a TCP reader, say) posts them to the
-// engine instead of calling the core from its goroutine.
+// Core.Accepted, Core.Frame, Core.Writable and Core.Closed. Those calls run in engine context, as
+// an engine callback does, so a driver with goroutines of its own (a TCP reader, say) posts them
+// to the engine instead of calling the core from its goroutine.
+//
+// Calls about one link reach the core one at a time and in the order things happened on it:
+// Accepted first, for a link the peer opened (a dialed link needs no such call); then each
+// received frame with Frame, in arrival order, and Writable whenever the link has room again
+// after refusing a frame; and Closed last. Calls about different links may interleave.
 type Driver interface {
 	// Dial starts a connection to node and returns its Link at once, before the connection is
 	// established. advertise is the address node announced in its last HELLO to this core, or
@@ -38,13 +43,17 @@ type Link interface {
 	// ID returns the connection's number, which appears in the core's records as "conn". It is
 	// the same for the link's lifetime.
 	ID() uint64
-	// Write sends one frame, length prefix included. Frames go out in Write order. Write never
-	// blocks and reports no error: a link that cannot write any more is reported with
-	// Core.Closed. The link owns frame after the call.
-	Write(frame []byte)
-	// Close closes the connection after the frames written before it have been handed to the
-	// network. It may be called more than once; calls after the first do nothing. The core calls
-	// Close on every link it drops, including one the driver reported with Core.Closed, and
+	// Write sends one frame, length prefix included, and reports whether the link took it.
+	// Frames go out in the order the link took them. Write never blocks: when the link's buffer
+	// is full it returns false and does not take the frame, and the driver calls Core.Writable
+	// once it has room; until then the core writes nothing more on the link. A link without a
+	// buffer of its own, such as a simulated one, always returns true. Write reports no error: a
+	// link that cannot write any more is reported with Core.Closed. The link owns frame once it
+	// took it.
+	Write(frame []byte) bool
+	// Close closes the connection after the frames the link took before it have been handed to
+	// the network. It may be called more than once; calls after the first do nothing. The core
+	// calls Close on every link it drops, including one the driver reported with Core.Closed, and
 	// ignores calls about a link after it closed it.
 	Close()
 }

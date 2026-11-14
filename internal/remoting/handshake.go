@@ -100,15 +100,11 @@ func (c *Core) handshakeReply(s *session, f *Frame) {
 			c.protocolError(s, &ProtocolError{Field: FieldPayload, Detail: "welcome codec " + strconv.Quote(h.Codec) +
 				" is not " + strconv.Quote(c.codecName)})
 		default:
-			if s.dialTimeout != nil {
-				s.dialTimeout()
-				s.dialTimeout = nil
-			}
 			s.peer.failures = 0
-			// The send path writes the peer's queued frames here; until then Connect's demand
-			// is met once the session is up.
-			s.peer.want = false
 			c.sessionUp(s, &h)
+			// The send path writes the peer's queued frames here, after the up record; until
+			// then Connect's demand is met once the session is up.
+			s.peer.want = false
 		}
 	case KindReject:
 		c.recordReject(s, string(f.Payload))
@@ -123,6 +119,10 @@ func (c *Core) handshakeReply(s *session, f *Frame) {
 // sessionUp marks s up after its handshake with h and records it. Peer restarts are detected
 // where the known incarnation is replaced (REM-294).
 func (c *Core) sessionUp(s *session, h *Hello) {
+	if s.dialTimeout != nil {
+		s.dialTimeout()
+		s.dialTimeout = nil
+	}
 	s.up = true
 	s.peerInc = h.Incarnation
 	s.peerLimit = h.FrameLimit
