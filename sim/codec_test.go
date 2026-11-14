@@ -214,10 +214,9 @@ var (
 
 // AT-COD-15 (defined here), COD-070, REM-230, REM-340: a frame whose wire name the receiving
 // node's registry does not hold. b, whose registry lacks simtest.Seq, discards a's MSG of a Seq
-// as decode; a, whose registry lacks it, discards b's REPLY of a
-// Seq as decode and the pending ask fails with that error. Both fail the seed with check
-// lockstep/misuse and a message naming the node, the kind, the peer, the wire name, and the
-// registry's error.
+// as decode; a, whose registry lacks it, discards b's REPLY of a Seq as decode and the pending
+// ask fails with that error. Both fail the seed with check lockstep/misuse and a message naming
+// the node, the kind, the peer, the wire name, and the registry's error.
 func TestATCOD15UnknownWireName(t *testing.T) {
 	cause := `codec: type not registered: wire name "simtest.Seq"`
 	t.Run("MSG", func(t *testing.T) {
