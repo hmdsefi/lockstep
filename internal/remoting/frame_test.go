@@ -124,7 +124,7 @@ var golden = []struct {
 		name: "FAIL",
 		frame: remoting.Frame{
 			Kind: remoting.KindFail, Seq: 4, Sender: addrB, Recipient: addrQ,
-			Payload: remoting.AppendFailure(nil, remoting.Failure{Code: 1, Message: "timed out"}),
+			Payload: remoting.AppendFailure(nil, &remoting.Failure{Code: 1, Message: "timed out"}),
 		},
 		bytes: hx("0000003a", "01 13 0000 0000000000000004", "00",
 			"10"+hs(addrB), "10"+hs(addrQ), "00", "01"+hs("timed out")),
@@ -143,7 +143,7 @@ var golden = []struct {
 		name: "TERMINATED",
 		frame: remoting.Frame{
 			Kind: remoting.KindTerminated, Seq: 7, Sender: addrB, Recipient: addrA,
-			Payload: remoting.AppendTerminated(nil, remoting.Terminated{
+			Payload: remoting.AppendTerminated(nil, &remoting.Terminated{
 				Kind: remoting.StopFailed, Failure: remoting.Failure{Code: 0, Message: "boom"},
 			}),
 		},
@@ -228,8 +228,8 @@ func TestFrameRoundTrip(t *testing.T) {
 		{Kind: remoting.KindAsk, Seq: 3, Payload: remoting.AppendAsk(nil, "", nil)},
 		{Kind: remoting.KindReject, Payload: []byte(strings.Repeat("~", remoting.MaxReason))},
 		{Kind: remoting.KindClose, Payload: []byte(remoting.CloseUnknownConnection)},
-		{Kind: remoting.KindTerminated, Seq: 4, Payload: remoting.AppendTerminated(nil, remoting.Terminated{Kind: remoting.StopNoActor})},
-		{Kind: remoting.KindFail, Seq: 5, Payload: remoting.AppendFailure(nil, remoting.Failure{Code: 200})},
+		{Kind: remoting.KindTerminated, Seq: 4, Payload: remoting.AppendTerminated(nil, &remoting.Terminated{Kind: remoting.StopNoActor})},
+		{Kind: remoting.KindFail, Seq: 5, Payload: remoting.AppendFailure(nil, &remoting.Failure{Code: 200})},
 	} {
 		b := remoting.AppendFrame([]byte("prefix"), &f)
 		if string(b[:6]) != "prefix" {
@@ -471,6 +471,58 @@ func TestFrameKind(t *testing.T) {
 	}
 }
 
+// rejectReason is the REJECT reason an acceptor picks for a malformed first frame, as
+// ProtocolError's doc describes it (REM-070: version, then kind, then payload).
+func rejectReason(pe *remoting.ProtocolError) string {
+	switch {
+	case pe.Field == remoting.FieldVersion:
+		return remoting.RejectVersion
+	case pe.Field == remoting.FieldLength:
+		return remoting.RejectPayload
+	case pe.Kind != remoting.KindHello:
+		return remoting.RejectKind
+	}
+	return remoting.RejectPayload
+}
+
+func TestFrameProtocolErrorKind(t *testing.T) {
+	hello := golden[0].bytes
+	for _, tc := range []struct {
+		name   string
+		b      []byte
+		kind   remoting.Kind
+		reason string
+	}{
+		{"length", hx("0000000f"), 0, remoting.RejectPayload},
+		{"version", withByte(hello, 4, 2), 0, remoting.RejectVersion},
+		{"unknown kind", withByte(hello, 5, 7), 7, remoting.RejectKind},
+		{"CLOSE with a bad reason", frame(remoting.Frame{Kind: remoting.KindClose, Payload: []byte("idle\n")}), remoting.KindClose, remoting.RejectKind},
+		{"MSG with seq 0", withByte(golden[6].bytes, 15, 0), remoting.KindMsg, remoting.RejectKind},
+		{"HELLO with flags", withByte(hello, 7, 1), remoting.KindHello, remoting.RejectPayload},
+		{"HELLO with a sender field", frame(remoting.Frame{Kind: remoting.KindHello, Sender: addrA, Payload: golden[0].frame.Payload}), remoting.KindHello, remoting.RejectPayload},
+		{"HELLO with a bad payload", frame(remoting.Frame{Kind: remoting.KindHello, Payload: hx("00")}), remoting.KindHello, remoting.RejectPayload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := remoting.ParseFrame(tc.b, maxFrame)
+			var pe *remoting.ProtocolError
+			if !errors.As(err, &pe) {
+				t.Fatalf("ParseFrame(%x) = %v, want a *ProtocolError", tc.b, err)
+			}
+			if pe.Kind != tc.kind {
+				t.Errorf("Kind = %s, want %s (%v)", pe.Kind, tc.kind, err)
+			}
+			if got := rejectReason(pe); got != tc.reason {
+				t.Errorf("REJECT reason = %q, want %q (%v)", got, tc.reason, err)
+			}
+		})
+	}
+	// A payload parser called on its own leaves Kind 0.
+	var pe *remoting.ProtocolError
+	if _, err := remoting.ParseHello(nil); !errors.As(err, &pe) || pe.Kind != 0 {
+		t.Errorf("ParseHello(nil) = %v, want a *ProtocolError with Kind 0", err)
+	}
+}
+
 func TestFrameProtocolError(t *testing.T) {
 	_, err := remoting.ParseFrame(withByte(golden[3].bytes, 4, 2), maxFrame)
 	if want := "remoting: protocol error: version: version 2 is not 1"; err == nil || err.Error() != want {
@@ -601,11 +653,28 @@ func TestHelloViolations(t *testing.T) {
 	}
 }
 
+// A peer's long name is reported by its length, not quoted; a short invalid one is quoted.
+func TestHelloErrorTextBounded(t *testing.T) {
+	for _, tc := range []struct {
+		h    remoting.Hello
+		want string
+	}{
+		{remoting.Hello{Sender: strings.Repeat("a", 1<<20), Receiver: "b"}, "remoting: protocol error: payload: hello sender of 1048576 bytes is longer than a node name"},
+		{remoting.Hello{Sender: "a", Receiver: strings.Repeat("-", 65)}, "remoting: protocol error: payload: hello receiver of 65 bytes is longer than a node name"},
+		{remoting.Hello{Sender: strings.Repeat("-", 64), Receiver: "b"}, `remoting: protocol error: payload: hello sender "` + strings.Repeat("-", 64) + `" is not a valid node name`},
+	} {
+		_, err := remoting.ParseHello(remoting.AppendHello(nil, &tc.h))
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("ParseHello error = %.200v, want %q", err, tc.want)
+		}
+	}
+}
+
 func TestFailAndTerminatedRoundTrip(t *testing.T) {
 	// Every code byte, known or not, crosses the wire as it is.
 	for c := range 256 {
 		f := remoting.Failure{Code: uint8(c), Message: "message ü " + strconv.Itoa(c)}
-		b := remoting.AppendFailure(nil, f)
+		b := remoting.AppendFailure(nil, &f)
 		if b[0] != uint8(c) || string(b[1:]) != f.Message {
 			t.Fatalf("AppendFailure(%+v) = %x", f, b)
 		}
@@ -618,7 +687,7 @@ func TestFailAndTerminatedRoundTrip(t *testing.T) {
 		t.Errorf("ParseFailure(2a) = %+v, %v", got, err)
 	}
 	// A message that is not valid UTF-8 is repaired on the way out.
-	if b := remoting.AppendFailure(nil, remoting.Failure{Code: 3, Message: "a\xffb"}); !bytes.Equal(b, cat(hx("03"), []byte("a�b"))) {
+	if b := remoting.AppendFailure(nil, &remoting.Failure{Code: 3, Message: "a\xffb"}); !bytes.Equal(b, cat(hx("03"), []byte("a�b"))) {
 		t.Errorf("AppendFailure with invalid UTF-8 = %x", b)
 	}
 
@@ -633,7 +702,7 @@ func TestFailAndTerminatedRoundTrip(t *testing.T) {
 		{remoting.Terminated{Kind: remoting.StopShutdown}, hx("03")},
 		{remoting.Terminated{Kind: remoting.StopNoActor}, hx("04")},
 	} {
-		if b := remoting.AppendTerminated(nil, tc.t); !bytes.Equal(b, tc.b) {
+		if b := remoting.AppendTerminated(nil, &tc.t); !bytes.Equal(b, tc.b) {
 			t.Errorf("AppendTerminated(%+v) = %x, want %x", tc.t, b, tc.b)
 		}
 		if got, err := remoting.ParseTerminated(tc.b); err != nil || got != tc.t {
@@ -642,7 +711,7 @@ func TestFailAndTerminatedRoundTrip(t *testing.T) {
 	}
 	// A failure is written only for StopFailed.
 	shutdown := remoting.Terminated{Kind: remoting.StopShutdown, Failure: remoting.Failure{Code: 1, Message: "x"}}
-	if b := remoting.AppendTerminated(nil, shutdown); !bytes.Equal(b, hx("03")) {
+	if b := remoting.AppendTerminated(nil, &shutdown); !bytes.Equal(b, hx("03")) {
 		t.Errorf("AppendTerminated(shutdown with a failure) = %x, want 03", b)
 	}
 }

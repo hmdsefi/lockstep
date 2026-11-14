@@ -5,6 +5,7 @@ package remoting
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -56,8 +57,8 @@ const (
 	fixedLen  = 12
 )
 
-// Kind is a frame's kind byte. Kinds below 16 are control frames, which carry sequence number 0;
-// the others are data frames, which carry a sequence number above 0.
+// Kind is a frame's kind byte. The known kinds below 16 are control frames, which carry sequence
+// number 0; the known kinds from 16 up are data frames, which carry a sequence number above 0.
 type Kind uint8
 
 // The frame kinds.
@@ -197,6 +198,20 @@ func ParseFrame(b []byte, maxFrame int) (Frame, error) {
 	if b[0] != Version {
 		return Frame{}, protoErr(FieldVersion, "version %d is not %d", b[0], Version)
 	}
+	f, err := parseBody(b)
+	if err != nil {
+		var pe *ProtocolError
+		if errors.As(err, &pe) {
+			pe.Kind = Kind(b[1])
+		}
+		return Frame{}, err
+	}
+	return f, nil
+}
+
+// parseBody decodes the L bytes of a frame whose length and version were checked.
+func parseBody(b []byte) (Frame, error) {
+	var err error
 	f := Frame{Kind: Kind(b[1])}
 	in, ok := f.Kind.info()
 	if !ok {
@@ -429,9 +444,17 @@ func (f Field) String() string {
 }
 
 // ProtocolError reports a received frame or payload that breaks the protocol. Field says which
-// part of the frame is wrong and Detail how.
+// part of the frame is wrong and Detail how. Kind is the frame's kind byte, even one that names no
+// kind, when ParseFrame read it before finding the error; it is 0 for an error in the length or
+// the version, and for an error from a payload parser called on its own.
+//
+// An acceptor that answers a malformed first frame with REJECT picks the reason from the error, in
+// this order: a FieldVersion error is "version"; a FieldLength error, raised before the version
+// byte is read, is "payload"; an error whose Kind is not KindHello, an unknown kind byte included,
+// is "kind"; any other error, which is about a HELLO frame, is "payload".
 type ProtocolError struct {
 	Field  Field
+	Kind   Kind
 	Detail string
 }
 

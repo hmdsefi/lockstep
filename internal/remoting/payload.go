@@ -17,6 +17,9 @@ const (
 	MaxAdvertise = 255 // bytes of the advertise address; it may be empty
 )
 
+// maxNodeName is the longest valid node name (ACT-020).
+const maxNodeName = 64
+
 // Hello is the payload of HELLO and WELCOME frames.
 type Hello struct {
 	Sender      string // the node that writes the frame
@@ -52,6 +55,10 @@ func ParseHello(b []byte) (Hello, error) {
 	}{{&h.Sender, "sender"}, {&h.Receiver, "receiver"}} {
 		if v, b, err = lengthPrefixed(b, FieldPayload); err != nil {
 			return Hello{}, err
+		}
+		// The length is checked first so that a peer's long name is neither copied nor quoted.
+		if len(v) > maxNodeName {
+			return Hello{}, protoErr(FieldPayload, "hello %s of %d bytes is longer than a node name", name.role, len(v))
 		}
 		if !engine.ValidNodeName(string(v)) {
 			return Hello{}, protoErr(FieldPayload, "hello %s %q is not a valid node name", name.role, v)
@@ -119,7 +126,7 @@ type Failure struct {
 
 // AppendFailure appends the encoding of f to dst and returns the extended slice. Bytes of the
 // message that are not valid UTF-8 are replaced with U+FFFD.
-func AppendFailure(dst []byte, f Failure) []byte {
+func AppendFailure(dst []byte, f *Failure) []byte {
 	dst = append(dst, f.Code)
 	return append(dst, strings.ToValidUTF8(f.Message, "�")...)
 }
@@ -156,10 +163,10 @@ type Terminated struct {
 
 // AppendTerminated appends the encoding of t to dst and returns the extended slice. The failure is
 // written only when t.Kind is StopFailed.
-func AppendTerminated(dst []byte, t Terminated) []byte {
+func AppendTerminated(dst []byte, t *Terminated) []byte {
 	dst = append(dst, byte(t.Kind))
 	if t.Kind == StopFailed {
-		dst = AppendFailure(dst, t.Failure)
+		dst = AppendFailure(dst, &t.Failure)
 	}
 	return dst
 }
