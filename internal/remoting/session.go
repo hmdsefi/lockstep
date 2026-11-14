@@ -68,6 +68,7 @@ type session struct {
 
 	seq           uint64 // outgoing: the sequence number of the last data frame written (REM-130)
 	headersWarned bool   // outgoing: the dropped-headers warning was logged (REM-055)
+	counted       bool   // the session is counted in Core.up
 	recvSeq       uint64 // incoming: the sequence number of the last data frame accepted, 0 before any (REM-200)
 }
 
@@ -129,6 +130,9 @@ type peer struct {
 	recvInc   uint32
 	// closedIn is the peer's last up incoming session that went down, while Core.closed holds it.
 	closedIn *session
+	// upOut and upIn are set once a session of that direction has been up to the peer, so that
+	// the next one counts as a reconnect.
+	upOut, upIn bool
 }
 
 // waiting reports whether p has work that needs an outgoing session, so that a redial is armed
@@ -171,6 +175,7 @@ func (c *Core) write(s *session, f *Frame) {
 		return
 	}
 	s.lastSend = c.clock.Now()
+	c.sent(len(b))
 }
 
 // holdsPong reports whether s.blocked holds a PONG.
@@ -190,6 +195,7 @@ func (c *Core) flushBlocked(s *session) {
 		if !s.link.Write(s.blocked[0]) {
 			return
 		}
+		c.sent(len(s.blocked[0]))
 		s.blocked[0] = nil
 		s.blocked = s.blocked[1:]
 		s.lastSend = c.clock.Now()
@@ -202,8 +208,10 @@ func (c *Core) flushBlocked(s *session) {
 // CLOSE, the link is closed without it.
 func (c *Core) closeSession(s *session, reason, downReason string) {
 	if !s.held() {
-		if s.link.Write(AppendFrame(nil, &Frame{Kind: KindClose, Payload: []byte(reason)})) {
+		b := AppendFrame(nil, &Frame{Kind: KindClose, Payload: []byte(reason)})
+		if s.link.Write(b) {
 			s.lastSend = c.clock.Now()
+			c.sent(len(b))
 		}
 	}
 	c.down(s, downReason)
@@ -232,6 +240,10 @@ func (c *Core) failProtocol(s *session, err error) {
 func (c *Core) down(s *session, reason string) {
 	s.link.Close()
 	delete(c.links, s.link)
+	if s.counted {
+		s.counted = false
+		c.up.Add(-1)
+	}
 	if s.dialTimeout != nil {
 		s.dialTimeout()
 		s.dialTimeout = nil

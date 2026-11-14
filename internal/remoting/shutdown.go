@@ -64,8 +64,13 @@ func (c *Core) Shutdown() {
 		}
 	}
 	for _, s := range order {
-		if !s.held() && s.link.Write(AppendFrame(nil, &Frame{Kind: KindClose, Payload: []byte(CloseShutdown)})) {
+		if s.held() {
+			continue
+		}
+		b := AppendFrame(nil, &Frame{Kind: KindClose, Payload: []byte(CloseShutdown)})
+		if s.link.Write(b) {
 			s.lastSend = c.clock.Now()
+			c.sent(len(b))
 		}
 	}
 

@@ -287,6 +287,7 @@ func (c *Core) flush(s *session) {
 		s.seq = seq
 		s.lastSend = c.clock.Now()
 		p.wroteWatch(f)
+		c.sent(len(f.b))
 		if f.dropped > 0 && !s.headersWarned {
 			s.headersWarned = true
 			c.warn("remoting: headers dropped: they break the header limits", "node", c.node, "peer", p.name,
@@ -392,7 +393,9 @@ func (c *Core) failFired(t *failTimer) {
 func (c *Core) unlock() {
 	calls := c.deferred
 	c.deferred = nil
+	t := c.takeTally()
 	c.mu.Unlock()
+	c.flushTally(t)
 	for _, call := range calls {
 		call()
 	}

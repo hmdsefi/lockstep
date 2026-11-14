@@ -373,6 +373,7 @@ func (c *Core) discard(s *session, f *Frame, reason string) {
 
 // recordGap records that s expected the frame numbered want and received the one numbered got.
 func (c *Core) recordGap(s *session, want, got uint64) {
+	c.tally.gaps++
 	if c.tracer != nil {
 		c.tracer.Record(recordGap,
 			engine.Attr{Key: "peer", Value: s.peerName()},
