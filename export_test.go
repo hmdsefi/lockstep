@@ -3,7 +3,14 @@
 
 package lockstep
 
-import "slices"
+import (
+	"log/slog"
+	"slices"
+)
+
+// SetEventLog makes l the logger of the runtime log events of sys, which only New sets, so an
+// external test reads the events of a system built on a manual engine. Call it before sys is used.
+func SetEventLog(sys *System, l *slog.Logger) { sys.events = l }
 
 // UserGuardianUID returns the uid of sys's user guardian, for the external tests.
 func UserGuardianUID(sys *System) uint64 { return sys.user.UID() }

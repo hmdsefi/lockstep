@@ -14,13 +14,20 @@ type host struct{ sys *System }
 // Sent entry that records the envelope's Seq. The sender counts as an actor sender: the remote
 // Send has returned already, so a refusal or drop is only recorded, and for an ask request
 // reported to askRefused (MBX-092). A message that names no live actor is a dead letter, and an
-// ask request then fails back to its asker (MSG-350). A reply attempt is
+// ask request then fails back to its asker (MSG-350). An ask request whose ask address names this
+// system's own node is malformed: only the asker's system allocates an ask address, and its own
+// requests never arrive inbound. It is a dead letter with reason not-found, is not tracked, and
+// fails no ask of this system. A reply attempt is
 // applied to the system's table (MSG-410, MSG-420). Remote watches (ACT-602, Phase 3) and any other
 // payload are dropped.
 func (h host) Inbound(env engine.Envelope) {
 	switch p := env.Payload.(type) {
 	case userPayload:
 		from := addressOf(env.From) // the mailbox entry points at it (entry)
+		if p.ask.node == h.sys.node {
+			h.sys.deadLetter(from, addressOf(env.To), reasonNotFound, p.msg)
+			return
+		}
 		r := routeRequest{
 			from: &from,
 			to:   addressOf(env.To),
