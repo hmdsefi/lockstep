@@ -166,12 +166,16 @@ func TestRemoteActorHooksSet(t *testing.T) {
 	}
 }
 
-// REM §4.3: hooks.Payload reads what hooks.NewPayload builds for the three watch kinds; a
-// RemoteTerminated needs a lockstep.StopReason.
+// REM §4.3: hooks.Payload reads what hooks.NewPayload builds for RemoteTerminated, which needs a
+// lockstep.StopReason. NewPayload builds nothing for RemoteWatch and RemoteUnwatch: the remoting
+// core registers other nodes' watches with hooks.WatchFor, so Host.Inbound never gets one.
 func TestRemoteWatchPayloads(t *testing.T) {
+	for _, k := range []hooks.RemoteKind{hooks.RemoteWatch, hooks.RemoteUnwatch} {
+		if got := hooks.NewPayload(hooks.RemotePayload{Kind: k, Seq: 3}); got != nil {
+			t.Errorf("NewPayload of kind %d = %#v, want nil", k, got)
+		}
+	}
 	for _, p := range []hooks.RemotePayload{
-		{Kind: hooks.RemoteWatch, Seq: 3},
-		{Kind: hooks.RemoteUnwatch, Seq: 3},
 		{Kind: hooks.RemoteTerminated, Reason: lockstep.Normal, Seq: 4},
 		{Kind: hooks.RemoteTerminated, Reason: lockstep.NoActor, Seq: 1},
 		{Kind: hooks.RemoteTerminated, Reason: lockstep.Failed(errDown), Seq: 9},
@@ -941,61 +945,6 @@ func TestRemoteTerminatedStaleWatch(t *testing.T) {
 	terminateSeq(n1, b, w.Address(), lockstep.Failed(errDown), cur)
 	if want := []string{"/user/w " + b.String() + " " + lockstep.Failed(errDown).String()}; !slices.Equal(log, want) {
 		t.Errorf("Terminated signals %q, want %q", log, want)
-	}
-}
-
-// inbound hands n's Host.Inbound an envelope from from to to with the watch payload p, and runs n
-// until idle.
-func inbound(n *remoteNode, from, to engine.Address, p hooks.RemotePayload) {
-	n.seq++
-	n.eng.Inbound(engine.Envelope{From: from, To: to, Seq: n.seq, Payload: hooks.NewPayload(p)})
-	n.eng.RunUntilIdle()
-}
-
-// ACT-605, REM-280: a transport that passes runtime payloads by reference hands Host.Inbound the
-// RemoteWatch and RemoteUnwatch envelopes themselves. The system registers the watch, answers a
-// not-alive target at once with NoActor, sends the watched actor's end back as a RemoteTerminated
-// that echoes the watch number, and cancels on a RemoteUnwatch with that number only.
-func TestRemoteInboundWatch(t *testing.T) {
-	n2 := newRemoteNode(t, "n2")
-	var got []int
-	b := spawnAt(t, n2, "b", func() lockstep.Actor[int] { return collector{&got} }).Address()
-	c := spawnAt(t, n2, "c", func() lockstep.Actor[int] { return collector{&got} }).Address()
-	watcher := engine.Address{Node: "n1", Path: "/user/w", UID: 7}
-	none := engine.Address{Node: "n2", Path: "/user/none"}
-	// sent returns the RemoteTerminated envelopes n2 handed its transport from index from on.
-	sent := func(from int) []string {
-		var out []string
-		for _, env := range n2.eng.Delivered()[from:] {
-			p, ok := hooks.Payload(env.Payload)
-			if !ok || p.Kind != hooks.RemoteTerminated {
-				t.Fatalf("n2 delivered %+v, want only RemoteTerminated", env.Payload)
-			}
-			out = append(out, fmt.Sprintf("%s->%s %v #%d", env.From, env.To, p.Reason, p.Seq))
-		}
-		return out
-	}
-
-	inbound(n2, watcher, eaddr(b), hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 5})
-	inbound(n2, watcher, none, hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 6})
-	if want := []string{none.String() + "->" + watcher.String() + " no-actor #6"}; !slices.Equal(sent(0), want) {
-		t.Errorf("sent %q, want %q", sent(0), want)
-	}
-	inbound(n2, watcher, eaddr(c), hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 8})
-	inbound(n2, watcher, eaddr(b), hooks.RemotePayload{Kind: hooks.RemoteUnwatch, Seq: 4}) // another watch's number
-	inbound(n2, watcher, eaddr(c), hooks.RemotePayload{Kind: hooks.RemoteUnwatch, Seq: 8})
-	// A watcher on n2 itself is dropped.
-	inbound(n2, engine.Address{Node: "n2", Path: "/user/x", UID: 3}, eaddr(b), hooks.RemotePayload{Kind: hooks.RemoteWatch, Seq: 1})
-
-	d := len(n2.eng.Delivered())
-	for _, a := range []lockstep.Address{b, c} {
-		if err := lockstep.Stop(n2.sys, a); err != nil {
-			t.Fatal(err)
-		}
-	}
-	n2.eng.RunUntilIdle()
-	if want := []string{b.String() + "->" + watcher.String() + " normal #5"}; !slices.Equal(sent(d), want) {
-		t.Errorf("sent at the stops %q, want %q", sent(d), want)
 	}
 }
 

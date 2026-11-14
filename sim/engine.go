@@ -15,6 +15,7 @@ import (
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/engine"
 	"github.com/hmdsefi/lockstep/internal/overload"
+	"github.com/hmdsefi/lockstep/internal/remoting"
 )
 
 // turnLabel is the label of the kernel event that runs one turn (SIM-150).
@@ -87,7 +88,8 @@ func (c *eventCounts) add(label string, n int) {
 
 // simEngine is the simulation engine of one boot of a lockstep node: it is bound to the node and
 // to the incarnation it was created for (SIM §5.3). It implements the engine seam's Scheduler,
-// Clock, Transport, Effects, Entropy, Tracer, Failer and Waiter.
+// Clock, Effects, Entropy, Tracer, Failer and Waiter; the system's transport is a remoting core
+// that the boot attaches (SIM-165).
 type simEngine struct {
 	s      *Sim
 	n      *kernel.Node
@@ -95,14 +97,13 @@ type simEngine struct {
 	gate   *overload.Gate // the bundle's Admission (SFT-150)
 	bundle engine.Engine
 
-	// The transport's state (SIM-160, SIM-170); the maps are read by key only. seq holds the last
-	// number given to an envelope for each destination node; next holds the next expected number
-	// of each stream key that arrived at this boot. deferred holds the frames that wait for their
-	// lockstep/send event, oldest first. host is the system's inbound side.
-	seq      map[kernel.NodeID]uint64
-	next     map[stream]uint64
-	deferred []deferredFrame
-	host     engine.Host
+	// The transport's state (SIM-165): the remoting core that is the system's transport, the
+	// driver that carries its frames as datagrams, and the datagrams that wait for their
+	// lockstep/send event, oldest first (SIM-140). core and driver are nil until the boot has
+	// built the system.
+	core     *remoting.Core
+	driver   *driver
+	deferred []outDatagram
 
 	// held is the effects the engine started and still holds, by the address text of the actor
 	// that started them (SIM-290 b); it is read by key only.
@@ -142,7 +143,6 @@ func newEngine(s *Sim, n *kernel.Node, inc uint32) *simEngine {
 		Blocking:   false, // SIM-220
 		Scheduler:  e,
 		Clock:      e,
-		Transport:  e, // the simnet transport (SIM-160)
 		Effects:    e,
 		Entropy:    e,
 		Tracer:     e,

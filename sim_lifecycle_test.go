@@ -67,8 +67,9 @@ func TestATMSG38RefusedAskOnAnotherNode(t *testing.T) {
 		if !resolved {
 			tt.Fatalf("the ask never resolved")
 		}
-		// The ask names t2 by path, so the error names it without a uid.
-		want := mailboxFullText(lockstep.PIDAt[refusedReq]("n2", "/user/t2").Address().String())
+		// The ask names t2 by path, so the error names it without a uid. n2 sends it back as FAIL
+		// mailbox-full, which n1 reports as remote's error for n2.
+		want := "remote: n2: " + mailboxFullText(lockstep.PIDAt[refusedReq]("n2", "/user/t2").Address().String())
 		if !errors.Is(err, lockstep.ErrMailboxFull) || err.Error() != want {
 			tt.Errorf("ask resolved with %v, want an error wrapping ErrMailboxFull with text %q (t2 is %s)", err, want, t2Addr)
 		}

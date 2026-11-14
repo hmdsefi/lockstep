@@ -5,6 +5,7 @@ package remoting
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -202,6 +203,17 @@ func (c *Core) closeSession(s *session, reason, downReason string) {
 func (c *Core) protocolError(s *session, err error) {
 	c.warn("remoting: protocol error", "node", c.node, "peer", s.peerName(), "conn", s.conn, "dir", s.dir.String(), "err", err)
 	c.closeSession(s, CloseProtocol, DownProtocol)
+	c.failProtocol(s, err)
+}
+
+// failProtocol reports err, a frame received on s that broke the protocol, to the Failer once the
+// lock is released, after the frame was handled as in production (REM-340).
+func (c *Core) failProtocol(s *session, err error) {
+	if c.failer != nil {
+		err = fmt.Errorf("lockstep: remote: %s: protocol error on %s conn %d from %s: %w",
+			c.node, s.dir.word(), s.conn, quoted(s.peerName()), err)
+		c.deferred = append(c.deferred, func() { c.failer.Fail(err) })
+	}
 }
 
 // down ends s: it closes the link, forgets the session, records the down and, for an outgoing

@@ -16,8 +16,8 @@ type userPayload struct {
 
 // replyPayload is the engine.Envelope.Payload of a reply attempt for the ask of another node
 // (MSG-410): Envelope.To is the ask address and Envelope.From the replier. The asker's system
-// applies it to its table on arrival (MSG-420). Like userPayload, it travels by reference until
-// REM (Phase 3).
+// applies it to its table on arrival (MSG-420). The remoting core encodes it as a REPLY or FAIL
+// frame and builds a new one on the other node (REM-260).
 type replyPayload struct {
 	v   any   // the answer, an R; nil with an error
 	err error // the error of a Fail, unchanged (MSG §7); nil with an answer

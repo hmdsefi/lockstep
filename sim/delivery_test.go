@@ -122,6 +122,7 @@ func runDlvRetry(s *sim.Sim, cache *dedup.Config) dlvRetry {
 		return nil
 	})
 	w.RunFor(10 * time.Millisecond)
+	connect(s, 300*time.Millisecond, "srv", "cli") // the timeouts below assume one trip per message
 
 	to := lockstep.PIDAt[DlvDeposit]("srv", "/user/acct")
 	var r dlvRetry

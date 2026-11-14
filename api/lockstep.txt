@@ -470,6 +470,7 @@ pkg github.com/hmdsefi/lockstep/sim, type EffectResult struct, Latency time.Dura
 pkg github.com/hmdsefi/lockstep/sim, type EffectResult struct, Value any
 pkg github.com/hmdsefi/lockstep/sim, type Options struct
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, Budget Budget
+pkg github.com/hmdsefi/lockstep/sim, type Options struct, Remote remote.Config
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, System []lockstep.Option
 pkg github.com/hmdsefi/lockstep/sim, type Options struct, embedded faultline.Options
 pkg github.com/hmdsefi/lockstep/sim, type PressureRule struct

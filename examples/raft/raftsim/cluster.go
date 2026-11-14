@@ -12,6 +12,7 @@ import (
 
 	"github.com/hmdsefi/lockstep/examples/raft/client"
 	"github.com/hmdsefi/lockstep/examples/raft/raft"
+	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -68,9 +69,19 @@ func DefaultCluster() Cluster {
 	}
 }
 
-// Options returns sim options for n seeds: 20 s virtual per seed, BaseSeed 1.
+// Options returns sim options for n seeds: 20 s virtual per seed, BaseSeed 1, and Remote, the
+// remoting dial settings of the nodes.
 func Options(seeds int) sim.Options {
-	return sim.Options{Options: faultline.Options{Seeds: seeds, Duration: 20 * time.Second, BaseSeed: 1}}
+	return sim.Options{Options: faultline.Options{Seeds: seeds, Duration: 20 * time.Second, BaseSeed: 1}, Remote: Remote()}
+}
+
+// Remote returns the remoting settings the Raft simulations use: dials time out after 100 ms and
+// are retried within 10 to 100 ms, so that nodes reconnect within an election timeout after a
+// partition heals or a node restarts. With remote's defaults (5 s, then up to 10 s) a dial that a
+// partition or a crash lost would hold the node's messages for longer than a test waits for
+// progress.
+func Remote() remote.Config {
+	return remote.Config{DialTimeout: 100 * time.Millisecond, RedialMin: 10 * time.Millisecond, RedialMax: 100 * time.Millisecond}
 }
 
 // allBugs is the union of raft's defined bug bits.

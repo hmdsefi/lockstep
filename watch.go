@@ -288,49 +288,6 @@ func (s *System) remoteTerminated(watcher, watched Address, reason StopReason, s
 	}
 }
 
-// inboundWatch applies a RemoteWatch or RemoteUnwatch from watcher, on another node, of watched on
-// this one, as the remoting core does with WATCH and UNWATCH frames. Only a transport that hands
-// runtime payloads through by reference, as the simulation's does until remoting carries its
-// traffic, gives Host.Inbound such a payload. A RemoteWatch registers the watch (watchFor); its
-// end, or a not-alive target at once with NoActor, goes back to watcher through the system's
-// transport as a RemoteTerminated echoing p.seq. A RemoteUnwatch cancels the watch it names by
-// number. A watcher on this node is dropped.
-func (s *System) inboundWatch(watcher, watched Address, p watchPayload) {
-	if watcher.IsZero() || watcher.node == s.node {
-		return
-	}
-	pair := remotePair{watcher: watcher, watched: watched}
-	r := &s.rwatch
-	switch p.kind {
-	case hooks.RemoteWatch:
-		alive, cancel := false, func() {}
-		if watched.node == s.node {
-			alive, cancel = s.watchFor(watcher, watched, func(reason any) {
-				r.takeRef(pair, p.seq)       // the watch has ended: its cancel would do nothing
-				sr, _ := reason.(StopReason) // always one: endRemoteWatch passes the stop reason
-				s.sendTerminated(pair, sr, p.seq)
-			})
-		}
-		if !alive {
-			s.sendTerminated(pair, NoActor, p.seq)
-			return
-		}
-		r.setRef(pair, p.seq, cancel)
-	case hooks.RemoteUnwatch:
-		if cancel := r.takeRef(pair, p.seq); cancel != nil {
-			cancel()
-		}
-	}
-}
-
-// sendTerminated hands the transport a RemoteTerminated from p.watched to p.watcher with reason,
-// echoing the watch number seq; a Deliver error is ignored, as loss on the network is.
-func (s *System) sendTerminated(p remotePair, reason StopReason, seq uint64) {
-	if tr := s.transportOf(); tr != nil {
-		_ = tr.Deliver(engine.Envelope{From: p.watched.engine(), To: p.watcher.engine(), Payload: terminatedPayload{reason: reason, seq: seq}})
-	}
-}
-
 // watchesDown ends every outgoing watch of an address on node (hooks.WatchesDown): each watcher
 // gets Terminated{watched, Failed(err)} with the watch's sequence number, in ascending (watched,
 // watcher) text order.
@@ -361,14 +318,12 @@ type remotePair struct{ watcher, watched Address }
 // number: the sets belong to turns, and an inbound RemoteTerminated or WatchesDown runs outside
 // them. in holds the watches of actors on other nodes on local actors (hooks.WatchFor), each with
 // the sequence number of its entry on the target's watcher list and the function its end runs.
-// refs holds the cancel of each watch that inboundWatch registered, with the watcher's number for
-// it. The maps are read by key; only downs ranges over out, and it sorts what it finds. mu is taken
+// The maps are read by key; only downs ranges over out, and it sorts what it finds. mu is taken
 // before the registry's lock and never while another lock is held.
 type remoteWatches struct {
 	mu   sync.Mutex
 	out  map[remotePair]uint64
 	in   map[remotePair]remoteWatcher
-	refs map[remotePair]remoteRef
 	next uint64 // the sequence number of the last WatchFor registration
 }
 
@@ -376,34 +331,6 @@ type remoteWatches struct {
 type remoteWatcher struct {
 	seq uint64
 	fn  func(reason any)
-}
-
-// remoteRef is one watch of inboundWatch: the watcher's number for it and its cancel.
-type remoteRef struct {
-	seq    uint64
-	cancel func()
-}
-
-// setRef keeps cancel as the cancel of the inbound watch p with the watcher's number seq,
-// replacing an earlier one of the pair.
-func (r *remoteWatches) setRef(p remotePair, seq uint64, cancel func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.refs == nil {
-		r.refs = make(map[remotePair]remoteRef)
-	}
-	r.refs[p] = remoteRef{seq: seq, cancel: cancel}
-}
-
-// takeRef removes and returns the cancel of the inbound watch p if its number is seq, else nil.
-func (r *remoteWatches) takeRef(p remotePair, seq uint64) func() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.refs[p]; ok && e.seq == seq {
-		delete(r.refs, p)
-		return e.cancel
-	}
-	return nil
 }
 
 // addOut lists watcher's watch of watched under seq.

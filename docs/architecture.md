@@ -75,7 +75,9 @@ method, implemented by a fixed set of structs.
 
 Local delivery passes the message as it is, without copying it. A message is safe to send when it
 holds no pointers, slices, maps, channels or functions, or when the sender never touches it again
-after `Send`.
+after `Send`. A message to another node is encoded when it is sent, so its type must be
+registered with the codec, and the receiver gets a decoded copy; simulated nodes exchange encoded
+frames too.
 
 Each actor has two queues:
 

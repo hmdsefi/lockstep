@@ -63,7 +63,7 @@ func TestSFT090HeldMessageIsActivity(t *testing.T) {
 			if err := Send(s, "n1", a, pairPing{}); err != nil {
 				tt.Fatalf("Send: %v", err)
 			}
-			w.RunFor(10 * time.Millisecond) // the message is sent, arrives and is held
+			w.RunFor(20 * time.Millisecond) // the message is sent (after the handshake), arrives and is held
 		}
 		send()
 		check("held before the release", false, 1, 0)
