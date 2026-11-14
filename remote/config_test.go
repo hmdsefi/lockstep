@@ -129,6 +129,56 @@ func TestATREM01Config(t *testing.T) {
 		})
 	}
 
+	t.Run("huge Heartbeat", func(t *testing.T) {
+		c := remote.Config{Heartbeat: time.Duration(1<<63 - 1), IdleTimeout: time.Hour}
+		want := p + "IdleTimeout 1h0m0s is less than twice Heartbeat " + time.Duration(1<<63-1).String()
+		if err := c.Validate(); err == nil || err.Error() != want {
+			t.Errorf("Validate() = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("valid edges", func(t *testing.T) {
+		for name, c := range map[string]remote.Config{
+			"MaxFrame min":       {MaxFrame: 4096},
+			"MaxFrame max":       {MaxFrame: 64 << 20},
+			"OutboundQueue 1":    {OutboundQueue: 1},
+			"Idle == 2*Heart":    {Heartbeat: 3 * time.Second, IdleTimeout: 6 * time.Second},
+			"RedialMax == Min":   {RedialMin: time.Second, RedialMax: time.Second},
+			"1ns durations":      {Heartbeat: 1, IdleTimeout: 2, DialTimeout: 1, RedialMin: 1, RedialMax: 1},
+			"Idle > 2*Heart odd": {Heartbeat: 3, IdleTimeout: 7},
+		} {
+			if err := c.Validate(); err != nil {
+				t.Errorf("%s: Validate() = %v", name, err)
+			}
+		}
+		c := remote.Config{Heartbeat: 3, IdleTimeout: 5}
+		if err := c.Validate(); err == nil {
+			t.Error("IdleTimeout 5ns with Heartbeat 3ns accepted")
+		}
+	})
+
+	t.Run("defaults kept on error", func(t *testing.T) {
+		c := remote.Config{Heartbeat: -1}
+		if err := c.Validate(); err == nil {
+			t.Fatal("Validate() = nil")
+		}
+		want := remote.DefaultConfig()
+		if c.MaxFrame != want.MaxFrame || c.OutboundQueue != want.OutboundQueue ||
+			c.IdleTimeout != want.IdleTimeout || c.DialTimeout != want.DialTimeout ||
+			c.RedialMin != want.RedialMin || c.RedialMax != want.RedialMax ||
+			c.Registry != want.Registry || c.Codec != want.Codec || c.Heartbeat != -1 {
+			t.Errorf("defaults not applied on error: %+v", c)
+		}
+	})
+
+	t.Run("two bad peer names", func(t *testing.T) {
+		c := remote.Config{Peers: map[string]string{"z!": "h:1", "b!": "h:2", "a": "h:3"}}
+		want := p + "peer name \"b!\" is not a valid node name"
+		if err := c.Validate(); err == nil || err.Error() != want {
+			t.Errorf("Validate() = %v, want %q", err, want)
+		}
+	})
+
 	t.Run("valid peers", func(t *testing.T) {
 		c := remote.Config{Peers: map[string]string{"n1": "h:1", "0-a_b.c": "h:2"}}
 		if err := c.Validate(); err != nil {

@@ -139,7 +139,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf(p+"OutboundQueue %d is less than 1", c.OutboundQueue)
 	case c.Heartbeat <= 0:
 		return fmt.Errorf(p+"Heartbeat %s is not positive", c.Heartbeat)
-	case c.IdleTimeout < 2*c.Heartbeat:
+	case c.IdleTimeout/2 < c.Heartbeat: // IdleTimeout < 2*Heartbeat without overflow
 		return fmt.Errorf(p+"IdleTimeout %s is less than twice Heartbeat %s", c.IdleTimeout, c.Heartbeat)
 	case c.DialTimeout <= 0:
 		return fmt.Errorf(p+"DialTimeout %s is not positive", c.DialTimeout)
