@@ -371,6 +371,55 @@ pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrCorrupt error
 pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrFormat error
 pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrTooLarge error
 pkg github.com/hmdsefi/lockstep/persist/filestore, var ErrUnusable error
+pkg github.com/hmdsefi/lockstep/remote, const CodeMailboxFull = 5
+pkg github.com/hmdsefi/lockstep/remote, const CodeMailboxFull Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeNotFound = 3
+pkg github.com/hmdsefi/lockstep/remote, const CodeNotFound Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeOther = 0
+pkg github.com/hmdsefi/lockstep/remote, const CodeOther Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeOverloaded = 6
+pkg github.com/hmdsefi/lockstep/remote, const CodeOverloaded Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeStopped = 7
+pkg github.com/hmdsefi/lockstep/remote, const CodeStopped Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeTerminated = 2
+pkg github.com/hmdsefi/lockstep/remote, const CodeTerminated Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeTimeout = 1
+pkg github.com/hmdsefi/lockstep/remote, const CodeTimeout Code
+pkg github.com/hmdsefi/lockstep/remote, const CodeWrongType = 4
+pkg github.com/hmdsefi/lockstep/remote, const CodeWrongType Code
+pkg github.com/hmdsefi/lockstep/remote, const DefaultMaxFrame = 1048576
+pkg github.com/hmdsefi/lockstep/remote, const DefaultMaxFrame ideal-int
+pkg github.com/hmdsefi/lockstep/remote, const ProtocolVersion = 1
+pkg github.com/hmdsefi/lockstep/remote, const ProtocolVersion ideal-int
+pkg github.com/hmdsefi/lockstep/remote, func DefaultConfig() Config
+pkg github.com/hmdsefi/lockstep/remote, method (*Config) Validate() error
+pkg github.com/hmdsefi/lockstep/remote, method (*Error) Error() string
+pkg github.com/hmdsefi/lockstep/remote, method (*Error) Unwrap() error
+pkg github.com/hmdsefi/lockstep/remote, method (Code) String() string
+pkg github.com/hmdsefi/lockstep/remote, type Code uint8
+pkg github.com/hmdsefi/lockstep/remote, type Config struct
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Advertise string
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Codec codec.Codec
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, DialTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Heartbeat time.Duration
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, IdleTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Listen string
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, MaxFrame int
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, OutboundQueue int
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Peers map[string]string
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, RedialMax time.Duration
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, RedialMin time.Duration
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Registry *codec.Registry
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, Resolve func(string) (string, error)
+pkg github.com/hmdsefi/lockstep/remote, type Config struct, TLS *tls.Config
+pkg github.com/hmdsefi/lockstep/remote, type Error struct
+pkg github.com/hmdsefi/lockstep/remote, type Error struct, Code Code
+pkg github.com/hmdsefi/lockstep/remote, type Error struct, Message string
+pkg github.com/hmdsefi/lockstep/remote, type Error struct, Node string
+pkg github.com/hmdsefi/lockstep/remote, var ErrAlreadyEnabled error
+pkg github.com/hmdsefi/lockstep/remote, var ErrFrameTooLarge error
+pkg github.com/hmdsefi/lockstep/remote, var ErrPeerRestarted error
+pkg github.com/hmdsefi/lockstep/remote, var ErrUnreachable error
 pkg github.com/hmdsefi/lockstep/sim, func Ask[M any, R any](*Sim, string, lockstep.PID[M], func(lockstep.ReplyTo[R]) M, ...lockstep.AskOption) (R, error)
 pkg github.com/hmdsefi/lockstep/sim, func Send[M any](*Sim, string, lockstep.PID[M], M) error
 pkg github.com/hmdsefi/lockstep/sim, func Simulate(*testing.T, Options, func(*Sim))
