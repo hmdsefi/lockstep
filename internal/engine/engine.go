@@ -167,6 +167,24 @@ func ValidEffectName(name string) bool {
 	return true
 }
 
+// ValidNodeName reports whether name is a valid node name: 1 to 64 bytes from [A-Za-z0-9._-],
+// starting with a letter or digit (ACT-020).
+func ValidNodeName(name string) bool {
+	if len(name) < 1 || len(name) > 64 {
+		return false
+	}
+	for i := range len(name) {
+		b := name[i]
+		switch {
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		case i > 0 && (b == '.' || b == '_' || b == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Effects runs effects.
 type Effects interface {
 	// Start starts req. The engine calls done at most once, in engine context, never inside the

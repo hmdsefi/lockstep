@@ -3,24 +3,13 @@
 
 package lockstep
 
-const (
-	maxNodeLen = 64  // ACT-020
-	maxNameLen = 768 // ACT-310
-)
+import "github.com/hmdsefi/lockstep/internal/engine"
+
+const maxNameLen = 768 // ACT-310
 
 // validNode reports whether s is a valid node name: 1 to 64 bytes from [A-Za-z0-9._-], starting
 // with a letter or digit (ACT-020).
-func validNode(s string) bool {
-	if len(s) == 0 || len(s) > maxNodeLen || !isAlnum(s[0]) {
-		return false
-	}
-	for i := 1; i < len(s); i++ {
-		if c := s[i]; !isAlnum(c) && c != '.' && c != '_' && c != '-' {
-			return false
-		}
-	}
-	return true
-}
+func validNode(s string) bool { return engine.ValidNodeName(s) }
 
 // validName reports whether s is a valid actor name: 1 to 768 bytes from [A-Za-z0-9._%-], neither
 // "." nor ".." (ACT-310). The "$" of generated names is outside the set.

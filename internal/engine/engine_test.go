@@ -177,3 +177,30 @@ func TestValidEffectName(t *testing.T) {
 		}
 	}
 }
+
+// ACT-020: the node name pattern ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.
+func TestValidNodeName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"", false},
+		{"a b", false},
+		{".x", false},
+		{"-x", false},
+		{"_x", false},
+		{"x/y", false},
+		{"x:1", false},
+		{"é", false},
+		{strings.Repeat("n", 64), true},
+		{strings.Repeat("n", 65), false},
+		{"0-a_b.c", true},
+		{"node-1", true},
+		{"N", true},
+	}
+	for _, tc := range tests {
+		if got := engine.ValidNodeName(tc.name); got != tc.want {
+			t.Errorf("ValidNodeName(%q) = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
