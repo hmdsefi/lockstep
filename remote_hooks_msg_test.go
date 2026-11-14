@@ -4,9 +4,12 @@
 package lockstep_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,8 +36,17 @@ type remoteNode struct {
 // newRemoteNode builds a system on a manual engine for node through hooks.NewSystem.
 func newRemoteNode(t *testing.T, node string) *remoteNode {
 	t.Helper()
+	return newRemoteNodeWith(t, node, nil, nil)
+}
+
+// newRemoteNodeWith is newRemoteNode with the interposer ip on the engine (nil: none) and the
+// system options opts.
+func newRemoteNodeWith(t *testing.T, node string, ip engine.Interposer, opts []lockstep.Option) *remoteNode {
+	t.Helper()
 	eng := enginetest.New(node, 1)
-	b, err := hooks.NewSystem(eng.Engine(), nil)
+	bundle := eng.Engine()
+	bundle.Interposer = ip
+	b, err := hooks.NewSystem(bundle, opts)
 	if err != nil {
 		t.Fatalf("hooks.NewSystem(%s): %v", node, err)
 	}
@@ -493,4 +505,177 @@ func TestPending(t *testing.T) {
 	panicsWith(t, "lockstep: hooks.Pending: sys has type <nil>, want a non-nil *lockstep.System", func() {
 		hooks.Pending(nil, ask)
 	})
+}
+
+// holder is an interposer that holds every message and offers it from a timer of its engine one
+// second later, in engine context, as ENG-150 allows.
+type holder struct {
+	eng  *enginetest.Engine
+	held int
+}
+
+func (h *holder) Interpose(_, _ engine.Address, _ any, offer func()) bool {
+	h.held++
+	h.eng.Engine().Clock.AfterFunc(time.Second, "test/hold", offer)
+	return true
+}
+
+// ENG-150, MBX-120: an interposer on the receiving engine holds an inbound NewPayload message and
+// an ask request; offered later, both reach their actors with the envelopes' Seq, and the answer
+// to the request goes back.
+func TestRemoteInboundHeldByInterposer(t *testing.T) {
+	n1 := newRemoteNode(t, "n1")
+	h := &holder{}
+	n2 := newRemoteNodeWith(t, "n2", h, nil)
+	h.eng = n2.eng
+	var got []int
+	spawnAt(t, n2, "rec", func() lockstep.Actor[int] { return collector{&got} })
+	spawnAt(t, n2, "d", func() lockstep.Actor[double] { return doubler{} })
+
+	if err := lockstep.Send(n1.sys, lockstep.PIDAt[int]("n2", "/user/rec"), 5); err != nil {
+		t.Fatal(err)
+	}
+	r := askDouble(n1.sys, lockstep.PIDAt[double]("n2", "/user/d"), 4)
+	n1.carry(t, n2)
+	if h.held != 2 || len(got) != 0 || len(n2.eng.Delivered()) != 0 {
+		t.Fatalf("held %d, rec received %v, %d envelopes sent back: want 2 held and nothing else",
+			h.held, got, len(n2.eng.Delivered()))
+	}
+	n2.eng.Advance(time.Second)
+	if !slices.Equal(got, []int{5}) {
+		t.Errorf("rec received %v after the offer, want [5]", got)
+	}
+	var seqs []string
+	for _, a := range attrsOf(n2.eng.Records(), "lockstep.deliver") {
+		seqs = append(seqs, a["seq"])
+	}
+	if !slices.Equal(seqs, []string{"1", "2"}) {
+		t.Errorf("lockstep.deliver seq values %v, want [1 2]", seqs)
+	}
+	n2.carry(t, n1)
+	if v, err := resolved(t, r); v != 8 || err != nil {
+		t.Errorf("Await = %d, %v, want 8, nil", v, err)
+	}
+}
+
+// MSG-420: a RemoteReply or RemoteFail for an ask that resolved already, here by FailAsks and by
+// its timeout, records lockstep.reply outcome=late and logs message dropped with reason
+// late-reply; the ask keeps its first result.
+func TestRemoteLateReply(t *testing.T) {
+	var logs bytes.Buffer
+	n1, n2 := newRemoteNode(t, "n1"), newRemoteNode(t, "n2")
+	lockstep.SetEventLog(n1.sys, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	spawnAt(t, n2, "d", func() lockstep.Actor[double] { return doubler{} })
+	to := lockstep.PIDAt[double]("n2", "/user/d")
+
+	// late checks the lockstep.reply records of ask and the one dropped log line, then clears the
+	// log.
+	late := func(t *testing.T, ask engine.Address) {
+		t.Helper()
+		var outcomes []string
+		for _, a := range attrsOf(n1.eng.Records(), "lockstep.reply") {
+			if a["ask"] == ask.String() && a["outcome"] != "resolved" {
+				outcomes = append(outcomes, a["outcome"])
+			}
+		}
+		if !slices.Equal(outcomes, []string{"late"}) {
+			t.Errorf("lockstep.reply outcomes for %v after its resolution = %v, want [late]", ask, outcomes)
+		}
+		var dropped []string
+		for line := range strings.Lines(logs.String()) {
+			if strings.Contains(line, `msg="message dropped"`) {
+				dropped = append(dropped, line)
+			}
+		}
+		if len(dropped) != 1 || !strings.Contains(dropped[0], "reason=late-reply") || !strings.Contains(dropped[0], "path="+ask.Path) {
+			t.Errorf("message dropped log lines %q, want one with reason=late-reply for %v", dropped, ask)
+		}
+		logs.Reset()
+	}
+
+	t.Run("reply after FailAsks", func(t *testing.T) {
+		r := askDouble(n1.sys, to, 3)
+		ask := hooks.PendingAsks(n1.sys)[0].Ask
+		hooks.FailAsks(n1.sys, "n2", errDown)
+		logs.Reset()
+		n1.carry(t, n2)
+		if _, ps := n2.carry(t, n1); len(ps) != 1 || ps[0].Kind != hooks.RemoteReply {
+			t.Fatalf("payloads %+v, want one RemoteReply", ps)
+		}
+		late(t, ask)
+		if _, err := resolved(t, r); err != errDown { //nolint:errorlint // the very value FailAsks got
+			t.Errorf("Await error %v, want errDown itself", err)
+		}
+	})
+
+	t.Run("fail after timeout", func(t *testing.T) {
+		r := lockstep.Ask(n1.sys, to, func(rt lockstep.ReplyTo[int]) double { return double{N: -1, RT: rt} },
+			lockstep.WithTimeout(time.Second))
+		ask := hooks.PendingAsks(n1.sys)[0].Ask
+		n1.eng.Advance(time.Second)
+		if _, err := resolved(t, r); !errors.Is(err, lockstep.ErrTimeout) {
+			t.Fatalf("Await error %v, want ErrTimeout", err)
+		}
+		logs.Reset()
+		n1.carry(t, n2)
+		if _, ps := n2.carry(t, n1); len(ps) != 1 || ps[0].Kind != hooks.RemoteFail {
+			t.Fatalf("payloads %+v, want one RemoteFail", ps)
+		}
+		late(t, ask)
+		if _, err := resolved(t, r); !errors.Is(err, lockstep.ErrTimeout) {
+			t.Errorf("Await error %v after the late failure, want ErrTimeout", err)
+		}
+	})
+}
+
+// MSG-420: a RemoteReply whose value is not the ask's R reaches settle and resolves the ask with
+// an error wrapping ErrWrongType.
+func TestRemoteReplyWrongType(t *testing.T) {
+	n1 := newRemoteNode(t, "n1")
+	r := askDouble(n1.sys, lockstep.PIDAt[double]("n2", "/user/d"), 1)
+	ask := hooks.PendingAsks(n1.sys)[0].Ask
+	n1.eng.Inbound(engine.Envelope{
+		From:    engine.Address{Node: "n2", Path: "/user/d", UID: 7},
+		To:      ask,
+		Seq:     1,
+		Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteReply, Value: "x"}),
+	})
+	_, err := resolved(t, r)
+	if !errors.Is(err, lockstep.ErrWrongType) || !strings.Contains(err.Error(), "got string, want int") {
+		t.Errorf("Await error %v, want ErrWrongType naming string and int", err)
+	}
+}
+
+// An inbound ask request whose ask address names the receiving node is malformed: it is a dead
+// letter with reason not-found, its target does not get it, nothing goes back, and the receiving
+// system's own pending ask with that address stays pending.
+func TestRemoteAskWithOwnAskAddress(t *testing.T) {
+	n1 := newRemoteNode(t, "n1")
+	spawnAt(t, n1, "d", func() lockstep.Actor[double] { return doubler{} })
+	r := askDouble(n1.sys, lockstep.PIDAt[double]("n2", "/user/x"), 1)
+	ask := hooks.PendingAsks(n1.sys)[0].Ask
+
+	// A peer sends n1 an ask request that claims n1's own pending ask as its ask address.
+	to := engine.Address{Node: "n1", Path: "/user/d"}
+	from := engine.Address{Node: "n2", Path: "/user/y", UID: 9}
+	n1.eng.Inbound(engine.Envelope{
+		From:    from,
+		To:      to,
+		Seq:     1,
+		Payload: hooks.NewPayload(hooks.RemotePayload{Kind: hooks.RemoteAsk, Value: double{N: 2}, Ask: ask}),
+	})
+	n1.eng.RunUntilIdle()
+	dead := attrsOf(n1.eng.Records(), "lockstep.deadletter")
+	if len(dead) != 1 || dead[0]["from"] != from.String() || dead[0]["to"] != to.String() || dead[0]["reason"] != "not-found" {
+		t.Errorf("lockstep.deadletter records %v, want one from %v to %v with reason not-found", dead, from, to)
+	}
+	if n := len(attrsOf(n1.eng.Records(), "lockstep.deliver")); n != 0 {
+		t.Errorf("%d lockstep.deliver records, want none", n)
+	}
+	if hooks.AskResolved(r) || !hooks.Pending(n1.sys, ask) {
+		t.Errorf("n1's ask %v resolved, want it pending", ask)
+	}
+	if d := n1.eng.Delivered(); len(d) != 1 {
+		t.Errorf("n1 delivered %d envelopes, want only its own request", len(d))
+	}
 }

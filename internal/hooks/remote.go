@@ -67,15 +67,19 @@ var Payload func(p any) (RemotePayload, bool) // false: not a runtime payload
 // the actor registered at the path whatever its message type: the core has checked Assignable
 // already. Inbound delivers it as a local send from an actor sender (MBX-120); an ask request is
 // tracked by its target (MSG-340), or fails back with ErrTerminated when no live actor takes it
-// (MSG-350); a RemoteReply or RemoteFail is applied to the asker's table (MSG-420). Implemented by
-// MSG and, for the watch kinds, ACT.
+// (MSG-350); a RemoteReply or RemoteFail is applied to the asker's table (MSG-420), where one for
+// an ask that resolved already is recorded late. NewPayload panics for a RemoteAsk with a zero Ask
+// and for a RemoteFail with a nil Err, and returns nil, which Inbound drops, for a kind it does
+// not cover. Implemented by MSG and, for the watch kinds, ACT.
 var NewPayload func(p RemotePayload) any // the runtime payload for Host.Inbound
 
 // Assignable reports whether v may go to to on sys (REM-230, REM-264). For a pending ask address
 // of sys it reports whether v is assignable to the ask's R, where a nil v needs an interface R;
 // for an actor address, whether a live actor at to (by uid, or by path when the uid is 0) has an M
-// that v is assignable to. It reports false for any other address. Implemented by MSG (asks) and
-// ACT (actors).
+// that v is assignable to. It reports false for any other address, a resolved ask address
+// included. For REPLY and FAIL the core therefore checks Pending first: an answer for an ask that
+// is no longer pending goes to Inbound unchecked and stays a late reply (lockstep.reply outcome
+// late), not a wrong-type discard. Implemented by MSG (asks) and ACT (actors).
 var Assignable func(sys any, to engine.Address, v any) bool
 
 // FailAsks resolves with err, in ask-counter order, every pending ask of sys whose target is on
@@ -83,7 +87,9 @@ var Assignable func(sys any, to engine.Address, v any) bool
 // Implemented by MSG.
 var FailAsks func(sys any, node string, err error)
 
-// Pending reports whether ask is a pending ask of sys (MSG-370). Implemented by MSG.
+// Pending reports whether ask is a pending ask of sys (MSG-370). The core calls it for REPLY and
+// FAIL before Assignable, which is false for an ask that resolved already, so a late reply stays a
+// late reply. Implemented by MSG.
 var Pending func(sys any, ask engine.Address) bool
 
 // AttachTransport makes t the transport of sys and runs stop once from Shutdown, after the last
