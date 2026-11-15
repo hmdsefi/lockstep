@@ -98,10 +98,19 @@ func (b *broadcasts) take(forced *update, max, limit int) []update {
 	if skip >= 0 {
 		order = append(order, skip)
 	}
+	done := make([]bool, len(b.items)) // taken items that reached the limit
 	for _, i := range order {
 		b.items[i].count++
+		done[i] = b.items[i].count >= limit
 	}
-	b.items = slices.DeleteFunc(b.items, func(q queued) bool { return q.count >= limit })
+	kept := b.items[:0]
+	for i, q := range b.items {
+		if !done[i] {
+			kept = append(kept, q)
+		}
+	}
+	clear(b.items[len(kept):])
+	b.items = kept
 	return out
 }
 

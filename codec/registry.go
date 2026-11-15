@@ -83,7 +83,8 @@ func Register[T any](name string) { RegisterIn[T](defaultRegistry, name) }
 
 // RegisterIn registers type T under the wire name name in r. Registering a name and type that r
 // already holds together does nothing. RegisterIn panics, checking in this order, if r is nil,
-// if r is a zero Registry rather than one from NewRegistry, if name is not a valid wire name, if name is reserved (it starts with "lockstep." but not with "lockstep.cluster."), if T is an
+// if r is a zero Registry rather than one from NewRegistry, if name is not a valid wire name, if
+// name is reserved (it starts with "lockstep." but not with "lockstep.cluster."), if T is an
 // interface type, if name is held by another type, or if T is held under another name.
 func RegisterIn[T any](r *Registry, name string) {
 	if r == nil {

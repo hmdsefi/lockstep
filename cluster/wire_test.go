@@ -96,8 +96,6 @@ func TestUpdateMember(t *testing.T) {
 	if got := toUpdate(m).member(); got != m {
 		t.Fatalf("member = %+v", got)
 	}
-	msgs := []memberMsg{update{}, ping{}, pingReq{}, ack{}, syncReq{}, syncResp{}, leave{}}
-	if len(msgs) != 7 {
-		t.Fatal("seven wire types")
-	}
+	// Every wire type is a memberMsg (checked at compile time).
+	_ = []memberMsg{update{}, ping{}, pingReq{}, ack{}, syncReq{}, syncResp{}, leave{}}
 }

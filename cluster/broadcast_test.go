@@ -211,6 +211,22 @@ func TestATCLU12Piggyback(t *testing.T) {
 		}
 	})
 
+	t.Run("limit not above zero removes only the taken", func(t *testing.T) {
+		for _, limit := range []int{0, -1} {
+			b := newBroadcasts()
+			for _, n := range []string{"a", "b", "c", "d", "e"} {
+				b.enqueue(upd(n, 1))
+			}
+			wantNodes(t, b.take(nil, 1, limit), "e")
+			if b.len() != 4 {
+				t.Fatalf("limit %d: len = %d, want 4", limit, b.len())
+			}
+			if _, ok := b.find("e"); ok {
+				t.Fatalf("limit %d: the taken update stays", limit)
+			}
+		}
+	})
+
 	t.Run("empty", func(t *testing.T) {
 		b := newBroadcasts()
 		wantNodes(t, b.take(nil, 8, 4))
