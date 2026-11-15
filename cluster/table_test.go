@@ -352,9 +352,10 @@ func TestATCLU09Identity(t *testing.T) {
 	})
 
 	// Hearsay (an update of a message's Updates or Members, not its From) with another ID does not
-	// supersede an up entry, and retires nothing: it may be about an older process of the name.
-	// About a down entry, a tombstone or an unknown name, and with the entry's own ID, it applies as
-	// direct evidence does.
+	// supersede an up entry, and never retires an ID: it may be about an older process of the name.
+	// About a down entry or a tombstone it supersedes or adds, keeping the old ID usable, so that
+	// direct evidence of the old ID can take the entry back and retire the hearsay ID. About an
+	// unknown name, and with the entry's own ID, it applies as direct evidence does.
 	t.Run("hearsay", func(t *testing.T) {
 		hear := func(t *testing.T, tb *table, u Member, now time.Time) (change, applyResult) {
 			t.Helper()
@@ -390,11 +391,37 @@ func TestATCLU09Identity(t *testing.T) {
 				if res != applyChanged || c != want {
 					t.Fatalf("hearsay = %+v, %v, want %+v", c, res, want)
 				}
-				if got := retiredIDs(tb, "x"); !slices.Equal(got, []uint32{1}) {
-					t.Fatalf("retired = %v, want [1]", got)
+				if got := retiredIDs(tb, "x"); len(got) != 0 {
+					t.Fatalf("retired = %v, want none", got)
+				}
+				if old == Left {
+					return
+				}
+				// The process of ID 1 is alive after all: its own From takes the entry back and
+				// retires the hearsay ID.
+				c = mustApply(t, tb, m("x", 1, 6, Alive), t0.Add(2*time.Second))
+				want = change{Node: "x", ID: 1, Inc: 6, From: Alive, To: Alive, OldID: 2, Superseded: true, Source: "test"}
+				if c != want {
+					t.Fatalf("direct change = %+v, want %+v", c, want)
+				}
+				if got := retiredIDs(tb, "x"); !slices.Equal(got, []uint32{2}) {
+					t.Fatalf("retired = %v, want [2]", got)
 				}
 			})
 		}
+		t.Run("retired against down", func(t *testing.T) {
+			tb := newTable(selfEntry, retention, t0)
+			enter(t, tb, m("x", 1, 0, Alive), t0)
+			mustApply(t, tb, m("x", 2, 0, Alive), t0) // retires 1
+			mustApply(t, tb, m("x", 2, 0, Dead), t0)
+			before := snapshot(tb)
+			if c, res := hear(t, tb, m("x", 1, 9, Alive), t0); res != applyIgnored || c != (change{}) {
+				t.Fatalf("hearsay of a retired ID = %+v, %v, want ignored", c, res)
+			}
+			if !sameTable(&before, tb) {
+				t.Fatalf("hearsay of a retired ID changed the table: %+v, was %+v", *tb, before)
+			}
+		})
 		t.Run("tombstone", func(t *testing.T) {
 			tb := newTable(selfEntry, retention, t0)
 			enter(t, tb, m("x", 1, 5, Dead), t0)
@@ -405,8 +432,8 @@ func TestATCLU09Identity(t *testing.T) {
 			if want := (change{Node: "x", ID: 2, To: Alive, Source: "test"}); res != applyChanged || c != want {
 				t.Fatalf("hearsay = %+v, %v, want the addition %+v", c, res, want)
 			}
-			if got := retiredIDs(tb, "x"); !slices.Equal(got, []uint32{1}) {
-				t.Fatalf("retired = %v, want [1]", got)
+			if got := retiredIDs(tb, "x"); len(got) != 0 {
+				t.Fatalf("retired = %v, want none", got)
 			}
 		})
 		t.Run("unknown and same ID", func(t *testing.T) {

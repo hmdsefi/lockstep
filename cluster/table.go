@@ -169,10 +169,11 @@ func wins(e, u Member) bool {
 //   - An update with the ID of the name's entry or tombstone replaces its state and incarnation
 //     when it wins by CLU-110; a tombstone is restored to an entry.
 //   - An up update with another ID replaces the entry (Superseded, From the old state) or the
-//     tombstone (an addition) and retires the old ID; a down one is ignored. Hearsay with another
-//     ID does not replace an up entry: it is ignored, and nothing is retired, since IDs are not
-//     ordered and the hearsay may be about an older process of the name than the entry. The
-//     member's own messages, or the next probe of the name, bring its current ID directly.
+//     tombstone (an addition); a down one is ignored. Only direct evidence retires the old ID.
+//     Hearsay with another ID does not replace an up entry, and when it replaces a down entry or
+//     a tombstone the old ID stays usable, since IDs are not ordered and the hearsay may be about
+//     an older process of the name than the entry. The member's own messages, or the next probe of
+//     the name, bring its current ID directly, and that direct evidence retires the stale one.
 func (t *table) Apply(u Member, direct bool, source string, now time.Time) (change, applyResult) {
 	if u.Node == "" || u.State < Alive || u.State > Left {
 		return change{}, applyIgnored
@@ -208,7 +209,9 @@ func (t *table) Apply(u Member, direct bool, source string, now time.Time) (chan
 	case !u.State.Up(), !direct && !r.tomb && r.m.State.Up():
 		return change{}, applyIgnored
 	default:
-		r.retire(r.m.ID)
+		if direct {
+			r.retire(r.m.ID)
+		}
 		if !r.tomb {
 			c.From, c.OldID, c.Superseded = r.m.State, r.m.ID, true
 		}

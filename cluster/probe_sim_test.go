@@ -28,13 +28,19 @@ import (
 // stale ID; news of x's current ID from another node changes nothing, but n1's next probe of x
 // reaches the current process, whose ack supersedes the entry; that ack does not ack the probe of
 // the stale ID, which fails without a suspicion and without an indirect probe; later hearsay of
-// another ID changes nothing either. "retired": n1 has x with ID A, its process with ID B retired;
-// B's acks to the pings by name ack nothing, so A is suspected. "restart": n1 to n4 converge
+// another ID changes nothing either. "retired": n1 has x with ID A, and ID B retired by direct
+// evidence, as for a former process; the pings go by name to B's process, whose acks ack nothing,
+// so A is suspected. "revived": n1 has x's process B falsely Dead, and stale hearsay of a former
+// ID A supersedes that down entry without retiring B; n1's probe of A reaches B, whose ack's From
+// takes the entry back and retires A, the probe of A fails without a suspicion, and x stays Alive
+// as B. "restart": n1 to n4 converge
 // (seeds: n1 {n1, n3}, n2 {n1, n4}, n3 and n4 {n3}); a partition splits {n1, n2} from {n3, n4},
 // which crash and restart with new IDs while n1 and n2 are told the old IDs are Dead; after the
 // heal, frames that n1 or n2 queued before the restart carry the old IDs as Alive hearsay to n3 or
 // n4, which know only the new IDs: that hearsay supersedes nothing, and every view ends with the
-// four Alive at their current IDs. "regressions" runs two seeds where it once did.
+// four Alive at their current IDs. "regressions" runs seeds where it did not before hearsay lost
+// that power: 0xd1fa1eb55a6eaee4 and 0xb7d424a45839687b fail without the rule (0x172e125e5e72027e,
+// where #461's original test failed, is kept as well).
 func TestATCLU05ProbeOrder(t *testing.T) {
 	t.Run("draw", func(t *testing.T) {
 		members := []Member{
@@ -283,6 +289,44 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 		})
 	})
 
+	t.Run("revived", func(t *testing.T) {
+		sim.Simulate(t, simOpts(3, 3*time.Second), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			c := newSimCluster(s)
+			x, tell := staleSetup(s, c)
+			start := c.recs("n1", "start")[0].At
+			self := toUpdate(c.view("n1").Self)
+			idB := x.self.ID
+			idA := idB + 1
+			tell(update{Node: "x", ID: idB, State: Alive})       // direct: x's process
+			tell(self, update{Node: "x", ID: idB, State: Dead})  // falsely Dead
+			tell(self, update{Node: "x", ID: idA, State: Alive}) // stale hearsay of a former process
+			w.RunFor(start.Add(2100 * time.Millisecond).Sub(w.Sim.Now()))
+			tell(self, update{Node: "x", ID: idA, Inc: 9, State: Alive}) // retired by the ack: ignored
+			w.RunFor(start.Add(2500 * time.Millisecond).Sub(w.Sim.Now()))
+
+			want := []string{
+				"0s node=x id=" + uitoa(idB) + " inc=0 from=none to=alive source=syncresp",
+				"0s node=x id=" + uitoa(idB) + " inc=0 from=alive to=dead source=syncresp",
+				"0s node=x id=" + uitoa(idA) + " inc=0 from=dead to=alive source=syncresp",
+				"1s node=x id=" + uitoa(idB) + " inc=0 from=alive to=alive source=ack",
+			}
+			if got := memberLines(c, start); !slices.Equal(got, want) {
+				tt.Errorf("n1's member records %q, want %q", got, want)
+			}
+			if m, _ := c.view("n1").Member("x"); m != (Member{Node: "x", ID: idB, State: Alive}) {
+				tt.Errorf("n1's view has x %v, want ID %d Alive", m, idB)
+			}
+			fails, acks := c.recs("n1", "probe.fail"), c.recs("n1", "ack")
+			if len(fails) != 1 || attrs(fails[0]) != "target=x seq=1" || fails[0].At != start.Add(2*time.Second) {
+				tt.Errorf("n1's failed probes %s, want the probe of the stale ID, at 2s", describe(fails))
+			}
+			if len(acks) != 1 || attrs(acks[0]) != "target=x seq=2 via=direct" {
+				tt.Errorf("n1's acks %s, want only that of the probe of 2s", describe(acks))
+			}
+		})
+	})
+
 	t.Run("restart", func(t *testing.T) {
 		const partitionAt, crashAt, restartAt, healAt, end = 4 * time.Second, 4100 * time.Millisecond, 4500 * time.Millisecond, 6 * time.Second, 12 * time.Second
 		body := func(s *sim.Sim) {
@@ -331,7 +375,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 		}
 		t.Run("seeds", func(t *testing.T) { sim.Simulate(t, simOpts(5, end+time.Second), body) })
 		t.Run("regressions", func(t *testing.T) {
-			sim.SimulateSeeds(t, simOpts(1, end+time.Second), body, 0x172e125e5e72027e, 0xd1fa1eb55a6eaee4)
+			sim.SimulateSeeds(t, simOpts(1, end+time.Second), body, 0xd1fa1eb55a6eaee4, 0xb7d424a45839687b, 0x172e125e5e72027e)
 		})
 	})
 }
