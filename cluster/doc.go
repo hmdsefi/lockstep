@@ -35,4 +35,12 @@
 // Members send each other their whole member tables when a node joins, every SyncInterval to one
 // member chosen at random, and to every dead member and every seed that is not up, so that the
 // two sides of a healed partition learn of each other.
+//
+// Every ProbeInterval a node probes one other up member, taking them in a new random order each
+// round, so that it probes every one of them at least once in any two rounds. A probe without an
+// answer after ProbeTimeout is sent again through up to IndirectProbes other Alive members; a
+// probe still without an answer at the next interval makes the member Suspect, and the member is
+// Dead SuspicionTimeout later unless it refuted the suspicion meanwhile. In a cluster of N nodes a
+// crashed node is therefore Dead in the view of every other node within about
+// 2*(N-1)*ProbeInterval + ProbeTimeout + SuspicionTimeout + ProbeInterval.
 package cluster

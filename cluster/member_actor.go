@@ -15,9 +15,9 @@ import (
 
 // The membership actor (CLU-030 to CLU-050, CLU-410 to CLU-460, CLU-500). It owns the member table
 // and the broadcast queue, joins through the seeds, merges every message it receives into the
-// table, exchanges whole tables with the other members, and publishes a new view after every turn
-// that changed the table. Probing and suspicion (3.3-05), and signals, leave and restart (3.3-06)
-// build on it.
+// table, exchanges whole tables with the other members, probes them (probe.go), suspects and
+// refutes (suspect.go), and publishes a new view after every turn that changed the table. Signals,
+// leave and restart (3.3-06) build on it.
 
 // The membership actor's name under /system, and the path every member sends to (CLU-460).
 const (
@@ -66,6 +66,7 @@ type memberActor struct {
 	joinTimer lockstep.TimerID // the JoinRetryInterval timer until joined
 	attempt   int              // the last join attempt, from 1 (CLU-040)
 	changed   bool             // the table changed in this turn (CLU-500)
+	probing   prober           // the probing state (CLU-200 to CLU-250)
 }
 
 // newMemberActor returns the membership actor of m.
@@ -75,10 +76,11 @@ func newMemberActor(m *Membership) *memberActor {
 	return &memberActor{m: m, seeds: seeds}
 }
 
-// Started records the start, then either joins at once (no other seed, CLU-030) or sends the first
-// join attempt and arms the retry timer (CLU-040). Every incarnation starts from a table of only
-// the own entry: rebuilding a restarted actor's table from the last published view, and recording
-// restart=true, come with 3.3-06 (CLU-620). Only the joined flag already survives a restart.
+// Started records the start, arms the probe timer (CLU-200), then either joins at once (no other
+// seed, CLU-030) or sends the first join attempt and arms the retry timer (CLU-040). Every
+// incarnation starts from a table of only the own entry: rebuilding a restarted actor's table from
+// the last published view, and recording restart=true, come with 3.3-06 (CLU-620). Only the
+// joined flag already survives a restart.
 func (a *memberActor) Started(ctx *lockstep.Context[memberMsg]) {
 	cfg := &a.m.cfg
 	a.tbl = newTable(a.m.self, cfg.DeadRetention, ctx.Now())
@@ -88,6 +90,7 @@ func (a *memberActor) Started(ctx *lockstep.Context[memberMsg]) {
 		ctl.Record(recordPrefix+"start", "node", self.Node, "id", strconv.FormatUint(uint64(self.ID), 10),
 			"inc", strconv.FormatUint(self.Incarnation, 10), "seeds", strconv.Itoa(len(cfg.Seeds)), "restart", "false")
 	}
+	a.startProbing(ctx)
 	switch {
 	case a.m.joined:
 		a.startSync(ctx)
@@ -112,11 +115,17 @@ func (a *memberActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 			a.becomeJoined(ctx)
 		}
 	case ping:
-		a.mergeMessage(ctx, wirePing, msg.From, msg.Updates)
+		if a.mergeMessage(ctx, wirePing, msg.From, msg.Updates) {
+			a.answerPing(ctx, msg)
+		}
 	case pingReq:
-		a.mergeMessage(ctx, wirePingReq, msg.From, msg.Updates)
+		if a.mergeMessage(ctx, wirePingReq, msg.From, msg.Updates) {
+			a.relayPing(ctx, msg)
+		}
 	case ack:
-		a.mergeMessage(ctx, wireAck, msg.From, msg.Updates)
+		if a.mergeMessage(ctx, wireAck, msg.From, msg.Updates) {
+			a.handleAck(ctx, msg)
+		}
 	case leave:
 		a.mergeMessage(ctx, wireLeave, msg.From, nil)
 	case joinTick:
@@ -127,6 +136,14 @@ func (a *memberActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 		a.syncRound(ctx)
 	case reapTimer:
 		a.reap(ctx, msg)
+	case probeTick:
+		a.probeTick(ctx)
+	case probeTimeout:
+		a.probeTimedOut(ctx, msg.Seq)
+	case relayExpire:
+		a.probing.expireRelay(msg.Seq)
+	case suspectTimeout:
+		a.suspicionExpired(ctx, msg)
 	case update:
 		// A bare update is registered only to be encodable on its own; it carries no sender.
 	}
@@ -263,13 +280,13 @@ func (a *memberActor) mergeMessage(ctx *lockstep.Context[memberMsg], wire string
 		return false
 	}
 	source := strings.TrimPrefix(wire, recordPrefix)
-	a.merge(ctx, from, source)
+	a.merge(ctx, from, true, source)
 	for _, u := range updates {
 		if reason := validUpdate(u); reason != "" {
 			a.invalid(ctx, from.Node, wire, reason)
 			continue
 		}
-		a.merge(ctx, u, source)
+		a.merge(ctx, u, false, source)
 	}
 	return true
 }
@@ -281,16 +298,23 @@ func (*memberActor) invalid(ctx *lockstep.Context[memberMsg], peer, wire, reason
 	}
 }
 
-// merge applies one valid update from source to the table. An update about the own entry changes
-// nothing here; refuting it belongs to probing (CLU-310).
-func (a *memberActor) merge(ctx *lockstep.Context[memberMsg], u update, source string) {
-	if c, res := a.tbl.Apply(u.member(), source, ctx.Now()); res == applyChanged {
+// merge applies one valid update from source to the table; direct is true for a message's From,
+// the sender's own entry, and false for the hearsay of its Updates or Members, which cannot
+// supersede an up entry with another ID (CLU-130, CLU-250). An update about the own entry goes to
+// refutation (CLU-310).
+func (a *memberActor) merge(ctx *lockstep.Context[memberMsg], u update, direct bool, source string) {
+	switch c, res := a.tbl.Apply(u.member(), direct, source, ctx.Now()); res {
+	case applyChanged:
 		a.applied(ctx, c)
+	case applyAboutSelf:
+		a.refute(ctx, u)
+	case applyIgnored:
 	}
 }
 
 // applied handles one change of the table (CLU-170): it records it, enqueues the new entry for
-// broadcast, and arms the reap timer of a change into Dead or Left (CLU-160).
+// broadcast, and arms the suspicion timer of a change into Suspect (CLU-300) or the reap timer of
+// a change into Dead or Left (CLU-160).
 func (a *memberActor) applied(ctx *lockstep.Context[memberMsg], c change) {
 	a.changed = true
 	if ctl := tracer(ctx); ctl != nil {
@@ -302,6 +326,9 @@ func (a *memberActor) applied(ctx *lockstep.Context[memberMsg], c change) {
 			"inc", strconv.FormatUint(c.Inc, 10), "from", from, "to", c.To.String(), "source", c.Source)
 	}
 	a.queue.enqueue(toUpdate(c.member()))
+	if c.To == Suspect {
+		a.armSuspicion(ctx, c)
+	}
 	if !c.To.Up() {
 		ctx.After(a.m.cfg.DeadRetention, reapTimer{Node: c.Node, ID: c.ID, Inc: c.Inc, State: c.To})
 	}
