@@ -57,6 +57,7 @@ type relay struct {
 	requester string // the node that sent the pingReq
 	reqSeq    uint64 // the requester's seq
 	target    string
+	targetID  uint32 // the ID the requester probed
 }
 
 // prober is the probing state of one actor incarnation. Nothing of it survives a restart.
@@ -153,7 +154,7 @@ func (a *memberActor) resolveProbe(ctx *lockstep.Context[memberMsg]) {
 	}
 	if m, ok := a.tbl.Get(pr.target); ok && m.ID == pr.id && m.State == Alive {
 		m.State = Suspect
-		if c, res := a.tbl.Apply(m, sourceProbe, ctx.Now()); res == applyChanged {
+		if c, res := a.tbl.Apply(m, true, sourceProbe, ctx.Now()); res == applyChanged {
 			a.applied(ctx, c)
 		}
 	}
@@ -161,10 +162,14 @@ func (a *memberActor) resolveProbe(ctx *lockstep.Context[memberMsg]) {
 
 // probeTimedOut sends the indirect probes of the probe seq if it is still outstanding without an
 // ack: a pingReq to each helper that draw 2 chooses (CLU-230). The probe.indirect record is made
-// also when there is no helper.
+// also when there is no helper. A target that went down or changed its ID since the probe is not
+// probed indirectly: its probe will fail without a suspicion.
 func (a *memberActor) probeTimedOut(ctx *lockstep.Context[memberMsg], seq uint64) {
 	pr := a.probing.probe
 	if pr.seq != seq || pr.acked {
+		return
+	}
+	if m, ok := a.tbl.Get(pr.target); !ok || m.ID != pr.id || !m.State.Up() {
 		return
 	}
 	helpers := drawHelpers(ctx.Rand(), a.tbl.Members(), a.tbl.self, pr.target, a.m.cfg.IndirectProbes)
@@ -218,7 +223,7 @@ func (a *memberActor) relayPing(ctx *lockstep.Context[memberMsg], msg pingReq) {
 		return
 	}
 	p := &a.probing
-	r := relay{seq: p.nextSeq(), requester: msg.From.Node, reqSeq: msg.Seq, target: msg.Target}
+	r := relay{seq: p.nextSeq(), requester: msg.From.Node, reqSeq: msg.Seq, target: msg.Target, targetID: msg.TargetID}
 	p.relays = append(p.relays, r)
 	a.send(ctx, msg.Target, ping{
 		From: toUpdate(a.tbl.Self()), Seq: r.seq, Target: msg.Target, TargetID: msg.TargetID,
@@ -228,12 +233,15 @@ func (a *memberActor) relayPing(ctx *lockstep.Context[memberMsg], msg pingReq) {
 }
 
 // handleAck matches a merged ack (CLU-240, CLU-230): an ack whose Seq and Target are those of the
-// outstanding probe acks it, once; an ack of a live relay is sent on to the requester with the
-// requester's seq, and the relay is dropped. Any other ack is ignored.
+// outstanding probe acks it, once, if it comes from a helper or from the probed ID of the target;
+// an ack from the target's probed ID for a live relay is sent on to the requester with the
+// requester's seq, and the relay is dropped. Any other ack is ignored: a ping is delivered by node
+// name, so another process of the target may answer it, and that answer says nothing about the
+// probed one.
 func (a *memberActor) handleAck(ctx *lockstep.Context[memberMsg], msg ack) {
 	p := &a.probing
 	if pr := &p.probe; pr.seq != 0 && pr.seq == msg.Seq && pr.target == msg.Target {
-		if pr.acked {
+		if pr.acked || (msg.From.Node == pr.target && msg.From.ID != pr.id) {
 			return
 		}
 		pr.acked = true
@@ -247,7 +255,7 @@ func (a *memberActor) handleAck(ctx *lockstep.Context[memberMsg], msg ack) {
 		return
 	}
 	i, ok := p.findRelay(msg.Seq)
-	if !ok || p.relays[i].target != msg.Target {
+	if !ok || p.relays[i].target != msg.Target || msg.From.Node != msg.Target || msg.From.ID != p.relays[i].targetID {
 		return
 	}
 	r := p.relays[i]

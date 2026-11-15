@@ -24,7 +24,7 @@ func m(node string, id uint32, inc uint64, s MemberState) Member {
 // mustApply applies u and fails unless it changed the table.
 func mustApply(t *testing.T, tb *table, u Member, now time.Time) change {
 	t.Helper()
-	c, res := tb.Apply(u, "test", now)
+	c, res := tb.Apply(u, true, "test", now)
 	if res != applyChanged {
 		t.Fatalf("Apply(%+v) = %v, want applyChanged", u, res)
 	}
@@ -61,7 +61,7 @@ func sameTable(a, b *table) bool {
 func mustIgnore(t *testing.T, tb *table, u Member, now time.Time) {
 	t.Helper()
 	before := snapshot(tb)
-	if c, res := tb.Apply(u, "test", now); res != applyIgnored || c != (change{}) {
+	if c, res := tb.Apply(u, true, "test", now); res != applyIgnored || c != (change{}) {
 		t.Fatalf("Apply(%+v) = %+v, %v, want ignored", u, c, res)
 	}
 	if !sameTable(&before, tb) {
@@ -74,7 +74,7 @@ func mustIgnore(t *testing.T, tb *table, u Member, now time.Time) {
 func mustRetireOnly(t *testing.T, tb *table, u Member, now time.Time) {
 	t.Helper()
 	before := snapshot(tb)
-	if c, res := tb.Apply(u, "test", now); res != applyIgnored || c != (change{}) {
+	if c, res := tb.Apply(u, true, "test", now); res != applyIgnored || c != (change{}) {
 		t.Fatalf("Apply(%+v) = %+v, %v, want ignored", u, c, res)
 	}
 	want := snapshot(&before)
@@ -351,6 +351,78 @@ func TestATCLU09Identity(t *testing.T) {
 		})
 	})
 
+	// Hearsay (an update of a message's Updates or Members, not its From) with another ID does not
+	// supersede an up entry, and retires nothing: it may be about an older process of the name.
+	// About a down entry, a tombstone or an unknown name, and with the entry's own ID, it applies as
+	// direct evidence does.
+	t.Run("hearsay", func(t *testing.T) {
+		hear := func(t *testing.T, tb *table, u Member, now time.Time) (change, applyResult) {
+			t.Helper()
+			return tb.Apply(u, false, "test", now)
+		}
+		for _, old := range []MemberState{Alive, Suspect} {
+			for _, nu := range []MemberState{Alive, Suspect} {
+				t.Run(fmt.Sprintf("up %s by %s", old, nu), func(t *testing.T) {
+					tb := newTable(selfEntry, retention, t0)
+					enter(t, tb, m("x", 1, 5, old), t0)
+					before := snapshot(tb)
+					if c, res := hear(t, tb, m("x", 2, 9, nu), t0.Add(time.Second)); res != applyIgnored || c != (change{}) {
+						t.Fatalf("hearsay = %+v, %v, want ignored", c, res)
+					}
+					if !sameTable(&before, tb) {
+						t.Fatalf("hearsay changed the table: %+v, was %+v", *tb, before)
+					}
+					// Direct evidence of the other ID still supersedes, and the hearsay ID is not
+					// retired: it can come back directly.
+					c := mustApply(t, tb, m("x", 2, 0, nu), t0.Add(time.Second))
+					if !c.Superseded || c.OldID != 1 {
+						t.Fatalf("direct change = %+v, want a supersede of ID 1", c)
+					}
+				})
+			}
+		}
+		for _, old := range []MemberState{Dead, Left} {
+			t.Run(fmt.Sprintf("down %s", old), func(t *testing.T) {
+				tb := newTable(selfEntry, retention, t0)
+				enter(t, tb, m("x", 1, 5, old), t0)
+				c, res := hear(t, tb, m("x", 2, 0, Alive), t0.Add(time.Second))
+				want := change{Node: "x", ID: 2, Inc: 0, From: old, To: Alive, OldID: 1, Superseded: true, Source: "test"}
+				if res != applyChanged || c != want {
+					t.Fatalf("hearsay = %+v, %v, want %+v", c, res, want)
+				}
+				if got := retiredIDs(tb, "x"); !slices.Equal(got, []uint32{1}) {
+					t.Fatalf("retired = %v, want [1]", got)
+				}
+			})
+		}
+		t.Run("tombstone", func(t *testing.T) {
+			tb := newTable(selfEntry, retention, t0)
+			enter(t, tb, m("x", 1, 5, Dead), t0)
+			if !tb.Reap("x", 1, 5, Dead, t0.Add(retention)) {
+				t.Fatal("Reap refused")
+			}
+			c, res := hear(t, tb, m("x", 2, 0, Alive), t0.Add(retention))
+			if want := (change{Node: "x", ID: 2, To: Alive, Source: "test"}); res != applyChanged || c != want {
+				t.Fatalf("hearsay = %+v, %v, want the addition %+v", c, res, want)
+			}
+			if got := retiredIDs(tb, "x"); !slices.Equal(got, []uint32{1}) {
+				t.Fatalf("retired = %v, want [1]", got)
+			}
+		})
+		t.Run("unknown and same ID", func(t *testing.T) {
+			tb := newTable(selfEntry, retention, t0)
+			if c, res := hear(t, tb, m("x", 1, 0, Alive), t0); res != applyChanged || c.From != 0 {
+				t.Fatalf("hearsay about an unknown name = %+v, %v, want an addition", c, res)
+			}
+			if c, res := hear(t, tb, m("x", 1, 0, Suspect), t0); res != applyChanged || c.From != Alive || c.To != Suspect {
+				t.Fatalf("hearsay with the entry's ID = %+v, %v, want Alive to Suspect", c, res)
+			}
+			if _, res := hear(t, tb, m("x", 1, 0, Alive), t0); res != applyIgnored {
+				t.Fatalf("losing hearsay = %v, want ignored", res)
+			}
+		})
+	})
+
 	t.Run("retired IDs cap", func(t *testing.T) {
 		tb := newTable(selfEntry, retention, t0)
 		enter(t, tb, m("x", 1, 0, Alive), t0)
@@ -381,7 +453,7 @@ func TestATCLU09Identity(t *testing.T) {
 		for _, s := range allStates {
 			for _, inc := range []uint64{0, 1, 99} {
 				u := m("self", selfEntry.ID, inc, s)
-				if c, res := tb.Apply(u, "test", t0); res != applyAboutSelf || c != (change{}) {
+				if c, res := tb.Apply(u, true, "test", t0); res != applyAboutSelf || c != (change{}) {
 					t.Fatalf("Apply(%+v) = %+v, %v, want applyAboutSelf", u, c, res)
 				}
 			}

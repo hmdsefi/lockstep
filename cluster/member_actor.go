@@ -280,13 +280,13 @@ func (a *memberActor) mergeMessage(ctx *lockstep.Context[memberMsg], wire string
 		return false
 	}
 	source := strings.TrimPrefix(wire, recordPrefix)
-	a.merge(ctx, from, source)
+	a.merge(ctx, from, true, source)
 	for _, u := range updates {
 		if reason := validUpdate(u); reason != "" {
 			a.invalid(ctx, from.Node, wire, reason)
 			continue
 		}
-		a.merge(ctx, u, source)
+		a.merge(ctx, u, false, source)
 	}
 	return true
 }
@@ -298,10 +298,12 @@ func (*memberActor) invalid(ctx *lockstep.Context[memberMsg], peer, wire, reason
 	}
 }
 
-// merge applies one valid update from source to the table. An update about the own entry goes to
+// merge applies one valid update from source to the table; direct is true for a message's From,
+// the sender's own entry, and false for the hearsay of its Updates or Members, which cannot
+// supersede an up entry with another ID (CLU-130, CLU-250). An update about the own entry goes to
 // refutation (CLU-310).
-func (a *memberActor) merge(ctx *lockstep.Context[memberMsg], u update, source string) {
-	switch c, res := a.tbl.Apply(u.member(), source, ctx.Now()); res {
+func (a *memberActor) merge(ctx *lockstep.Context[memberMsg], u update, direct bool, source string) {
+	switch c, res := a.tbl.Apply(u.member(), direct, source, ctx.Now()); res {
 	case applyChanged:
 		a.applied(ctx, c)
 	case applyAboutSelf:

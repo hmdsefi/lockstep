@@ -42,7 +42,7 @@ func (a *memberActor) suspicionExpired(ctx *lockstep.Context[memberMsg], t suspe
 		return
 	}
 	m.State = Dead
-	if c, res := a.tbl.Apply(m, sourceSuspicion, ctx.Now()); res == applyChanged {
+	if c, res := a.tbl.Apply(m, true, sourceSuspicion, ctx.Now()); res == applyChanged {
 		a.applied(ctx, c)
 	}
 }

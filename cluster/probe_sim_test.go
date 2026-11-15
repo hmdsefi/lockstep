@@ -24,7 +24,17 @@ import (
 // probes a permutation of the other four, every probe acked directly with the probe's seq, and
 // the seqs count from 1. "answer": a ping from a node that never joined is answered with an ack
 // of its seq whatever its TargetID or its state in the table, the ack carries the forced update
-// about the pinger first, and a From with a new ID supersedes the entry.
+// about the pinger first, and a From with a new ID supersedes the entry. "hearsay": n1 has x with a
+// stale ID; news of x's current ID from another node changes nothing, but n1's next probe of x
+// reaches the current process, whose ack supersedes the entry; that ack does not ack the probe of
+// the stale ID, which fails without a suspicion and without an indirect probe; later hearsay of
+// another ID changes nothing either. "retired": n1 has x with ID A, its process with ID B retired;
+// B's acks to the pings by name ack nothing, so A is suspected. "restart": n1 to n4 converge
+// (seeds: n1 {n1, n3}, n2 {n1, n4}, n3 and n4 {n3}); a partition splits {n1, n2} from {n3, n4},
+// which crash and restart with new IDs while n1 and n2 are told the old IDs are Dead; after the
+// heal, frames that n1 or n2 queued before the restart carry the old IDs as Alive hearsay to n3 or
+// n4, which know only the new IDs: that hearsay supersedes nothing, and every view ends with the
+// four Alive at their current IDs. "regressions" runs two seeds where it once did.
 func TestATCLU05ProbeOrder(t *testing.T) {
 	t.Run("draw", func(t *testing.T) {
 		members := []Member{
@@ -171,6 +181,159 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			}
 		})
 	})
+
+	// staleSetup adds n1 and x, an answering fake member, runs 10ms and returns x and a function
+	// that sends n1 a local syncResp with from and members, then runs 10ms.
+	staleSetup := func(s *sim.Sim, c *simCluster) (*fakeMember, func(from update, members ...update)) {
+		w, tt := s.World(), s.World().T()
+		c.node("n1", Config{})
+		x := c.fake("x", false)
+		w.RunFor(10 * time.Millisecond)
+		n1 := lockstep.PIDAt[memberMsg]("n1", actorPath)
+		return x, func(from update, members ...update) {
+			tt.Helper()
+			if err := sim.Send(s, "n1", n1, memberMsg(syncResp{From: from, Members: members})); err != nil {
+				tt.Fatal(err)
+			}
+			w.RunFor(10 * time.Millisecond)
+		}
+	}
+	// memberLines returns n1's member records as "<whole seconds since start> <attrs>".
+	memberLines := func(c *simCluster, start kernel.Time) []string {
+		var out []string
+		for _, r := range c.recs("n1", "member") {
+			out = append(out, r.At.Sub(start).Truncate(time.Second).String()+" "+attrs(r))
+		}
+		return out
+	}
+
+	t.Run("hearsay", func(t *testing.T) {
+		sim.Simulate(t, simOpts(3, 3*time.Second), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			c := newSimCluster(s)
+			x, tell := staleSetup(s, c)
+			start := c.recs("n1", "start")[0].At
+			self := toUpdate(c.view("n1").Self)
+			idB := x.self.ID
+			idA := idB + 1
+			tell(update{Node: "x", ID: idA, State: Alive}) // direct: the From of a former process of x
+			tell(self, update{Node: "x", ID: idB, State: Alive})
+			if m, _ := c.view("n1").Member("x"); m.ID != idA {
+				tt.Fatalf("n1's view has x %v after hearsay of ID %d, want ID %d still", m, idB, idA)
+			}
+			w.RunFor(start.Add(2100 * time.Millisecond).Sub(w.Sim.Now()))
+			tell(self, update{Node: "x", ID: idB + 7, Inc: 9, State: Alive})
+			w.RunFor(start.Add(2500 * time.Millisecond).Sub(w.Sim.Now()))
+
+			want := []string{
+				"0s node=x id=" + uitoa(idA) + " inc=0 from=none to=alive source=syncresp",
+				"1s node=x id=" + uitoa(idB) + " inc=0 from=alive to=alive source=ack",
+			}
+			if got := memberLines(c, start); !slices.Equal(got, want) {
+				tt.Errorf("n1's member records %q, want %q", got, want)
+			}
+			if m, _ := c.view("n1").Member("x"); m != (Member{Node: "x", ID: idB, State: Alive}) {
+				tt.Errorf("n1's view has x %v, want ID %d Alive", m, idB)
+			}
+			fails, acks := c.recs("n1", "probe.fail"), c.recs("n1", "ack")
+			if len(fails) != 1 || attrs(fails[0]) != "target=x seq=1" || fails[0].At != start.Add(2*time.Second) {
+				tt.Errorf("n1's failed probes %s, want the probe of the stale ID, at 2s", describe(fails))
+			}
+			if len(acks) != 1 || attrs(acks[0]) != "target=x seq=2 via=direct" {
+				tt.Errorf("n1's acks %s, want only that of the probe of 2s", describe(acks))
+			}
+			if in := c.recs("n1", "probe.indirect"); len(in) != 0 {
+				tt.Errorf("n1 probed indirectly %s, want no indirect probe of a changed ID", describe(in))
+			}
+		})
+	})
+
+	t.Run("retired", func(t *testing.T) {
+		sim.Simulate(t, simOpts(3, 3*time.Second), func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			c := newSimCluster(s)
+			x, tell := staleSetup(s, c)
+			start := c.recs("n1", "start")[0].At
+			idB := x.self.ID
+			idA := idB + 1
+			tell(update{Node: "x", ID: idB, State: Alive})
+			tell(update{Node: "x", ID: idA, State: Alive}) // supersedes, and retires idB
+			w.RunFor(start.Add(2500 * time.Millisecond).Sub(w.Sim.Now()))
+
+			want := []string{
+				"0s node=x id=" + uitoa(idB) + " inc=0 from=none to=alive source=syncresp",
+				"0s node=x id=" + uitoa(idA) + " inc=0 from=alive to=alive source=syncresp",
+				"2s node=x id=" + uitoa(idA) + " inc=0 from=alive to=suspect source=probe",
+			}
+			if got := memberLines(c, start); !slices.Equal(got, want) {
+				tt.Errorf("n1's member records %q, want %q", got, want)
+			}
+			if acks := c.recs("n1", "ack"); len(acks) != 0 {
+				tt.Errorf("n1's acks %s, want none from the retired ID", describe(acks))
+			}
+			pinged := 0
+			for _, g := range x.got {
+				if _, ok := g.msg.(ping); ok {
+					pinged++
+				}
+			}
+			if pinged < 2 {
+				tt.Errorf("x received %d pings, want the probes of 1s and 2s", pinged)
+			}
+		})
+	})
+
+	t.Run("restart", func(t *testing.T) {
+		const partitionAt, crashAt, restartAt, healAt, end = 4 * time.Second, 4100 * time.Millisecond, 4500 * time.Millisecond, 6 * time.Second, 12 * time.Second
+		body := func(s *sim.Sim) {
+			w, tt := s.World(), s.World().T()
+			c := newSimCluster(s)
+			c.node("n1", simConfig("n1", "n3"))
+			c.node("n2", simConfig("n1", "n4"))
+			c.node("n3", simConfig("n3"))
+			c.node("n4", simConfig("n3"))
+			names, halfA, halfB := []string{"n1", "n2", "n3", "n4"}, []string{"n1", "n2"}, []string{"n3", "n4"}
+			w.RunFor(partitionAt)
+			w.Faults.Inject(fault.Event{Kind: fault.KindPartition, Groups: [][]string{halfA, halfB}})
+			w.RunFor(crashAt - partitionAt)
+			oldB := []update{{Node: "n3", ID: c.id("n3"), State: Dead}, {Node: "n4", ID: c.id("n4"), State: Dead}}
+			for _, n := range halfB {
+				w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: n})
+			}
+			for _, n := range halfA {
+				dead := syncResp{From: toUpdate(c.view(n).Self), Members: oldB}
+				if err := sim.Send(s, n, lockstep.PIDAt[memberMsg](n, actorPath), memberMsg(dead)); err != nil {
+					tt.Fatal(err)
+				}
+			}
+			w.RunFor(restartAt - crashAt)
+			for _, n := range halfB {
+				w.Faults.Inject(fault.Event{Kind: fault.KindRestart, Node: n})
+			}
+			w.RunFor(healAt - restartAt)
+			w.Faults.Inject(fault.Event{Kind: fault.KindHeal})
+			w.RunFor(end - healAt)
+
+			var want []Member
+			for _, n := range names {
+				want = append(want, alive(n, c.id(n)))
+			}
+			for _, n := range names {
+				expectView(tt, n, c.view(n), want)
+			}
+			for _, n := range halfB {
+				for _, r := range c.recs(n, "member") {
+					if r.At > vt(restartAt) && slices.ContainsFunc(oldB, func(u update) bool { return attr(r, "node") == u.Node && attr(r, "id") == uitoa(u.ID) }) {
+						tt.Errorf("%s took up an old ID of half B: %s", n, describe([]kernel.Record{r}))
+					}
+				}
+			}
+		}
+		t.Run("seeds", func(t *testing.T) { sim.Simulate(t, simOpts(5, end+time.Second), body) })
+		t.Run("regressions", func(t *testing.T) {
+			sim.SimulateSeeds(t, simOpts(1, end+time.Second), body, 0x172e125e5e72027e, 0xd1fa1eb55a6eaee4)
+		})
+	})
 }
 
 // AT-CLU-06, CLU-230, CLU-240, §6 draw 2. "draw": the helpers are min(n, len) of the Alive members
@@ -180,7 +343,8 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 // once, indirectly, although both helpers relay. No node is ever suspected. "relay": n1 is the
 // helper of a node r for a node t: it pings t with the next seq of its own counter, which its
 // probes use too, sends t's ack on to r with r's seq once, and drops a relay ProbeTimeout after
-// the pingReq, so a later ack is not sent on.
+// the pingReq, so a later ack is not sent on; an ack from another ID of t than r probed is not
+// sent on either.
 func TestATCLU06IndirectProbe(t *testing.T) {
 	t.Run("draw", func(t *testing.T) {
 		members := []Member{
@@ -320,29 +484,43 @@ func TestATCLU06IndirectProbe(t *testing.T) {
 			if len(r.got) != 1 {
 				tt.Errorf("r received %v after the relay expired, want nothing more", r.got[1:])
 			}
+
+			// r probed another ID of t: the ack of t's process is not sent on.
+			send("r", pingReq{From: r.self, Seq: 43, Target: "t", TargetID: tg.self.ID + 5})
+			if len(tg.got) != 3 {
+				tt.Fatalf("t received %v, want a third ping", tg.got)
+			}
+			p3, _ := tg.got[2].msg.(ping)
+			send("t", ack{From: tg.self, Seq: p3.Seq, Target: "t"})
+			if len(r.got) != 1 {
+				tt.Errorf("r received %v for another ID of t, want nothing more", r.got[1:])
+			}
 			w.RunFor(start.Add(1050 * time.Millisecond).Sub(w.Sim.Now()))
 			probes := c.recs("n1", "probe")
-			if p1.Seq != 1 || p2.Seq != 2 || len(probes) != 1 || attr(probes[0], "seq") != "3" || probes[0].At != start.Add(time.Second) {
-				tt.Errorf("relays with seqs %d and %d, then probes %s, want seqs 1 and 2, then probe seq 3 at 1s", p1.Seq, p2.Seq, describe(probes))
+			if p1.Seq != 1 || p2.Seq != 2 || p3.Seq != 3 || len(probes) != 1 || attr(probes[0], "seq") != "4" || probes[0].At != start.Add(time.Second) {
+				tt.Errorf("relays with seqs %d, %d and %d, then probes %s, want seqs 1 to 3, then probe seq 4 at 1s", p1.Seq, p2.Seq, p3.Seq, describe(probes))
 			}
 		})
 	})
 }
 
-// AT-CLU-07, CLU-240, CLU-300, CLU-800's bound: n5 of five nodes crashes at 3s. Its probes fail,
-// it goes Suspect and SuspicionTimeout later Dead, and every live node has it Dead within
-// D(N) = 2*(N-1)*PI + PT + ST + PI of the crash, at its probed ID and incarnation. No node
-// suspects anyone else, or n5 before the crash, and none probes n5 once it has it Dead.
+// AT-CLU-07, CLU-240, CLU-300, CLU-800's bound: n5 of five nodes crashes at 3s plus an offset
+// below ProbeInterval drawn per seed. Its probes fail, it goes Suspect and SuspicionTimeout later
+// Dead, and every live node has it Dead within D(N) = 2*(N-1)*PI + PT + ST + PI of the crash, at
+// its probed ID and incarnation. Every live node itself probes n5 within two rounds,
+// 2*(N-1)*PI, of the crash, unless it has it Dead by then. No node suspects anyone else, or n5
+// before the crash, and none probes n5 once it has it Dead.
 func TestATCLU07CrashDetection(t *testing.T) {
 	names := []string{"n1", "n2", "n3", "n4", "n5"}
-	const crashAt = 3 * time.Second
-	bound := 2*time.Duration(len(names)-1)*DefaultProbeInterval + DefaultProbeTimeout + DefaultSuspicionTimeout + DefaultProbeInterval
-	sim.Simulate(t, simOpts(5, crashAt+bound+2*time.Second), func(s *sim.Sim) {
+	rounds := 2 * time.Duration(len(names)-1) * DefaultProbeInterval
+	bound := rounds + DefaultProbeTimeout + DefaultSuspicionTimeout + DefaultProbeInterval
+	sim.Simulate(t, simOpts(5, 3*time.Second+DefaultProbeInterval+bound+2*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		c := newSimCluster(s)
 		for _, n := range names {
 			c.node(n, simConfig(names...))
 		}
+		crashAt := 3*time.Second + time.Duration(w.Sim.Rand("cluster/test/crash").Int64N(int64(DefaultProbeInterval)))
 		w.RunFor(crashAt)
 		ids := map[string]uint32{} // read by key
 		for _, n := range names {
@@ -385,10 +563,18 @@ func TestATCLU07CrashDetection(t *testing.T) {
 					tt.Errorf("%s suspected n5 %s without a failed probe then: %s", n, describe(suspect), describe(fails))
 				}
 			}
+			probed := false // n probed n5 within two rounds of the crash
 			for _, r := range c.recs(n, "probe") {
-				if attr(r, "target") == "n5" && r.At > dead[0].At {
+				if attr(r, "target") != "n5" || r.At <= crash {
+					continue
+				}
+				probed = probed || r.At <= crash.Add(rounds)
+				if r.At > dead[0].At {
 					tt.Errorf("%s probed n5 %s after it had it Dead at %s", n, describe([]kernel.Record{r}), dead[0].At)
 				}
+			}
+			if !probed && dead[0].At > crash.Add(rounds) {
+				tt.Errorf("%s did not probe n5 within %s of the crash at %s, and had it Dead only at %s", n, rounds, crash, dead[0].At)
 			}
 			for _, r := range c.recs(n, "probe.indirect") {
 				if attr(r, "target") != "n5" || attr(r, "helpers") != "3" {
@@ -557,28 +743,36 @@ func TestATCLU13TransientCut(t *testing.T) {
 // 2.5s. "incarnation": x goes Suspect at incarnation 0 at 2s and is Alive at incarnation 1 at
 // 2.25s, so the probe of 2s fails at 3s and x goes Suspect at 1. The timer of incarnation 0 fires
 // at 4.5s, while x is Suspect at 1, and does nothing; x goes Dead at 5.5s. "id": x goes Suspect
-// with ID 7 at 2s and is superseded by ID 8 at 2.25s, so the probe of ID 7 fails at 3s without a
-// suspicion, the probe of ID 8 fails at 4s, the timer of ID 7 fires at 4.5s while ID 8 is Suspect
-// at the same incarnation and does nothing, and x goes Dead at 6.5s.
+// with ID 7 at 2s and is superseded by ID 8 at 2.25s, by a message from ID 8 itself, so the probe
+// of ID 7 fails at 3s without a suspicion, the probe of ID 8 fails at 4s, the timer of ID 7 fires
+// at 4.5s while ID 8 is Suspect at the same incarnation and does nothing, and x goes Dead at 6.5s.
+// "hearsay": the same news of ID 8, from another node's Members, supersedes nothing, so ID 7 goes
+// Dead at 4.5s.
 func TestATCLU16StaleSuspicion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		update update // what n1 is told at 2.25s
+		direct bool   // told as the From of a message, else as hearsay in Members
 		want   []string
 	}{
-		{"incarnation", update{Node: "x", ID: 7, Inc: 1, State: Alive}, []string{
+		{"incarnation", update{Node: "x", ID: 7, Inc: 1, State: Alive}, false, []string{
 			"100ms node=x id=7 inc=0 from=none to=alive source=syncresp",
 			"2s node=x id=7 inc=0 from=alive to=suspect source=probe",
 			"2.25s node=x id=7 inc=1 from=suspect to=alive source=syncresp",
 			"3s node=x id=7 inc=1 from=alive to=suspect source=probe",
 			"5.5s node=x id=7 inc=1 from=suspect to=dead source=suspicion",
 		}},
-		{"id", update{Node: "x", ID: 8, State: Alive}, []string{
+		{"id", update{Node: "x", ID: 8, State: Alive}, true, []string{
 			"100ms node=x id=7 inc=0 from=none to=alive source=syncresp",
 			"2s node=x id=7 inc=0 from=alive to=suspect source=probe",
 			"2.25s node=x id=8 inc=0 from=suspect to=alive source=syncresp",
 			"4s node=x id=8 inc=0 from=alive to=suspect source=probe",
 			"6.5s node=x id=8 inc=0 from=suspect to=dead source=suspicion",
+		}},
+		{"hearsay", update{Node: "x", ID: 8, State: Alive}, false, []string{
+			"100ms node=x id=7 inc=0 from=none to=alive source=syncresp",
+			"2s node=x id=7 inc=0 from=alive to=suspect source=probe",
+			"4.5s node=x id=7 inc=0 from=suspect to=dead source=suspicion",
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -590,16 +784,19 @@ func TestATCLU16StaleSuspicion(t *testing.T) {
 				w.RunFor(time.Millisecond)
 				start := c.recs("n1", "start")[0].At
 				n1 := lockstep.PIDAt[memberMsg]("n1", actorPath)
-				tell := func(at time.Duration, u update) {
+				tell := func(at time.Duration, u update, direct bool) {
 					tt.Helper()
 					w.RunFor(start.Add(at).Sub(w.Sim.Now()))
 					msg := syncResp{From: toUpdate(c.view("n1").Self), Members: []update{u}}
+					if direct {
+						msg = syncResp{From: u}
+					}
 					if err := sim.Send(s, "n1", n1, memberMsg(msg)); err != nil {
 						tt.Fatal(err)
 					}
 				}
-				tell(100*time.Millisecond, update{Node: "x", ID: 7, State: Alive})
-				tell(2250*time.Millisecond, tc.update)
+				tell(100*time.Millisecond, update{Node: "x", ID: 7, State: Alive}, false)
+				tell(2250*time.Millisecond, tc.update, tc.direct)
 				w.RunFor(start.Add(8 * time.Second).Sub(w.Sim.Now()))
 
 				var got []string
