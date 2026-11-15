@@ -23,7 +23,7 @@ func TestATENG10HookUnset(t *testing.T) {
 }
 
 // AT-SIM-32 (the unset half), ENG-210: nothing in this binary initializes package lockstep, so
-// none of the hooks it sets is set: SIM's, SFT's, PER's, OBS's and REM's.
+// none of the hooks it sets is set: SIM's, SFT's, PER's, OBS's, REM's and CLU's.
 func TestHooksUnset(t *testing.T) {
 	if hooks.Discard != nil {
 		t.Error("hooks.Discard != nil without package lockstep")
@@ -67,6 +67,20 @@ func TestHooksUnset(t *testing.T) {
 		if set {
 			t.Errorf("hooks.%s != nil without package lockstep (REM §4.3)", name)
 		}
+	}
+	for name, set := range map[string]bool{
+		"SystemSpawner": hooks.SystemSpawner != nil,
+		"NodeDown":      hooks.NodeDown != nil,
+		"NodeUp":        hooks.NodeUp != nil,
+		"EngineAddress": hooks.EngineAddress != nil,
+	} {
+		if set {
+			t.Errorf("hooks.%s != nil without package lockstep (CLU §4.1)", name)
+		}
+	}
+	// ValidNodeName is a plain function, usable without package lockstep.
+	if !hooks.ValidNodeName("n1") || hooks.ValidNodeName("") {
+		t.Error("hooks.ValidNodeName disagrees with engine.ValidNodeName")
 	}
 	if got := (hooks.PendingAsk{}); got.ByActor || got.Ask != (engine.Address{}) {
 		t.Errorf("zero PendingAsk = %+v", got)

@@ -18,10 +18,13 @@ import (
 // the signal is delivered with reason NoActor. A path address (PIDAt) watches the actor
 // registered at its path at the time of the call. An address on another node is watched through
 // the system's transport, which delivers the Terminated when that actor stops, or with a Failed
-// reason when its node restarts. Errors: ErrNotFound for the zero address and guardian
-// addresses; ErrNotLocal for an address on another node when the system has no transport;
-// ErrStopped when the calling actor is stopping or restarting (inside a restart's Stopped too);
-// the transport's error, wrapped, when it cannot take the watch of an address on another node.
+// reason when its node restarts. While cluster membership reports the node of addr down, the
+// Terminated is delivered at once with a Failed reason and nothing goes to the transport.
+//
+// Errors: ErrNotFound for the zero address and guardian addresses; ErrNotLocal for an address on
+// another node when the system has no transport; ErrStopped when the calling actor is stopping or
+// restarting (inside a restart's Stopped too); the transport's error, wrapped, when it cannot take
+// the watch of an address on another node.
 func Watch[M any](ctx *Context[M], addr Address) error {
 	// ACT-600's checks, in its order.
 	ctx.mustInTurn()
@@ -74,13 +77,24 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 // set and the system's outgoing watches under seq, and tr gets a RemoteWatch envelope from the
 // watcher to addr carrying seq. A Deliver error takes addr out again and is returned wrapped, with
 // no record; otherwise lockstep.watch is recorded with alive=remote. The Terminated comes back with
-// seq, through Host.Inbound (remoteTerminated) or hooks.WatchesDown.
+// seq, through Host.Inbound (remoteTerminated), hooks.WatchesDown or hooks.NodeDown.
+//
+// When hooks.NodeDown has marked addr's node down (CLU §4.1), addr joins the watched set under seq
+// but not the outgoing watches, lockstep.watch is recorded with alive=false, and
+// Terminated{addr, Failed(reason)} is pushed with seq to the watcher's own system queue, as for a
+// local address that is not alive (SUP-335); tr gets nothing.
 func watchRemote[M any](ctx *Context[M], tr engine.Transport, addr Address, seq uint64) error {
 	c := ctx.cell
 	sys := c.sys
 	ctx.watched.add(addr, seq)
-	// Listed before Deliver, so a WatchesDown that runs meanwhile ends this watch too.
-	sys.rwatch.addOut(c.addr, addr, seq)
+	// Listed before Deliver, so a WatchesDown or NodeDown that runs meanwhile ends this watch too.
+	// The mark check is part of the listing, so a NodeDown either finds the watch listed or marks
+	// the node before the check.
+	if reason := sys.rwatch.addOutUnlessDown(c.addr, addr, seq); reason != nil {
+		sys.recordWatch(c.addr, addr, "false")
+		c.pushSystem(signalMsg{sig: Terminated{Addr: addr, Reason: Failed(reason)}, seq: seq}, c)
+		return nil
+	}
 	err := tr.Deliver(engine.Envelope{From: c.addr.engine(), To: addr.engine(), Payload: watchPayload{kind: hooks.RemoteWatch, seq: seq}})
 	if err != nil {
 		ctx.watched.remove(addr)
@@ -292,8 +306,21 @@ func (s *System) remoteTerminated(watcher, watched Address, reason StopReason, s
 // gets Terminated{watched, Failed(err)} with the watch's sequence number, in ascending (watched,
 // watcher) text order.
 func (s *System) watchesDown(node string, err error) {
-	reason := Failed(err)
 	ps, seqs := s.rwatch.downs(node)
+	s.pushWatchesDown(ps, seqs, Failed(err))
+}
+
+// nodeDown is watchesDown followed by marking node down with err (hooks.NodeDown, CLU §4.1): the
+// two are one operation of the outgoing watches, so a Watch of an address on node that runs
+// meanwhile is either ended here or finds the mark (watchRemote).
+func (s *System) nodeDown(node string, err error) {
+	ps, seqs := s.rwatch.markDown(node, err)
+	s.pushWatchesDown(ps, seqs, Failed(err))
+}
+
+// pushWatchesDown pushes Terminated{p.watched, reason} to the watcher of each ps[i] with seqs[i],
+// in order.
+func (s *System) pushWatchesDown(ps []remotePair, seqs []uint64, reason StopReason) {
 	for i, p := range ps {
 		s.pushRemoteTerminated(p, seqs[i], reason)
 	}
@@ -318,12 +345,15 @@ type remotePair struct{ watcher, watched Address }
 // number: the sets belong to turns, and an inbound RemoteTerminated or WatchesDown runs outside
 // them. in holds the watches of actors on other nodes on local actors (hooks.WatchFor), each with
 // the sequence number of its entry on the target's watcher list and the function its end runs.
-// The maps are read by key; only downs ranges over out, and it sorts what it finds. mu is taken
-// before the registry's lock and never while another lock is held.
+// down holds the nodes hooks.NodeDown marked and hooks.NodeUp has not cleared, each with the
+// reason of its last mark (CLU §4.1). The maps are read by key; only downs ranges over out, and it
+// sorts what it finds. mu is taken before the registry's lock and never while another lock is
+// held.
 type remoteWatches struct {
 	mu   sync.Mutex
 	out  map[remotePair]uint64
 	in   map[remotePair]remoteWatcher
+	down map[string]error
 	next uint64 // the sequence number of the last WatchFor registration
 }
 
@@ -333,14 +363,19 @@ type remoteWatcher struct {
 	fn  func(reason any)
 }
 
-// addOut lists watcher's watch of watched under seq.
-func (r *remoteWatches) addOut(watcher, watched Address, seq uint64) {
+// addOutUnlessDown lists watcher's watch of watched under seq and returns nil, unless watched's
+// node is marked down: it then lists nothing and returns the mark's reason.
+func (r *remoteWatches) addOutUnlessDown(watcher, watched Address, seq uint64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if reason, ok := r.down[watched.node]; ok {
+		return reason
+	}
 	if r.out == nil {
 		r.out = make(map[remotePair]uint64)
 	}
 	r.out[remotePair{watcher: watcher, watched: watched}] = seq
+	return nil
 }
 
 // removeOut removes watcher's watch of watched if it is listed under seq.
@@ -365,6 +400,30 @@ func (r *remoteWatches) takeOut(p remotePair, seq uint64) bool {
 func (r *remoteWatches) downs(node string) ([]remotePair, []uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.downsLocked(node)
+}
+
+// markDown marks node down with reason, replacing an earlier mark's reason, and, in the same
+// operation, removes and returns what downs does.
+func (r *remoteWatches) markDown(node string, reason error) ([]remotePair, []uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.down == nil {
+		r.down = make(map[string]error)
+	}
+	r.down[node] = reason
+	return r.downsLocked(node)
+}
+
+// markUp clears node's down mark, if it has one.
+func (r *remoteWatches) markUp(node string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.down, node)
+}
+
+// downsLocked is downs with r.mu held.
+func (r *remoteWatches) downsLocked(node string) ([]remotePair, []uint64) {
 	var ps []remotePair
 	for p := range r.out { //lockstep:maporder the pairs are sorted below
 		if p.watched.node == node {
