@@ -99,7 +99,7 @@ func (p *syncProbe) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 		}
 	case syncResp:
 		*p.got = append(*p.got, m)
-	case update, ping, pingReq, ack, syncReq, leave, syncTick, reapTimer:
+	case update, ping, pingReq, ack, syncReq, leave, syncTick, reapTimer, probeTick, probeTimeout, relayExpire, suspectTimeout:
 		// The probe ignores every other message.
 	}
 }
