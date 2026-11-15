@@ -208,6 +208,63 @@ pkg github.com/hmdsefi/lockstep, var NoActor StopReason
 pkg github.com/hmdsefi/lockstep, var Normal StopReason
 pkg github.com/hmdsefi/lockstep, var ParentStopping StopReason
 pkg github.com/hmdsefi/lockstep, var Shutdown StopReason
+pkg github.com/hmdsefi/lockstep/cluster, const Alive = 1
+pkg github.com/hmdsefi/lockstep/cluster, const Alive MemberState
+pkg github.com/hmdsefi/lockstep/cluster, const Dead = 3
+pkg github.com/hmdsefi/lockstep/cluster, const Dead MemberState
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultDeadRetention = 60000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultDeadRetention time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultIndirectProbes = 3
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultIndirectProbes ideal-int
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultJoinRetryInterval = 1000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultJoinRetryInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultMaxPiggyback = 8
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultMaxPiggyback ideal-int
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultProbeInterval = 1000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultProbeInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultProbeTimeout = 500000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultProbeTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultRetransmitMult = 4
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultRetransmitMult ideal-int
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultSuspicionTimeout = 5000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultSuspicionTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultSyncInterval = 30000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultSyncInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const Left = 4
+pkg github.com/hmdsefi/lockstep/cluster, const Left MemberState
+pkg github.com/hmdsefi/lockstep/cluster, const Suspect = 2
+pkg github.com/hmdsefi/lockstep/cluster, const Suspect MemberState
+pkg github.com/hmdsefi/lockstep/cluster, func DefaultConfig() Config
+pkg github.com/hmdsefi/lockstep/cluster, method (*Config) Validate() error
+pkg github.com/hmdsefi/lockstep/cluster, method (*View) Member(string) (Member, bool)
+pkg github.com/hmdsefi/lockstep/cluster, method (*View) Up() []Member
+pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) String() string
+pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) Up() bool
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, DeadRetention time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, IndirectProbes int
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, JoinRetryInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, MaxPiggyback int
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, ProbeInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, ProbeTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, RetransmitMult int
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Seeds []string
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SuspicionTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SyncInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Member struct
+pkg github.com/hmdsefi/lockstep/cluster, type Member struct, ID uint32
+pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Incarnation uint64
+pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Node string
+pkg github.com/hmdsefi/lockstep/cluster, type Member struct, State MemberState
+pkg github.com/hmdsefi/lockstep/cluster, type MemberState uint8
+pkg github.com/hmdsefi/lockstep/cluster, type View struct
+pkg github.com/hmdsefi/lockstep/cluster, type View struct, Members []Member
+pkg github.com/hmdsefi/lockstep/cluster, type View struct, Self Member
+pkg github.com/hmdsefi/lockstep/cluster, type View struct, Version uint64
+pkg github.com/hmdsefi/lockstep/cluster, var ErrAlreadyJoined error
+pkg github.com/hmdsefi/lockstep/cluster, var ErrInvalidConfig error
+pkg github.com/hmdsefi/lockstep/cluster, var ErrLeft error
+pkg github.com/hmdsefi/lockstep/cluster, var ErrNodeDown error
 pkg github.com/hmdsefi/lockstep/codec, func Default() *Registry
 pkg github.com/hmdsefi/lockstep/codec, func NewRegistry() *Registry
 pkg github.com/hmdsefi/lockstep/codec, func RegisterIn[T any](*Registry, string)
