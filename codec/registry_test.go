@@ -265,7 +265,14 @@ func TestATCOD03Names(t *testing.T) {
 		// The reserved prefix: exactly "lockstep.", compared byte for byte.
 		{"lockstep.x", reserved},
 		{"lockstep.", reserved},
-		{"lockstep.cluster.Join", reserved},
+		{"lockstep.cluster", reserved},
+		{"lockstep.clusterx", reserved},
+		{"lockstep.cluster_x", reserved},
+		{"Lockstep.cluster.x", ""},
+		// The one open prefix: "lockstep.cluster.", compared byte for byte.
+		{"lockstep.cluster.x", ""},
+		{"lockstep.cluster.", ""},
+		{"lockstep.cluster.Join", ""},
 		{"lockstep", ""},
 		{"lockstepx", ""},
 		{"lockstep_x", ""},

@@ -15,8 +15,12 @@ import (
 const (
 	// maxNameLen is the longest wire name, in bytes (COD-010).
 	maxNameLen = 255
-	// reservedPrefix starts the names of the built-in types; RegisterIn rejects it (COD-010).
+	// reservedPrefix starts the names of the built-in types; RegisterIn rejects it, except for the
+	// names that start with openPrefix (COD-010).
 	reservedPrefix = "lockstep."
+	// openPrefix starts the wire names of lockstep's own packages; RegisterIn accepts it although
+	// it also starts with reservedPrefix (COD-010).
+	openPrefix = "lockstep.cluster."
 	// zeroRegistry is the panic of every method called on a zero Registry, which has no maps and
 	// no built-ins. RegisterIn checks it right after its nil-registry row.
 	zeroRegistry = "codec: zero Registry; use NewRegistry"
@@ -79,7 +83,7 @@ func Register[T any](name string) { RegisterIn[T](defaultRegistry, name) }
 
 // RegisterIn registers type T under the wire name name in r. Registering a name and type that r
 // already holds together does nothing. RegisterIn panics, checking in this order, if r is nil,
-// if r is a zero Registry rather than one from NewRegistry, if name is not a valid wire name, if name starts with the reserved "lockstep.", if T is an
+// if r is a zero Registry rather than one from NewRegistry, if name is not a valid wire name, if name is reserved (it starts with "lockstep." but not with "lockstep.cluster."), if T is an
 // interface type, if name is held by another type, or if T is held under another name.
 func RegisterIn[T any](r *Registry, name string) {
 	if r == nil {
@@ -96,7 +100,7 @@ func (r *Registry) register(name string, t reflect.Type) {
 	if !validName(name) {
 		panic(fmt.Sprintf("codec: invalid wire name %q", name))
 	}
-	if strings.HasPrefix(name, reservedPrefix) {
+	if strings.HasPrefix(name, reservedPrefix) && !strings.HasPrefix(name, openPrefix) {
 		panic(fmt.Sprintf("codec: wire name %q is reserved", name))
 	}
 	if t.Kind() == reflect.Interface {
