@@ -46,10 +46,12 @@ func (a nodePlainActor) Receive(_ *lockstep.Context[any], m any) {
 // engine.ValidNodeName. EngineAddress converts a lockstep.Address and panics for anything else.
 func TestClusterHooksSet(t *testing.T) {
 	for name, set := range map[string]bool{
-		"SystemSpawner": hooks.SystemSpawner != nil,
-		"NodeDown":      hooks.NodeDown != nil,
-		"NodeUp":        hooks.NodeUp != nil,
-		"EngineAddress": hooks.EngineAddress != nil,
+		"SystemSpawner":  hooks.SystemSpawner != nil,
+		"NodeDown":       hooks.NodeDown != nil,
+		"NodeUp":         hooks.NodeUp != nil,
+		"EngineAddress":  hooks.EngineAddress != nil,
+		"ClaimCluster":   hooks.ClaimCluster != nil,
+		"ReleaseCluster": hooks.ReleaseCluster != nil,
 	} {
 		if !set {
 			t.Errorf("hooks.%s is nil after package lockstep's init", name)
@@ -76,6 +78,38 @@ func TestClusterHooksSet(t *testing.T) {
 // AT-MSG-32 (Phase 3 assertions): NodeDown and NodeUp are Signals. Queued with hooks.Signal they
 // reach an actor with SignalReceiver only in Signal, as they are and in order, also when its
 // mailbox is full; an actor without SignalReceiver ignores them, and neither Receive gets them.
+// CLU §4.1, CLU-020: ClaimCluster reports true once per System and false after, also when many
+// goroutines claim at once; ReleaseCluster clears the mark; each System has its own mark; both
+// hooks panic on a sys that is not a *System.
+func TestClaimCluster(t *testing.T) {
+	a, b := newProdSystem(t, lockstep.WithNodeName("n1")), newProdSystem(t, lockstep.WithNodeName("n2"))
+	if !hooks.ClaimCluster(a) || hooks.ClaimCluster(a) {
+		t.Error("ClaimCluster of a = first true, then false: not so")
+	}
+	if !hooks.ClaimCluster(b) {
+		t.Error("ClaimCluster of b after a's claim = false, want true: each System has its own mark")
+	}
+	hooks.ReleaseCluster(a)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	won := 0
+	for range 16 {
+		wg.Go(func() {
+			if hooks.ClaimCluster(a) {
+				mu.Lock()
+				won++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if won != 1 {
+		t.Errorf("%d of 16 concurrent claims after ReleaseCluster won, want 1", won)
+	}
+	panicsWith(t, "lockstep: hooks.ClaimCluster: sys has type <nil>, want a non-nil *lockstep.System", func() { hooks.ClaimCluster(nil) })
+	panicsWith(t, "lockstep: hooks.ReleaseCluster: sys has type int, want a non-nil *lockstep.System", func() { hooks.ReleaseCluster(1) })
+}
+
 func TestATMSG32NodeSignals(t *testing.T) {
 	var _ lockstep.Signal = lockstep.NodeDown{}
 	var _ lockstep.Signal = lockstep.NodeUp{}

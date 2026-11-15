@@ -242,7 +242,9 @@ pkg github.com/hmdsefi/lockstep/cluster, const Left MemberState
 pkg github.com/hmdsefi/lockstep/cluster, const Suspect = 2
 pkg github.com/hmdsefi/lockstep/cluster, const Suspect MemberState
 pkg github.com/hmdsefi/lockstep/cluster, func DefaultConfig() Config
+pkg github.com/hmdsefi/lockstep/cluster, func Join(*lockstep.System, Config) (*Membership, error)
 pkg github.com/hmdsefi/lockstep/cluster, method (*Config) Validate() error
+pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) View() *View
 pkg github.com/hmdsefi/lockstep/cluster, method (*View) Member(string) (Member, bool)
 pkg github.com/hmdsefi/lockstep/cluster, method (*View) Up() []Member
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) String() string
@@ -264,6 +266,7 @@ pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Incarnation uint64
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Node string
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, State MemberState
 pkg github.com/hmdsefi/lockstep/cluster, type MemberState uint8
+pkg github.com/hmdsefi/lockstep/cluster, type Membership struct
 pkg github.com/hmdsefi/lockstep/cluster, type View struct
 pkg github.com/hmdsefi/lockstep/cluster, type View struct, Members []Member
 pkg github.com/hmdsefi/lockstep/cluster, type View struct, Self Member

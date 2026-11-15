@@ -38,6 +38,9 @@ type System struct {
 	// logging calls; only AT-OBS-06 sets it.
 	events *slog.Logger
 	logOff atomic.Bool
+	// clusterJoined is set when package cluster joined the system to a cluster (CLU-020), through
+	// hooks.ClaimCluster; hooks.ReleaseCluster clears it when that Join failed.
+	clusterJoined atomic.Bool
 	// obs holds the counters New registered with WithMetrics's backend (OBS-120); nil when the
 	// system has metrics off and for one built on a given bundle, which never counts (OBS-110,
 	// OBS-155). Set before New returns and never changed.

@@ -19,4 +19,20 @@
 // Config.Validate fills in the defaults of a partly set Config and checks it; every validation
 // error wraps ErrInvalidConfig. The members a node knows are published as a View: an immutable
 // snapshot of the member table, sorted by node name.
+//
+// Join makes a System a member: it starts the system actor /system/cluster, which joins through
+// the seeds, and returns a Membership whose View method returns the latest view without
+// messaging the actor:
+//
+//	m, err := cluster.Join(sys, cluster.Config{Seeds: []string{"n1", "n2"}})
+//	if err != nil {
+//		return err
+//	}
+//	for _, member := range m.View().Up() {
+//		fmt.Println(member.Node)
+//	}
+//
+// Members send each other their whole member tables when a node joins, every SyncInterval to one
+// member chosen at random, and to every dead member and every seed that is not up, so that the
+// two sides of a healed partition learn of each other.
 package cluster

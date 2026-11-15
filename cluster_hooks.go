@@ -70,3 +70,14 @@ func engineAddressHook(addr any) engine.Address {
 	}
 	return a.engine()
 }
+
+// claimClusterHook is hooks.ClaimCluster (CLU-020): it marks sys joined and reports whether this
+// call set the mark.
+func claimClusterHook(sys any) bool {
+	return hookSystem("ClaimCluster", sys).clusterJoined.CompareAndSwap(false, true)
+}
+
+// releaseClusterHook is hooks.ReleaseCluster (CLU-020): it clears the mark of a failed Join.
+func releaseClusterHook(sys any) {
+	hookSystem("ReleaseCluster", sys).clusterJoined.Store(false)
+}
