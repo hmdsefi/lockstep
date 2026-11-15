@@ -88,3 +88,17 @@ func LockLiveIndex(sys *System) (unlock func()) {
 	sys.live.mu.Lock()
 	return sys.live.mu.Unlock
 }
+
+// DownNodes returns the nodes hooks.NodeDown has marked down on sys and hooks.NodeUp has not
+// cleared, sorted (CLU §4.1), for the external tests.
+func DownNodes(sys *System) []string {
+	r := &sys.rwatch
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.down))
+	for n := range r.down { //lockstep:maporder sorted below
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}

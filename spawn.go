@@ -72,7 +72,8 @@ func (c *spawnConfig) mailbox(def mailboxConfig) mailboxConfig {
 	return def
 }
 
-// spawnParent is what Spawn needs from a Spawner; exactly *System and *Context[X] implement it.
+// spawnParent is what Spawn needs from a Spawner; exactly *System, *Context[X] and systemSpawner
+// (hooks.SystemSpawner) implement it.
 type spawnParent interface {
 	Spawner
 	// nilSpawner reports whether the receiver is a nil pointer (ACT-200).
@@ -125,13 +126,10 @@ func Spawn[M any](parent Spawner, name string, factory func() Actor[M], opts ...
 }
 
 // spawnSystem spawns a child of the system guardian, under /system (ACT-030). Only lockstep's own
-// packages spawn there; no exported API does. It is a reserve spawn (OVL §3).
+// packages spawn there, through hooks.SystemSpawner's Spawner, which this spawns with; no exported
+// API does. It is a reserve spawn (OVL §3).
 func spawnSystem[M any](sys *System, name string, factory func() Actor[M], opts ...SpawnOption) (PID[M], error) {
-	cfg := newSpawnConfig(opts)
-	if factory == nil {
-		panic("lockstep: Spawn with nil factory")
-	}
-	return spawn(sys, sys.system, nil, false, false, name, factory, cfg)
+	return Spawn(systemSpawner{sys: sys}, name, factory, opts...)
 }
 
 // spawn runs ACT-300 from step 3 on: it checks the name, the options, the system's and the

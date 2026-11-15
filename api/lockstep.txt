@@ -149,6 +149,13 @@ pkg github.com/hmdsefi/lockstep, type MetricLabel struct, Value string
 pkg github.com/hmdsefi/lockstep, type Metrics interface { Counter, GaugeFunc }
 pkg github.com/hmdsefi/lockstep, type Metrics interface, Counter(string, string, ...MetricLabel) Counter
 pkg github.com/hmdsefi/lockstep, type Metrics interface, GaugeFunc(string, string, func() int64, ...MetricLabel)
+pkg github.com/hmdsefi/lockstep, type NodeDown struct
+pkg github.com/hmdsefi/lockstep, type NodeDown struct, ID uint32
+pkg github.com/hmdsefi/lockstep, type NodeDown struct, Left bool
+pkg github.com/hmdsefi/lockstep, type NodeDown struct, Node string
+pkg github.com/hmdsefi/lockstep, type NodeUp struct
+pkg github.com/hmdsefi/lockstep, type NodeUp struct, ID uint32
+pkg github.com/hmdsefi/lockstep, type NodeUp struct, Node string
 pkg github.com/hmdsefi/lockstep, type Option func(*systemConfig)
 pkg github.com/hmdsefi/lockstep, type OverloadReason uint8
 pkg github.com/hmdsefi/lockstep, type Overloaded struct

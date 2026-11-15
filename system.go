@@ -124,7 +124,8 @@ type System struct {
 }
 
 // Spawner is a parent for Spawn. It is implemented only by *System (the user guardian is the
-// parent) and *Context[X] for any X (that actor is the parent).
+// parent), *Context[X] for any X (that actor is the parent), and the Spawner of system actors
+// that lockstep's own packages use.
 type Spawner interface {
 	spawner() // unexported: no other implementations
 }

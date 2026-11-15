@@ -6,7 +6,8 @@ package lockstep
 import "github.com/hmdsefi/lockstep/internal/supervise"
 
 // Signal is a notification from lockstep itself, delivered through SignalReceiver[M].Signal and
-// never as an M. It is implemented only by Terminated, ChildFailed and Overloaded.
+// never as an M. It is implemented only by Terminated, ChildFailed, Overloaded, NodeDown and
+// NodeUp.
 type Signal interface {
 	signal() // unexported: no other implementations
 }
