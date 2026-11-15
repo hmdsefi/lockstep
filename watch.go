@@ -82,7 +82,8 @@ func Watch[M any](ctx *Context[M], addr Address) error {
 // When hooks.NodeDown has marked addr's node down (CLU §4.1), addr joins the watched set under seq
 // but not the outgoing watches, lockstep.watch is recorded with alive=false, and
 // Terminated{addr, Failed(reason)} is pushed with seq to the watcher's own system queue, as for a
-// local address that is not alive (SUP-335); tr gets nothing.
+// local address that is not alive (SUP-335); tr gets nothing. The entry is marked as resolved
+// locally, so neither Unwatch nor the end of the incarnation hands tr a RemoteUnwatch for it.
 func watchRemote[M any](ctx *Context[M], tr engine.Transport, addr Address, seq uint64) error {
 	c := ctx.cell
 	sys := c.sys
@@ -91,6 +92,7 @@ func watchRemote[M any](ctx *Context[M], tr engine.Transport, addr Address, seq 
 	// The mark check is part of the listing, so a NodeDown either finds the watch listed or marks
 	// the node before the check.
 	if reason := sys.rwatch.addOutUnlessDown(c.addr, addr, seq); reason != nil {
+		ctx.watched.markLocal(addr)
 		sys.recordWatch(c.addr, addr, "false")
 		c.pushSystem(signalMsg{sig: Terminated{Addr: addr, Reason: Failed(reason)}, seq: seq}, c)
 		return nil
@@ -111,14 +113,19 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 	// An address that is not in the watched set, the zero address among them, is a no-op
 	// (ACT-630).
 	seq, _ := ctx.watched.seq(addr)
+	local := ctx.watched.resolvedLocally(addr)
 	if !ctx.watched.remove(addr) {
 		return
 	}
 	c := ctx.cell
 	if addr.node != c.sys.node {
 		// ACT-630: the transport gets a RemoteUnwatch. A Deliver error changes nothing: the watch
-		// has left the set, so a Terminated that still comes is skipped.
-		c.sys.unwatchRemote(c.addr, addr, seq)
+		// has left the set, so a Terminated that still comes is skipped. A watch that a down mark
+		// resolved (CLU §4.1) never reached the transport, so it gets none, whether or not the
+		// mark is still set.
+		if !local {
+			c.sys.unwatchRemote(c.addr, addr, seq)
+		}
 		c.sys.recordUnwatch(c.addr, addr)
 		return
 	}
@@ -166,12 +173,28 @@ func (s *System) registryWatchers(addr Address) []Address {
 // watchedSet is an incarnation's watched set (ACT-600, ACT §11): the addresses it passed to Watch
 // whose Terminated it has not received, in insertion order, each with the sequence number of the
 // Watch call that added it (ACT-630). The slice keeps the order for Phase 3's RemoteUnwatch pass
-// (ACT-640); the map answers lookups only and is never ranged over. Only turns of the owning
-// incarnation touch it, so it needs no lock. A new incarnation has a new Context and so an empty
-// set.
+// (ACT-640); the maps answer lookups only and are never ranged over. local holds the entries on
+// other nodes that a down mark resolved without the transport (watchRemote, CLU §4.1), for which
+// no RemoteUnwatch is due. Only turns of the owning incarnation touch it, so it needs no lock. A
+// new incarnation has a new Context and so an empty set.
 type watchedSet struct {
-	list []Address
-	in   map[Address]uint64
+	list  []Address
+	in    map[Address]uint64
+	local map[Address]struct{}
+}
+
+// markLocal marks the entry of a as resolved without the transport.
+func (w *watchedSet) markLocal(a Address) {
+	if w.local == nil {
+		w.local = make(map[Address]struct{})
+	}
+	w.local[a] = struct{}{}
+}
+
+// resolvedLocally reports whether the entry of a is marked as resolved without the transport.
+func (w *watchedSet) resolvedLocally(a Address) bool {
+	_, ok := w.local[a]
+	return ok
 }
 
 // has reports whether a is in the set.
@@ -219,6 +242,7 @@ func (w *watchedSet) remove(a Address) bool {
 		return false
 	}
 	delete(w.in, a)
+	delete(w.local, a)
 	if i := indexNearEnds(w.list, func(x Address) bool { return x == a }); i >= 0 {
 		w.list = slices.Delete(w.list, i, i+1)
 	}
@@ -279,10 +303,11 @@ func (s *System) unwatchRemote(watcher, addr Address, seq uint64) {
 
 // unwatchAllRemote ends, in insertion order, the watches in w, the watched set of watcher's ending
 // incarnation, of addresses on another node (ACT-640): one RemoteUnwatch each, and no record, as
-// the incarnation's local watches leave their lists without one (endIncarnationWork).
+// the incarnation's local watches leave their lists without one (endIncarnationWork). A watch that
+// a down mark resolved never reached the transport and gets none (CLU §4.1).
 func (s *System) unwatchAllRemote(watcher Address, w *watchedSet) {
 	for _, a := range w.list {
-		if a.node != s.node {
+		if a.node != s.node && !w.resolvedLocally(a) {
 			seq, _ := w.seq(a)
 			s.unwatchRemote(watcher, a, seq)
 		}
@@ -346,8 +371,8 @@ type remotePair struct{ watcher, watched Address }
 // them. in holds the watches of actors on other nodes on local actors (hooks.WatchFor), each with
 // the sequence number of its entry on the target's watcher list and the function its end runs.
 // down holds the nodes hooks.NodeDown marked and hooks.NodeUp has not cleared, each with the
-// reason of its last mark (CLU §4.1). The maps are read by key; only downs ranges over out, and it
-// sorts what it finds. mu is taken before the registry's lock and never while another lock is
+// reason of its last mark (CLU §4.1). The maps are read by key; only downsLocked ranges over out,
+// and it sorts what it finds. mu is taken before the registry's lock and never while another lock is
 // held.
 type remoteWatches struct {
 	mu   sync.Mutex
