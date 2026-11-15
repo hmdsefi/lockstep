@@ -7,9 +7,10 @@ import "github.com/hmdsefi/lockstep/internal/engine"
 
 // The declarations below are CLU §4.1: they let package cluster, which may import only lockstep,
 // codec and internal/hooks (DET-080), spawn under the system guardian, end the death watches of a
-// down node and convert addresses for Signal. Package lockstep sets the four hooks in its init
-// function (ENG-210); each is nil until package lockstep is initialized. Called by cluster;
-// implemented by ACT. Every sys is a *lockstep.System, and a hook panics if it has another type.
+// down node, convert addresses for Signal and mark a system joined. Package lockstep sets the six
+// hooks in its init function (ENG-210); each is nil until package lockstep is initialized. Called
+// by cluster; implemented by ACT. Every sys is a *lockstep.System, and a hook panics if it has
+// another type.
 
 // SystemSpawner returns a lockstep.Spawner (as any) whose children live under /system of sys: they
 // are spawned as ACT-030's internal spawnSystem spawns them (parent the system guardian, a reserve
@@ -30,6 +31,16 @@ var NodeUp func(sys any, node string)
 // EngineAddress returns addr, a lockstep.Address, as an engine.Address, so that packages that may
 // not import internal/engine can call Signal. It panics if addr has another type.
 var EngineAddress func(addr any) engine.Address
+
+// ClaimCluster marks sys as joined to a cluster and reports true the first time it is called for
+// sys, and false on every later call: the mark is never cleared except by ReleaseCluster, so a
+// second Join fails also after the node left or the membership actor stopped (CLU-020). It is
+// atomic, so of two concurrent calls exactly one reports true.
+var ClaimCluster func(sys any) bool
+
+// ReleaseCluster clears the mark ClaimCluster set on sys. Package cluster calls it only when the
+// Join that claimed sys failed to spawn the membership actor (CLU-020).
+var ReleaseCluster func(sys any)
 
 // ValidNodeName is engine.ValidNodeName, for packages that may not import internal/engine: it
 // reports whether name is a valid node name (ACT-020).

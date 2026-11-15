@@ -41,6 +41,8 @@ func init() {
 	hooks.NodeDown = nodeDownHook
 	hooks.NodeUp = nodeUpHook
 	hooks.EngineAddress = engineAddressHook
+	hooks.ClaimCluster = claimClusterHook
+	hooks.ReleaseCluster = releaseClusterHook
 }
 
 // buildSystem is hooks.NewSystem (ENG-200): it builds a system on eng with the options in opts,

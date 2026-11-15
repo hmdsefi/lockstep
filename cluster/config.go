@@ -6,6 +6,8 @@ package cluster
 import (
 	"fmt"
 	"time"
+
+	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
 // Defaults filled in for the zero fields of a Config.
@@ -85,7 +87,7 @@ func (c *Config) Validate() error {
 	}
 	seen := make(map[string]struct{}, len(c.Seeds))
 	for _, s := range c.Seeds {
-		if !validNodeName(s) {
+		if !hooks.ValidNodeName(s) {
 			return invalid("Seeds", "seed %q is not a valid node name", s)
 		}
 		if _, dup := seen[s]; dup {
@@ -149,24 +151,4 @@ func (c *Config) applyDefaults() {
 	if c.DeadRetention == 0 {
 		c.DeadRetention = d.DeadRetention
 	}
-}
-
-// validNodeName reports whether name is a valid node name: 1 to 64 bytes from [A-Za-z0-9._-],
-// starting with a letter or digit. It is a copy of engine.ValidNodeName (ACT-020), which cluster
-// may not import; it is replaced by hooks.ValidNodeName once internal/hooks/cluster.go (3.3-01)
-// is on main.
-func validNodeName(name string) bool {
-	if len(name) < 1 || len(name) > 64 {
-		return false
-	}
-	for i := range len(name) {
-		b := name[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		case i > 0 && (b == '.' || b == '_' || b == '-'):
-		default:
-			return false
-		}
-	}
-	return true
 }
