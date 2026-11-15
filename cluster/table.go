@@ -24,7 +24,7 @@ type change struct {
 	Node       string
 	ID         uint32
 	Inc        uint64
-	From, To   MemberState // From is 0 ("none") for an addition
+	From, To   MemberState // From is 0 for an addition, which the member record prints as "none"
 	OldID      uint32      // the replaced ID when Superseded
 	Superseded bool
 	Source     string // where the update came from (CLU-410), or "self"

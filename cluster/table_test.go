@@ -31,20 +31,56 @@ func mustApply(t *testing.T, tb *table, u Member, now time.Time) change {
 	return c
 }
 
-// mustIgnore applies u and fails unless it was ignored and left the table as it was.
+// snapshot returns a deep copy of the table, retired IDs included.
+func snapshot(tb *table) table {
+	s := *tb
+	s.recs = slices.Clone(tb.recs)
+	for i := range s.recs {
+		s.recs[i].retired = slices.Clone(s.recs[i].retired)
+	}
+	return s
+}
+
+// sameTable reports whether a and b hold the same records, retired IDs and tombstone counters.
+func sameTable(a, b *table) bool {
+	if len(a.recs) != len(b.recs) || a.tombs != b.tombs || a.tombSeq != b.tombSeq {
+		return false
+	}
+	for i := range a.recs {
+		x, y := &a.recs[i], &b.recs[i]
+		if x.m != y.m || x.tomb != y.tomb || x.tombSeq != y.tombSeq || !x.changed.Equal(y.changed) ||
+			!slices.Equal(x.retired, y.retired) {
+			return false
+		}
+	}
+	return true
+}
+
+// mustIgnore applies u and fails unless it was ignored and left the table as it was, retired IDs
+// and tombstones included.
 func mustIgnore(t *testing.T, tb *table, u Member, now time.Time) {
 	t.Helper()
-	before := slices.Clone(tb.recs)
+	before := snapshot(tb)
 	if c, res := tb.Apply(u, "test", now); res != applyIgnored || c != (change{}) {
 		t.Fatalf("Apply(%+v) = %+v, %v, want ignored", u, c, res)
 	}
-	if len(before) != len(tb.recs) {
-		t.Fatalf("Apply(%+v) changed the table: %+v, was %+v", u, tb.recs, before)
+	if !sameTable(&before, tb) {
+		t.Fatalf("Apply(%+v) changed the table: %+v, was %+v", u, *tb, before)
 	}
-	for i := range before {
-		if before[i].m != tb.recs[i].m || before[i].tomb != tb.recs[i].tomb || !before[i].changed.Equal(tb.recs[i].changed) {
-			t.Fatalf("Apply(%+v) changed the table: %+v, was %+v", u, tb.recs, before)
-		}
+}
+
+// mustRetireOnly applies u, an up update about the own name with another ID, and fails unless it
+// was ignored and changed nothing but retiring u.ID.
+func mustRetireOnly(t *testing.T, tb *table, u Member, now time.Time) {
+	t.Helper()
+	before := snapshot(tb)
+	if c, res := tb.Apply(u, "test", now); res != applyIgnored || c != (change{}) {
+		t.Fatalf("Apply(%+v) = %+v, %v, want ignored", u, c, res)
+	}
+	want := snapshot(&before)
+	want.own().retire(u.ID)
+	if !sameTable(&want, tb) {
+		t.Fatalf("Apply(%+v) left %+v, want %+v", u, *tb, want)
 	}
 }
 
@@ -230,6 +266,9 @@ func TestATCLU08Precedence(t *testing.T) {
 					if tb.tombs != 0 || tb.Len() != 2 {
 						t.Fatalf("restore left tombs=%d len=%d", tb.tombs, tb.Len())
 					}
+					if i, _ := tb.find("x"); !tb.recs[i].changed.Equal(now) {
+						t.Fatalf("restore left changed = %v, want %v", tb.recs[i].changed, now)
+					}
 				})
 			}
 		}
@@ -357,9 +396,9 @@ func TestATCLU09Identity(t *testing.T) {
 		if got := retiredIDs(tb, "self"); len(got) != 0 {
 			t.Fatalf("retired = %v, want none", got)
 		}
-		mustIgnore(t, tb, m("self", 7, 9, Suspect), t0)
-		mustIgnore(t, tb, m("self", 8, 0, Alive), t0)
-		mustIgnore(t, tb, m("self", 7, 10, Alive), t0)
+		mustRetireOnly(t, tb, m("self", 7, 9, Suspect), t0)
+		mustRetireOnly(t, tb, m("self", 8, 0, Alive), t0)
+		mustIgnore(t, tb, m("self", 7, 10, Alive), t0) // already retired: nothing changes
 		if got := retiredIDs(tb, "self"); !slices.Equal(got, []uint32{7, 8}) {
 			t.Fatalf("retired = %v, want [7 8]", got)
 		}

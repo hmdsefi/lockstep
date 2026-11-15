@@ -53,6 +53,21 @@ func TestConfigValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("limits against defaults", func(t *testing.T) {
+		for _, c := range []struct {
+			pi   time.Duration
+			want string
+		}{
+			{6 * time.Second, "cluster: invalid config: SuspicionTimeout: 5s is less than ProbeInterval 6s"},
+			{500 * time.Millisecond, "cluster: invalid config: ProbeTimeout: 500ms is not less than ProbeInterval 500ms"},
+		} {
+			cfg := Config{ProbeInterval: c.pi}
+			if err := cfg.Validate(); err == nil || err.Error() != c.want {
+				t.Errorf("Validate(ProbeInterval %s) = %v, want %q", c.pi, err, c.want)
+			}
+		}
+	})
+
 	// The rows of CLU-010 in order. Each case breaks its row only; the "first row wins" cases
 	// below break two rows at once.
 	long := strings.Repeat("n", 65)

@@ -23,6 +23,11 @@ const (
 
 // Config configures cluster membership on one node. A zero field means its default; a negative
 // one is invalid. Validate applies the defaults.
+//
+// Validate checks the fields after the defaults are filled in, so the limits between fields hold
+// against the defaults of the fields left zero. Setting only ProbeInterval to more than the default
+// SuspicionTimeout (5s), or to no more than the default ProbeTimeout (500ms), fails; set the
+// related fields together.
 type Config struct {
 	// Seeds names the nodes to join the cluster through, and may include this node. Empty means a
 	// cluster of one, which other nodes may join.
