@@ -34,7 +34,8 @@
 // A wire name is 1 to 255 bytes long. Its first byte is an ASCII letter; the rest are ASCII
 // letters, digits, '.', '_', '/' and '-'. Names are case-sensitive and compared byte for byte.
 // A name such as "orders.Ping" or "orders/v2.Ping" keeps the names of different packages apart.
-// Names starting with "lockstep." are reserved for lockstep's own types.
+// Names starting with "lockstep." are reserved for lockstep's own types, except that names
+// starting with "lockstep.cluster." can be registered.
 //
 // # Built-in types
 //
