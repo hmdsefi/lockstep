@@ -43,4 +43,16 @@
 // Dead SuspicionTimeout later unless it refuted the suspicion meanwhile. In a cluster of N nodes a
 // crashed node is therefore Dead in the view of every other node within about
 // 2*(N-1)*ProbeInterval + ProbeTimeout + SuspicionTimeout + ProbeInterval.
+//
+// A local actor that implements lockstep.SignalReceiver can subscribe to the membership with
+// Membership.Subscribe: it receives lockstep.NodeUp when another member comes up and
+// lockstep.NodeDown when one goes down, in the order of the published views. When a member goes
+// down, every death watch that a local actor holds on an actor of that node ends with a failure
+// wrapping ErrNodeDown, and a new watch of an actor there ends at once, until the node comes up
+// again.
+//
+// Membership.Leave, or shutting the System down, makes a node leave gracefully: the other members
+// see it as Left, not Dead, and their subscribers get NodeDown with Left set. When the membership
+// actor fails and restarts, it keeps the member table of the last published view and its
+// subscribers.
 package cluster

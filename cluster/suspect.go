@@ -27,11 +27,12 @@ type suspectTimeout struct {
 
 func (suspectTimeout) memberMsg() {}
 
-// armSuspicion arms the suspicion timer of a change into Suspect (CLU-300). Every such change arms
-// one, a change from Suspect at a lower incarnation too, since the timer of that one is stale.
-// Timers are never cancelled; a stale one does nothing when it fires.
-func (a *memberActor) armSuspicion(ctx *lockstep.Context[memberMsg], c change) {
-	ctx.After(a.m.cfg.SuspicionTimeout, suspectTimeout{Node: c.Node, ID: c.ID, Inc: c.Inc})
+// armSuspicion arms the suspicion timer of the Suspect entry e after a change into Suspect
+// (CLU-300) or a restart (CLU-620). Every such change arms one, a change from Suspect at a lower
+// incarnation too, since the timer of that one is stale. Timers are never cancelled; a stale one
+// does nothing when it fires.
+func (a *memberActor) armSuspicion(ctx *lockstep.Context[memberMsg], e Member) {
+	ctx.After(a.m.cfg.SuspicionTimeout, suspectTimeout{Node: e.Node, ID: e.ID, Inc: e.Incarnation})
 }
 
 // suspicionExpired declares the member of t Dead with the same incarnation if its entry still has

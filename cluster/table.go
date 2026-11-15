@@ -92,6 +92,19 @@ func newTable(self Member, retention time.Duration, now time.Time) *table {
 	}
 }
 
+// rebuildTable returns a table that holds the entries of the view v, each changed at now, with the
+// own entry v.Self (CLU-620). It has no retired IDs and no tombstones.
+func rebuildTable(v *View, retention time.Duration, now time.Time) *table {
+	t := &table{self: v.Self.Node, retention: retention, recs: make([]record, 0, len(v.Members))}
+	for _, m := range v.Members {
+		if m.Node == v.Self.Node {
+			m = v.Self
+		}
+		t.recs = append(t.recs, record{m: m, changed: now})
+	}
+	return t
+}
+
 // find returns the index of the record of name, or where it would be inserted, and whether it
 // exists.
 func (t *table) find(name string) (int, bool) {
