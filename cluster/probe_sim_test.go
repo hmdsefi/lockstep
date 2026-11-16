@@ -900,7 +900,7 @@ func (a *fakeActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 		if err := lockstep.Send(ctx, lockstep.PIDAt[memberMsg](m.From.Node, actorPath), memberMsg(ack{From: a.f.self, Seq: m.Seq, Target: a.f.self.Node})); err != nil {
 			panic(err)
 		}
-	case update, pingReq, ack, syncReq, syncResp, leave, joinTick, syncTick, reapTimer, probeTick, probeTimeout, relayExpire, suspectTimeout:
+	case update, pingReq, ack, syncReq, syncResp, leave, leaveCmd, subscribeCmd, unsubscribeCmd, joinTick, syncTick, reapTimer, probeTick, probeTimeout, relayExpire, suspectTimeout:
 		// Only kept.
 	}
 }

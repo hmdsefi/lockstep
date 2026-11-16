@@ -164,7 +164,7 @@ func TestATCLU01Join(t *testing.T) {
 }
 
 // AT-CLU-02, CLU-020: a second Join of a System returns ErrAlreadyJoined, also after the membership
-// actor stopped; of concurrent Joins of one System exactly one succeeds.
+// actor stopped and after Leave; of concurrent Joins of one System exactly one succeeds.
 func TestATCLU02AlreadyJoined(t *testing.T) {
 	t.Run("again", func(t *testing.T) {
 		sys := newSystem(t)
@@ -201,6 +201,30 @@ func TestATCLU02AlreadyJoined(t *testing.T) {
 				tt.Errorf("Join after the actor stopped = %v, %v, want nil, ErrAlreadyJoined", m, err)
 			}
 		})
+	})
+
+	// After Leave the actor stops, and the System cannot join again.
+	t.Run("after leave", func(t *testing.T) {
+		sys := newSystem(t)
+		m, err := Join(sys, Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Leave(); err != nil {
+			t.Fatalf("Leave: %v", err)
+		}
+		for i := 0; i < 1000 && m.View().Self.State != Left; i++ {
+			time.Sleep(time.Millisecond)
+		}
+		if self := m.View().Self; self.State != Left {
+			t.Fatalf("own entry %v after Leave, want Left", self)
+		}
+		if err := m.Leave(); !errors.Is(err, ErrLeft) {
+			t.Errorf("second Leave = %v, want ErrLeft", err)
+		}
+		if m2, err := Join(sys, Config{}); m2 != nil || !errors.Is(err, ErrAlreadyJoined) {
+			t.Errorf("Join after Leave = %v, %v, want nil, ErrAlreadyJoined", m2, err)
+		}
 	})
 
 	t.Run("concurrent", func(t *testing.T) {
@@ -319,7 +343,9 @@ func TestATCLU29Views(t *testing.T) {
 				"member node=b id=12 inc=0 from=none to=alive source=syncreq",
 				"invalid peer=a type=lockstep.cluster.syncreq reason=empty-node",
 				"invalid peer=a type=lockstep.cluster.syncreq reason=bad-state",
-				"view version=2 members=3 up=3")
+				"view version=2 members=3 up=3",
+				"node.up node=a id=11",
+				"node.up node=b id=12")
 			step("no change", syncReq{From: a, Members: []update{b}})
 			step("bare update", update{Node: "d", ID: 14, State: Alive})
 			step("invalid from", syncResp{From: update{ID: 15, State: Alive}, Members: []update{{Node: "d", ID: 14, State: Alive}}},
@@ -330,11 +356,13 @@ func TestATCLU29Views(t *testing.T) {
 			step("ping", ping{From: a, Updates: []update{{Node: "b", ID: 12, State: Dead}}},
 				"member node=a id=11 inc=1 from=alive to=alive source=ping",
 				"member node=b id=12 inc=0 from=alive to=dead source=ping",
-				"view version=3 members=3 up=2")
+				"view version=3 members=3 up=2",
+				"node.down node=b id=12 left=false")
 			a.State = Left
 			step("leave", leave{From: a},
 				"member node=a id=11 inc=1 from=alive to=left source=leave",
-				"view version=4 members=3 up=1")
+				"view version=4 members=3 up=1",
+				"node.down node=a id=11 left=true")
 			// b went Dead at 70ms and a Left at 80ms; their reap timers fire DeadRetention later,
 			// in the next two steps. Nothing is recorded meanwhile.
 			w.RunFor(975 * time.Millisecond)

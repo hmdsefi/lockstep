@@ -16,14 +16,20 @@ import (
 // The membership actor (CLU-030 to CLU-050, CLU-410 to CLU-460, CLU-500). It owns the member table
 // and the broadcast queue, joins through the seeds, merges every message it receives into the
 // table, exchanges whole tables with the other members, probes them (probe.go), suspects and
-// refutes (suspect.go), and publishes a new view after every turn that changed the table. Signals,
-// leave and restart (3.3-06) build on it.
+// refutes (suspect.go), publishes a new view after every turn that changed the table and signals
+// the turn's node-ups and node-downs (signals.go), and leaves when asked or stopped and keeps its
+// table across restarts (leave.go).
 
 // The membership actor's name under /system, and the path every member sends to (CLU-460).
 const (
 	actorName = "cluster"
 	actorPath = "/system/" + actorName
 )
+
+// mailboxCapacity is the capacity of the membership actor's mailbox, whose policy is FailSend: a
+// full mailbox refuses peer messages (the protocol tolerates their loss) and local commands (whose
+// caller gets the error), and never drops or blocks.
+const mailboxCapacity = 1024
 
 // recordPrefix starts the kind of every record of the package (§8); the wire names start with it
 // too, and the source of a merged update is its message's wire name without it (CLU-410).
@@ -66,6 +72,7 @@ type memberActor struct {
 	joinTimer lockstep.TimerID // the JoinRetryInterval timer until joined
 	attempt   int              // the last join attempt, from 1 (CLU-040)
 	changed   bool             // the table changed in this turn (CLU-500)
+	trans     []transition     // the node-ups and node-downs of this turn, in change order (CLU-510)
 	probing   prober           // the probing state (CLU-200 to CLU-250)
 }
 
@@ -77,18 +84,25 @@ func newMemberActor(m *Membership) *memberActor {
 }
 
 // Started records the start, arms the probe timer (CLU-200), then either joins at once (no other
-// seed, CLU-030) or sends the first join attempt and arms the retry timer (CLU-040). Every
-// incarnation starts from a table of only the own entry: rebuilding a restarted actor's table from
-// the last published view, and recording restart=true, come with 3.3-06 (CLU-620). Only the
-// joined flag already survives a restart.
+// seed, CLU-030) or sends the first join attempt and arms the retry timer (CLU-040). The first
+// incarnation starts from a table of only the own entry. A restarted one rebuilds its table from
+// the last published view (CLU-620, leave.go) and, when the node has joined, only starts the
+// periodic syncs.
 func (a *memberActor) Started(ctx *lockstep.Context[memberMsg]) {
 	cfg := &a.m.cfg
-	a.tbl = newTable(a.m.self, cfg.DeadRetention, ctx.Now())
+	restart := a.m.started
+	a.m.started = true
+	if restart {
+		a.rebuild(ctx)
+	} else {
+		a.tbl = newTable(a.m.self, cfg.DeadRetention, ctx.Now())
+	}
 	a.queue = newBroadcasts()
 	if ctl := tracer(ctx); ctl != nil {
 		self := a.tbl.Self()
 		ctl.Record(recordPrefix+"start", "node", self.Node, "id", strconv.FormatUint(uint64(self.ID), 10),
-			"inc", strconv.FormatUint(self.Incarnation, 10), "seeds", strconv.Itoa(len(cfg.Seeds)), "restart", "false")
+			"inc", strconv.FormatUint(self.Incarnation, 10), "seeds", strconv.Itoa(len(cfg.Seeds)),
+			"restart", strconv.FormatBool(restart))
 	}
 	a.startProbing(ctx)
 	switch {
@@ -128,6 +142,13 @@ func (a *memberActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 		}
 	case leave:
 		a.mergeMessage(ctx, wireLeave, msg.From, nil)
+	case leaveCmd:
+		a.leave(ctx)
+		ctx.Stop()
+	case subscribeCmd:
+		a.subscribe(msg.Addr)
+	case unsubscribeCmd:
+		a.unsubscribe(msg.Addr)
 	case joinTick:
 		if !a.m.joined {
 			a.joinAttempt(ctx)
@@ -326,11 +347,23 @@ func (a *memberActor) applied(ctx *lockstep.Context[memberMsg], c change) {
 			"inc", strconv.FormatUint(c.Inc, 10), "from", from, "to", c.To.String(), "source", c.Source)
 	}
 	a.queue.enqueue(toUpdate(c.member()))
-	if c.To == Suspect {
-		a.armSuspicion(ctx, c)
+	a.noteTransitions(c)
+	if c.Node == a.tbl.self {
+		return // the own entry has no suspicion and is never reaped
 	}
-	if !c.To.Up() {
-		ctx.After(a.m.cfg.DeadRetention, reapTimer{Node: c.Node, ID: c.ID, Inc: c.Inc, State: c.To})
+	a.armTimers(ctx, c.member())
+}
+
+// armTimers arms the timers of the entry e after it changed or, at a restart, was rebuilt
+// (CLU-620): the suspicion timer of a Suspect entry (CLU-300), the reap timer of a Dead or Left
+// one (CLU-160), each with its full duration.
+func (a *memberActor) armTimers(ctx *lockstep.Context[memberMsg], e Member) {
+	switch e.State {
+	case Suspect:
+		a.armSuspicion(ctx, e)
+	case Dead, Left:
+		ctx.After(a.m.cfg.DeadRetention, reapTimer{Node: e.Node, ID: e.ID, Inc: e.Incarnation, State: e.State})
+	case Alive:
 	}
 }
 
@@ -343,26 +376,5 @@ func (a *memberActor) reap(ctx *lockstep.Context[memberMsg], t reapTimer) {
 	if ctl := tracer(ctx); ctl != nil {
 		ctl.Record(recordPrefix+"reap", "node", t.Node, "id", strconv.FormatUint(uint64(t.ID), 10),
 			"inc", strconv.FormatUint(t.Inc, 10))
-	}
-}
-
-// publish ends a turn: if the table changed in it, it publishes the next view and records it
-// (CLU-500). A published view is never changed.
-func (a *memberActor) publish(ctx *lockstep.Context[memberMsg]) {
-	if !a.changed {
-		return
-	}
-	a.changed = false
-	v := &View{Version: a.m.view.Load().Version + 1, Self: a.tbl.Self(), Members: a.tbl.Members()}
-	a.m.view.Store(v)
-	if ctl := tracer(ctx); ctl != nil {
-		up := 0
-		for _, m := range v.Members {
-			if m.State.Up() {
-				up++
-			}
-		}
-		ctl.Record(recordPrefix+"view", "version", strconv.FormatUint(v.Version, 10),
-			"members", strconv.Itoa(len(v.Members)), "up", strconv.Itoa(up))
 	}
 }
