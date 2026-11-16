@@ -119,10 +119,10 @@ func Unwatch[M any](ctx *Context[M], addr Address) {
 	}
 	c := ctx.cell
 	if addr.node != c.sys.node {
-		// ACT-630: the transport gets a RemoteUnwatch. A Deliver error changes nothing: the watch
-		// has left the set, so a Terminated that still comes is skipped. A watch that a down mark
-		// resolved (CLU §4.1) never reached the transport, so it gets none, whether or not the
-		// mark is still set.
+		// ACT-630: the transport gets a RemoteUnwatch, unless the watch already left the outgoing
+		// watches (unwatchRemote). A Deliver error changes nothing: the watch has left the set, so
+		// a Terminated that still comes is skipped. A watch that a down mark resolved (CLU §4.1)
+		// never reached the transport, so it gets none, whether or not the mark is still set.
 		if !local {
 			c.sys.unwatchRemote(c.addr, addr, seq)
 		}
@@ -292,10 +292,19 @@ func (s *System) recordUnwatch(watcher, addr Address) {
 }
 
 // unwatchRemote ends the watch of watcher, a local actor, of addr on another node, whose watch
-// number is seq: the watch leaves the outgoing watches and the transport gets a RemoteUnwatch
-// envelope from watcher to addr carrying seq, whose Deliver error is ignored (ACT-630, ACT-640).
+// number is seq: if the watch is still an outgoing watch under seq, it leaves the outgoing watches
+// and the transport gets a RemoteUnwatch (ACT-630, ACT-640). A watch that already left them needs
+// none: a RemoteTerminated ended it at the peer, hooks.WatchesDown ran after the transport dropped
+// it, and hooks.NodeDown handed the transport its RemoteUnwatch (nodeDown).
 func (s *System) unwatchRemote(watcher, addr Address, seq uint64) {
-	s.rwatch.removeOut(watcher, addr, seq)
+	if s.rwatch.takeOut(remotePair{watcher: watcher, watched: addr}, seq) {
+		s.deliverUnwatch(watcher, addr, seq)
+	}
+}
+
+// deliverUnwatch hands the transport a RemoteUnwatch envelope from watcher to addr carrying seq,
+// and ignores its Deliver error: the watch has ended at this node either way.
+func (s *System) deliverUnwatch(watcher, addr Address, seq uint64) {
 	if tr := s.transportOf(); tr != nil { // always: a transport never detaches
 		_ = tr.Deliver(engine.Envelope{From: watcher.engine(), To: addr.engine(), Payload: watchPayload{kind: hooks.RemoteUnwatch, seq: seq}})
 	}
@@ -337,9 +346,17 @@ func (s *System) watchesDown(node string, err error) {
 
 // nodeDown is watchesDown followed by marking node down with err (hooks.NodeDown, CLU §4.1): the
 // two are one operation of the outgoing watches, so a Watch of an address on node that runs
-// meanwhile is either ended here or finds the mark (watchRemote).
+// meanwhile is either ended here or finds the mark (watchRemote). Unlike hooks.WatchesDown, which
+// the transport calls once it has dropped the node's watches, the transport still holds every watch
+// ended here, so it gets a RemoteUnwatch for each, in the same order, before the Terminated signals
+// are pushed. The transport ends its outgoing watch and tells the peer, so that a node declared
+// down by mistake does not keep the registrations, and a later session does not write their WATCH
+// again.
 func (s *System) nodeDown(node string, err error) {
 	ps, seqs := s.rwatch.markDown(node, err)
+	for i, p := range ps {
+		s.deliverUnwatch(p.watcher, p.watched, seqs[i])
+	}
 	s.pushWatchesDown(ps, seqs, Failed(err))
 }
 

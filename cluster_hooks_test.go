@@ -491,6 +491,139 @@ func TestNodeDownMarkedUnwatch(t *testing.T) {
 	})
 }
 
+// CLU §4.1, ACT-630, ACT-640: NodeDown hands the transport a RemoteUnwatch for every watch it
+// ends, with the watch's number, in ascending (watched, watcher) text order and before the
+// Terminated signals run, so that the transport and the peer drop the watch too. A watch it ended
+// gets no second RemoteUnwatch from an Unwatch or the end of the incarnation that comes before its
+// Terminated is delivered. The watches of other nodes' actors are untouched.
+func TestNodeDownUnwatches(t *testing.T) {
+	n1 := newRemoteNode(t, "n1")
+	a := lockstep.PIDAt[int]("n2", "/user/a").Address()
+	b := lockstep.PIDAt[int]("n2", "/user/b").Address()
+	c := lockstep.PIDAt[int]("n3", "/user/c").Address()
+	failed := lockstep.Failed(errDown).String()
+
+	t.Run("delivered", func(t *testing.T) {
+		var log []string
+		w1 := spawnWatcher(t, n1, "d1", &log)
+		w2 := spawnWatcher(t, n1, "d2", &log)
+		for _, x := range []lockstep.Address{b, a, c} {
+			if err := watchIn(t, n1, w1, x); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := watchIn(t, n1, w2, a); err != nil {
+			t.Fatal(err)
+		}
+		d := len(n1.eng.Delivered())
+		hooks.NodeDown(n1.sys, "n2", errDown)
+		t.Cleanup(func() { hooks.NodeUp(n1.sys, "n2") })
+		if len(log) != 0 {
+			t.Errorf("Terminated signals ran inside NodeDown: %q", log)
+		}
+		want := []string{
+			"unwatch " + w1.Address().String() + " " + a.String(),
+			"unwatch " + w2.Address().String() + " " + a.String(),
+			"unwatch " + w1.Address().String() + " " + b.String(),
+		}
+		if got := watchEnvelopes(t, n1, d); !slices.Equal(got, want) {
+			t.Errorf("envelopes at NodeDown %q, want %q", got, want)
+		}
+		checkUnwatchSeqs(t, n1, d)
+		n1.eng.RunUntilIdle()
+		// The two watchers run in the engine's order, so the signals are compared as a set.
+		slices.Sort(log)
+		wantLog := []string{
+			"/user/d1 " + a.String() + " " + failed,
+			"/user/d1 " + b.String() + " " + failed,
+			"/user/d2 " + a.String() + " " + failed,
+		}
+		if !slices.Equal(log, wantLog) {
+			t.Errorf("Terminated signals %q, want %q", log, wantLog)
+		}
+
+		// The end of the incarnation unwatches only c.
+		d = len(n1.eng.Delivered())
+		during(t, n1, w1, func(*lockstep.Context[rwFunc]) { panic("boom") })
+		want = []string{"unwatch " + w1.Address().String() + " " + c.String()}
+		if got := watchEnvelopes(t, n1, d); !slices.Equal(got, want) {
+			t.Errorf("envelopes after the delivery %q, want %q", got, want)
+		}
+	})
+
+	t.Run("unwatch", func(t *testing.T) {
+		var log []string
+		w := spawnWatcher(t, n1, "u", &log)
+		if err := watchIn(t, n1, w, a); err != nil {
+			t.Fatal(err)
+		}
+		d := len(n1.eng.Delivered())
+		// NodeDown in the watcher's turn queues the Terminated behind it, so Unwatch comes first.
+		during(t, n1, w, func(ctx *lockstep.Context[rwFunc]) {
+			hooks.NodeDown(n1.sys, "n2", errDown)
+			lockstep.Unwatch(ctx, a)
+		})
+		t.Cleanup(func() { hooks.NodeUp(n1.sys, "n2") })
+		want := []string{"unwatch " + w.Address().String() + " " + a.String()}
+		if got := watchEnvelopes(t, n1, d); !slices.Equal(got, want) {
+			t.Errorf("envelopes %q, want %q from NodeDown only", got, want)
+		}
+		checkUnwatchSeqs(t, n1, d)
+		if len(log) != 0 {
+			t.Errorf("Terminated signals after Unwatch %q, want none", log)
+		}
+	})
+
+	t.Run("restart", func(t *testing.T) {
+		var log []string
+		w := spawnWatcher(t, n1, "r", &log)
+		for _, x := range []lockstep.Address{a, c} {
+			if err := watchIn(t, n1, w, x); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d := len(n1.eng.Delivered())
+		during(t, n1, w, func(*lockstep.Context[rwFunc]) {
+			hooks.NodeDown(n1.sys, "n2", errDown)
+			panic("boom")
+		})
+		t.Cleanup(func() { hooks.NodeUp(n1.sys, "n2") })
+		want := []string{
+			"unwatch " + w.Address().String() + " " + a.String(),
+			"unwatch " + w.Address().String() + " " + c.String(),
+		}
+		if got := watchEnvelopes(t, n1, d); !slices.Equal(got, want) {
+			t.Errorf("envelopes %q, want %q: NodeDown's, then the restart's of c only", got, want)
+		}
+		checkUnwatchSeqs(t, n1, d)
+		if len(log) != 0 {
+			t.Errorf("Terminated signals after the restart %q, want none", log)
+		}
+	})
+}
+
+// checkUnwatchSeqs checks that every RemoteUnwatch n's transport got from index from on carries the
+// number of the last RemoteWatch of its pair.
+func checkUnwatchSeqs(t *testing.T, n *remoteNode, from int) {
+	t.Helper()
+	all := n.eng.Delivered()
+	for i := from; i < len(all); i++ {
+		p, ok := hooks.Payload(all[i].Payload)
+		if !ok || p.Kind != hooks.RemoteUnwatch {
+			continue
+		}
+		var want uint64
+		for _, env := range all[:i] {
+			if q, ok := hooks.Payload(env.Payload); ok && q.Kind == hooks.RemoteWatch && env.From == all[i].From && env.To == all[i].To {
+				want = q.Seq
+			}
+		}
+		if want == 0 || p.Seq != want {
+			t.Errorf("RemoteUnwatch from %v to %v carries %d, want %d, the number of its RemoteWatch", all[i].From, all[i].To, p.Seq, want)
+		}
+	}
+}
+
 // lockedTransport counts what it delivers; it is safe for concurrent use.
 type lockedTransport struct {
 	mu  sync.Mutex
@@ -525,6 +658,9 @@ func (w raceWatcher) Signal(_ *lockstep.Context[lockstep.Address], sig lockstep.
 // CLU §4.1, -race: on a production system a Watch in an actor's turn that races NodeDown of the
 // watched address's node is either ended by NodeDown or finds the mark: either way the watcher
 // gets exactly one Terminated with Failed(reason), and no watch is left waiting on the transport.
+// NodeDown runs off the engine loop here, against the hook's contract, to force the race on the
+// system's side; that is harmless only because lockedTransport, unlike the remoting core, keeps no
+// watches.
 func TestNodeDownWatchRace(t *testing.T) {
 	sys := newProdSystem(t, lockstep.WithNodeName("n1"))
 	if _, err := hooks.AttachTransport(sys, &lockedTransport{}, func() {}); err != nil {
