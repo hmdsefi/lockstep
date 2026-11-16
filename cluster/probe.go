@@ -119,14 +119,16 @@ const refreshSeq = 0
 // suspicion that a cut caused is answered only when this node next probes the suspect, which can
 // take two rounds of the probe list, or by gossip, and may come after the suspicion timer: the
 // refresh bounds that to about one ProbeInterval after the heal. A refresh ping uses no seq of
-// the probing state, arms no timer and records nothing; it is not a probe.
+// the probing state, arms no timer and records nothing; it is not a probe. It carries the forced
+// update only and takes nothing from the broadcast queue, so refreshing the suspects of a cut does
+// not spend the retransmissions of the queued updates on members that may not hear them.
 func (a *memberActor) refreshSuspects(ctx *lockstep.Context[memberMsg], probed string) {
 	self := toUpdate(a.tbl.Self())
 	for _, m := range a.tbl.Members() {
 		if m.State != Suspect || m.Node == a.tbl.self || m.Node == probed {
 			continue
 		}
-		a.send(ctx, m.Node, ping{From: self, Seq: refreshSeq, Target: m.Node, TargetID: m.ID, Updates: a.piggyback(m.Node)})
+		a.send(ctx, m.Node, ping{From: self, Seq: refreshSeq, Target: m.Node, TargetID: m.ID, Updates: []update{toUpdate(m)}})
 	}
 }
 
