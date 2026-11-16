@@ -24,14 +24,6 @@ type bounds struct {
 	detect   time.Duration // D(N) = 2*(N-1)*PI + PT + ST + PI (CLU-800)
 	gossip   time.Duration // G(N) = RetransmitMult * bits.Len(N) * PI
 	converge time.Duration // R(N) = 2*SI + D(N) + G(N) (CLU-830)
-
-	// transient is CLU-820's bound: a cut shorter than ST - (2N-3)*PI kills no one. After the heal,
-	// a suspicion is surely cleared only when its holder next pings the suspect: the ping carries
-	// the suspicion as the forced update, the suspect refutes, and its ack's From carries the new
-	// incarnation. That ping can take 2N-3 ticks (the two rounds of D(N), less the probe that was
-	// made), and the earliest suspicion comes about PI after the cut began, so its timer fires
-	// about ST + PI after it. The design's ST - PI is the case N = 2.
-	transient time.Duration
 }
 
 // boundsOf returns the bounds of a cluster of n nodes that all join with cfg, after its defaults.
@@ -42,7 +34,7 @@ func boundsOf(cfg Config, n int) bounds {
 	pi := cfg.ProbeInterval
 	d := 2*time.Duration(n-1)*pi + cfg.ProbeTimeout + cfg.SuspicionTimeout + pi
 	g := time.Duration(cfg.RetransmitMult*bits.Len(uint(n))) * pi
-	return bounds{detect: d, gossip: g, converge: 2*cfg.SyncInterval + d + g, transient: cfg.SuspicionTimeout - time.Duration(2*n-3)*pi}
+	return bounds{detect: d, gossip: g, converge: 2*cfg.SyncInterval + d + g}
 }
 
 // proc is one process of a node: a boot of it, which ends when the node crashes.

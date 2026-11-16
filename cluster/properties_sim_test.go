@@ -26,21 +26,6 @@ const (
 	maxNodes = 7
 )
 
-// transientCut is the transient bound of AT-CLU-24's "transient" cuts, whatever the size of the
-// cluster.
-const transientCut = 4 * time.Second
-
-// transientConfig returns simConfig(seeds...), validated, with SuspicionTimeout set so that the
-// transient bound of a cluster of n nodes is transientCut.
-func transientConfig(n int, seeds ...string) Config {
-	cfg := simConfig(seeds...)
-	cfg.SuspicionTimeout = time.Duration(2*n-3)*DefaultProbeInterval + transientCut
-	if err := cfg.Validate(); err != nil {
-		panic(err)
-	}
-	return cfg
-}
-
 // propSeeds is the default number of seeds of each property test; FAULTLINE_SEEDS overrides it.
 const propSeeds = 20
 
@@ -110,9 +95,10 @@ func TestATCLU14Detection(t *testing.T) {
 			if d := at[i] - w.Sim.Now().Sub(kernel.Time(0)); d > 0 {
 				w.RunFor(d)
 			}
+			j := tr.cur[slices.Index(tr.names, names[v])] // the live process the crash ends
 			w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: names[v]})
 			tr.observe()
-			crashed = append(crashed, tr.procs[slices.IndexFunc(tr.procs, func(p proc) bool { return p.node == names[v] })])
+			crashed = append(crashed, tr.procs[j])
 		}
 		w.RunFor(b.detect + time.Second)
 
@@ -172,16 +158,18 @@ func TestATCLU15Accuracy(t *testing.T) {
 }
 
 // AT-CLU-24, CLU-820, CLU-830. "faults": random partitions, isolations and crashes, each crashed
-// node restarted with a new ID after a while, until the recovery window, where every fault ends.
-// The invariant: from R(N) after the start of the recovery window, the view of every live process
-// has exactly the live processes up, with their IDs. "transient": no crashes; from time to time a
+// node restarted with a new ID after a while, until 6s before the end of the fault phase, where
+// those faults end; then, scripted, the nodes are split in two until the end of the fault phase,
+// and 1 to (N-1)/2 live nodes crash for good in its last four seconds. The invariant: from R(N)
+// after the last fault applied, the view of every live process has exactly the live processes up,
+// with their IDs, so the crashed nodes down. "transient": no crashes; from time to time a
 // random node is isolated, or the nodes are split in two, for at least ProbeInterval and less than
-// the transient bound SuspicionTimeout - (2N-3)*ProbeInterval (see bounds), each such cut healed
-// for at least SuspicionTimeout + ProbeInterval before the next. SuspicionTimeout is set per seed so
-// that the bound is transientCut. The invariants: no view ever has a member down, and from R(N)
+// SuspicionTimeout - ProbeInterval, each such cut healed for at least SuspicionTimeout +
+// ProbeInterval before the next. The invariants: no view ever has a member down, and from R(N)
 // after the last heal the views agree.
 func TestATCLU24Convergence(t *testing.T) {
-	const faulty = 40 * time.Second // the fault phase of "faults"; "transient" cuts until then too
+	const faulty = 40 * time.Second  // the fault phase of "faults"; "transient" cuts until then too
+	const scripted = 6 * time.Second // the scripted end of the fault phase of "faults"
 	worst := boundsOf(simConfig(), maxNodes)
 	opts := simOpts(propSeeds, faulty+worst.converge+5*time.Second)
 
@@ -195,33 +183,70 @@ func TestATCLU24Convergence(t *testing.T) {
 			for _, n := range names {
 				c.node(n, cfg)
 			}
-			w.Plan(&fault.Random{Quiet: w.End().Sub(kernel.Time(0).Add(faulty)), Rules: []fault.Rule{
+			w.Plan(&fault.Random{Quiet: w.End().Sub(kernel.Time(0).Add(faulty - scripted)), Rules: []fault.Rule{
 				{Kind: fault.KindPartition, Every: 5 * time.Second, MinFor: 500 * time.Millisecond, MaxFor: 6 * time.Second},
 				{Kind: fault.KindIsolate, Every: 9 * time.Second, MinFor: 500 * time.Millisecond, MaxFor: 6 * time.Second},
 				{Kind: fault.KindCrash, Every: 6 * time.Second, MinFor: 200 * time.Millisecond, MaxFor: 5 * time.Second},
 			}})
 			tr := newTruth(c, names)
-			settled := w.RecoveryStart().Add(b.converge)
+			var settled kernel.Time // R(N) after the last fault; 0 until the faults are over
 			w.Invariant("cluster/convergence", func() error {
 				tr.observe()
-				if w.Sim.Now() <= settled {
+				if settled == 0 || w.Sim.Now() <= settled {
 					return nil
 				}
 				return tr.converged()
 			})
+
+			// The scripted end of the fault phase, after the random faults ended: a partition from
+			// within its first second until faulty, and a permanent crash of k live nodes in the
+			// four seconds before faulty.
+			r := w.Rand("cluster/end")
+			partAt := faulty - scripted + time.Duration(r.Int64N(int64(time.Second)))
+			crashAt := faulty - time.Duration(1+r.Int64N(int64(4*time.Second)))
+			runTo := func(d time.Duration) {
+				if left := d - w.Sim.Now().Sub(kernel.Time(0)); left > 0 {
+					w.RunFor(left)
+				}
+			}
+			runTo(partAt)
+			perm := r.Perm(len(names))
+			cut := 1 + r.IntN(len(names)-1)
+			groups := [][]string{nil, nil}
+			for i, j := range perm {
+				groups[min(i/cut, 1)] = append(groups[min(i/cut, 1)], names[j])
+			}
+			slices.Sort(groups[0])
+			slices.Sort(groups[1])
+			w.Faults.Inject(fault.Event{Kind: fault.KindPartition, Groups: groups})
+			runTo(crashAt)
+			k := 1 + r.IntN((len(names)-1)/2)
+			for _, i := range r.Perm(len(names)) {
+				if k > 0 && s.System(names[i]) != nil {
+					w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: names[i]})
+					k--
+				}
+			}
+			runTo(faulty)
+			w.Faults.Inject(fault.Event{Kind: fault.KindHeal})
+			var last kernel.Time
+			for _, e := range w.Faults.Applied().Events {
+				last = max(last, e.At)
+			}
+			settled = last.Add(b.converge)
 		})
 	})
 
 	t.Run("transient", func(t *testing.T) {
-		worst := boundsOf(transientConfig(maxNodes), maxNodes)
-		sim.Simulate(t, simOpts(propSeeds, faulty+worst.converge+5*time.Second), func(s *sim.Sim) {
+		sim.Simulate(t, opts, func(s *sim.Sim) {
 			w := s.World()
 			names := propCluster(w)
-			cfg := transientConfig(len(names), names...)
-			b := boundsOf(cfg, len(names))
-			if b.transient != transientCut {
-				panic("transientConfig does not give the transient bound transientCut")
+			cfg := simConfig(names...)
+			if err := cfg.Validate(); err != nil {
+				panic(err)
 			}
+			b := boundsOf(cfg, len(names))
+			transient := cfg.SuspicionTimeout - cfg.ProbeInterval
 			c := newSimCluster(s)
 			for _, n := range names {
 				c.node(n, cfg)
@@ -230,7 +255,7 @@ func TestATCLU24Convergence(t *testing.T) {
 			var events []fault.Event
 			var lastHeal time.Duration
 			for at := 3*time.Second + time.Duration(r.Int64N(int64(cfg.ProbeInterval))); at < faulty; {
-				d := cfg.ProbeInterval + time.Duration(r.Int64N(int64(b.transient-cfg.ProbeInterval)))
+				d := cfg.ProbeInterval + time.Duration(r.Int64N(int64(transient-cfg.ProbeInterval)))
 				e := fault.Event{At: kernel.Time(0).Add(at), Kind: fault.KindIsolate, Node: names[r.IntN(len(names))]}
 				if r.IntN(2) == 0 {
 					perm := r.Perm(len(names))
@@ -260,7 +285,7 @@ func TestATCLU24Convergence(t *testing.T) {
 					v := tr.view(p)
 					for _, m := range v.Members {
 						if !m.State.Up() {
-							return fmt.Errorf("%s's view %d has %v after cuts shorter than %s", p.node, v.Version, m, b.transient)
+							return fmt.Errorf("%s's view %d has %v after cuts shorter than %s", p.node, v.Version, m, transient)
 						}
 					}
 				}

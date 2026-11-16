@@ -15,8 +15,10 @@ import (
 // Probing (CLU-200 to CLU-250). Every ProbeInterval the membership actor resolves its outstanding
 // probe, then pings the next member of a shuffled probe list. A probe that has no ack after
 // ProbeTimeout asks up to IndirectProbes helpers to ping the target for it; a probe that has no
-// ack by the next tick fails, and its target becomes Suspect (suspect.go). Every ping, pingReq and
-// ack carries the updates of the broadcast queue (CLU-400).
+// ack by the next tick fails, and its target becomes Suspect (suspect.go). Each tick also sends a
+// refresh ping to every other Suspect member, so that a suspicion reaches its suspect within one
+// tick of a heal (CLU-820). Every ping, pingReq and ack carries the updates of the broadcast queue
+// (CLU-400).
 
 // The via attribute of the ack record (§8): the ack came from the target itself, or from a helper.
 const (
@@ -81,13 +83,20 @@ func (a *memberActor) startProbing(ctx *lockstep.Context[memberMsg]) {
 }
 
 // probeTick resolves the outstanding probe (CLU-240), then probes the next name of the probe list
-// whose entry is still up, rebuilding the list when it is exhausted (CLU-210).
+// whose entry is still up, rebuilding the list when it is exhausted (CLU-210), then refreshes
+// every Suspect member.
 func (a *memberActor) probeTick(ctx *lockstep.Context[memberMsg]) {
 	a.resolveProbe(ctx)
 	target, ok := a.nextTarget(ctx)
-	if !ok {
-		return
+	if ok {
+		a.probe(ctx, target)
 	}
+	a.refreshSuspects(ctx, target.Node)
+}
+
+// probe pings target, the next member of the probe list, records the probe and arms its
+// ProbeTimeout (CLU-220).
+func (a *memberActor) probe(ctx *lockstep.Context[memberMsg], target Member) {
 	p := &a.probing
 	p.probe = outstanding{target: target.Node, id: target.ID, seq: p.nextSeq()}
 	a.send(ctx, target.Node, ping{
@@ -98,6 +107,27 @@ func (a *memberActor) probeTick(ctx *lockstep.Context[memberMsg]) {
 		ctl.Record(recordPrefix+"probe", "target", target.Node, "seq", strconv.FormatUint(p.probe.seq, 10))
 	}
 	ctx.After(a.m.cfg.ProbeTimeout, probeTimeout{Seq: p.probe.seq})
+}
+
+// refreshSeq is the Seq of a refresh ping. Probe and relay seqs start at 1, so the ack of a refresh
+// ping matches no probe and no relay; only its From is merged.
+const refreshSeq = 0
+
+// refreshSuspects pings every Suspect member other than self and the probe target probed, in name
+// order. Each ping carries the suspicion as its forced update (CLU-400), so a live suspect refutes
+// at once (CLU-310) and its ack's From brings the new incarnation back to this node. Without it, a
+// suspicion that a cut caused is answered only when this node next probes the suspect, which can
+// take two rounds of the probe list, or by gossip, and may come after the suspicion timer: the
+// refresh bounds that to about one ProbeInterval after the heal. A refresh ping uses no seq of
+// the probing state, arms no timer and records nothing; it is not a probe.
+func (a *memberActor) refreshSuspects(ctx *lockstep.Context[memberMsg], probed string) {
+	self := toUpdate(a.tbl.Self())
+	for _, m := range a.tbl.Members() {
+		if m.State != Suspect || m.Node == a.tbl.self || m.Node == probed {
+			continue
+		}
+		a.send(ctx, m.Node, ping{From: self, Seq: refreshSeq, Target: m.Node, TargetID: m.ID, Updates: a.piggyback(m.Node)})
+	}
 }
 
 // nextTarget returns the entry of the next name of the probe list that is still up. When the list
@@ -235,9 +265,9 @@ func (a *memberActor) relayPing(ctx *lockstep.Context[memberMsg], msg pingReq) {
 // handleAck matches a merged ack (CLU-240, CLU-230): an ack whose Seq and Target are those of the
 // outstanding probe acks it, once, if it comes from a helper or from the probed ID of the target;
 // an ack from the target's probed ID for a live relay is sent on to the requester with the
-// requester's seq, and the relay is dropped. Any other ack is ignored: a ping is delivered by node
-// name, so another process of the target may answer it, and that answer says nothing about the
-// probed one.
+// requester's seq, and the relay is dropped. Any other ack is ignored, the ack of a refresh ping
+// (Seq 0) included, whose From is already merged: a ping is delivered by node name, so another
+// process of the target may answer it, and that answer says nothing about the probed one.
 func (a *memberActor) handleAck(ctx *lockstep.Context[memberMsg], msg ack) {
 	p := &a.probing
 	if pr := &p.probe; pr.seq != 0 && pr.seq == msg.Seq && pr.target == msg.Target {

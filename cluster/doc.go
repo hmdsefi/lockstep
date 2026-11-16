@@ -40,8 +40,11 @@
 // round, so that it probes every one of them at least once in any two rounds. A probe without an
 // answer after ProbeTimeout is sent again through up to IndirectProbes other Alive members; a
 // probe still without an answer at the next interval makes the member Suspect, and the member is
-// Dead SuspicionTimeout later unless it refuted the suspicion meanwhile. In a cluster of N nodes a
-// crashed node is therefore Dead in the view of every other node within about
+// Dead SuspicionTimeout later unless it refuted the suspicion meanwhile. At every interval a node
+// also tells each member it suspects, other than the one it probes, that it suspects it, so a
+// member that was only cut off, for less than SuspicionTimeout - ProbeInterval, refutes within
+// about one interval of the heal, before it is declared Dead. In a cluster of N nodes a crashed
+// node is Dead in the view of every other node within about
 // 2*(N-1)*ProbeInterval + ProbeTimeout + SuspicionTimeout + ProbeInterval.
 //
 // A local actor that implements lockstep.SignalReceiver can subscribe to the membership with

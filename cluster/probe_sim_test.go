@@ -783,6 +783,91 @@ func TestATCLU13TransientCut(t *testing.T) {
 	})
 }
 
+// AT-CLU-13, CLU-310, CLU-820, the refresh pings: with ProbeInterval 500ms and ProbeTimeout 200ms,
+// n5 of five nodes is isolated from 2.3s to 6.3s: less than SuspicionTimeout - ProbeInterval, and
+// at least the 2(N-1) ticks in which every other node surely probes n5 and sees the probe fail
+// (seven ticks to probe it, one to fail), so n5 suspects the
+// members its probes missed and every other node has n5 Suspect at the heal. At
+// every probe tick each node also pings every Suspect member other than its probe target, with
+// Seq 0 and the suspicion as the forced update. So within one ProbeInterval of the heal (plus the
+// trip) every suspicion held at the heal is refuted and cleared at its holder, whoever holds it,
+// without waiting for the holder's next probe of the suspect or for gossip. No member is ever Dead,
+// and no probe or ack record has seq 0.
+func TestATCLU13RefreshSuspects(t *testing.T) {
+	names := []string{"n1", "n2", "n3", "n4", "n5"}
+	const pi = 500 * time.Millisecond
+	const cutAt, healAt = 2300 * time.Millisecond, 6300 * time.Millisecond
+	const within = pi + 100*time.Millisecond
+	cfg := simConfig(names...)
+	cfg.ProbeInterval, cfg.ProbeTimeout = pi, 200*time.Millisecond
+	if healAt-cutAt >= DefaultSuspicionTimeout-pi || healAt-cutAt < time.Duration(2*len(names)-2)*pi {
+		t.Fatal("the cut is not shorter than SuspicionTimeout - ProbeInterval, or shorter than the ticks of a sure failed probe")
+	}
+	sim.Simulate(t, simOpts(10, 10*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		c := newSimCluster(s)
+		for _, n := range names {
+			c.node(n, cfg)
+		}
+		w.RunFor(cutAt)
+		w.Faults.Inject(fault.Event{Kind: fault.KindIsolate, Node: "n5"})
+		w.RunFor(healAt - cutAt)
+		w.Faults.Inject(fault.Event{Kind: fault.KindHeal})
+		type held struct{ holder, suspect string }
+		var suspicions []held
+		for _, n := range names {
+			for _, m := range c.view(n).Members {
+				if m.State == Suspect {
+					suspicions = append(suspicions, held{n, m.Node})
+				}
+			}
+		}
+		if !slices.ContainsFunc(suspicions, func(h held) bool { return h.holder == "n5" }) {
+			tt.Fatalf("suspicions at the heal %v, want n5 to suspect a member", suspicions)
+		}
+		for _, n := range names[:4] {
+			if !slices.Contains(suspicions, held{n, "n5"}) {
+				tt.Fatalf("suspicions at the heal %v, want %s to suspect n5", suspicions, n)
+			}
+		}
+		w.RunFor(w.End().Sub(w.Sim.Now()))
+
+		for _, h := range suspicions {
+			var cleared *kernel.Record
+			for _, r := range c.recs(h.holder, "member") {
+				if r.At > vt(healAt) && attr(r, "node") == h.suspect && attr(r, "from") == "suspect" && attr(r, "to") == "alive" {
+					cleared = &r
+					break
+				}
+			}
+			if cleared == nil {
+				tt.Errorf("%s had %s Suspect at the heal at %s and never cleared it", h.holder, h.suspect, vt(healAt))
+			} else if cleared.At > vt(healAt+within) {
+				tt.Errorf("%s had %s Suspect at the heal at %s and cleared it %s, want within %s", h.holder, h.suspect, vt(healAt), describe([]kernel.Record{*cleared}), within)
+			}
+		}
+		for _, n := range names {
+			for _, r := range c.recs(n, "member") {
+				if attr(r, "to") == "dead" || attr(r, "to") == "left" {
+					tt.Errorf("%s recorded %s, want no member down", n, describe([]kernel.Record{r}))
+				}
+			}
+			for _, kind := range []string{"probe", "ack"} {
+				for _, r := range c.recs(n, kind) {
+					if attr(r, "seq") == "0" {
+						tt.Errorf("%s recorded %s, want no refresh ping recorded", n, describe([]kernel.Record{r}))
+					}
+				}
+			}
+			for _, m := range c.view(n).Members {
+				if m.State != Alive {
+					tt.Errorf("%s's view has %v at the end, want every member Alive", n, m)
+				}
+			}
+		}
+	})
+}
+
 // AT-CLU-16, CLU-240, CLU-300: n1 probes x, a node that never answers, with SuspicionTimeout
 // 2.5s. "incarnation": x goes Suspect at incarnation 0 at 2s and is Alive at incarnation 1 at
 // 2.25s, so the probe of 2s fails at 3s and x goes Suspect at 1. The timer of incarnation 0 fires
