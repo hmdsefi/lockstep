@@ -350,9 +350,9 @@ func TestATCLU23RestartNewID(t *testing.T) {
 
 // AT-CLU-22, CLU-520. On n1, s1, s2 and s3 subscribe and each gets NodeUp a. After
 // Unsubscribe(s1) (twice, and of an address that never subscribed) and the stop of s2, a's going
-// Dead reaches only s3, and s2's refused delivery removes it. Subscribe of the zero Address and of
-// an address on another node fail; the stopped s2 and an address with no actor refuse their NodeUp
-// b and are not added; subscribing s3 again does nothing, and s1, subscribing again twice, gets
+// Dead reaches only s3, and s2's refused delivery removes it. Subscribe of the zero Address, of an
+// address without a UID (s3's path) and of an address on another node fail; the stopped s2
+// refuses its NodeUp b and is not added; subscribing s3 again does nothing, and s1, subscribing again twice, gets
 // NodeUp b once and is added once, after s3.
 func TestATCLU22Unsubscribe(t *testing.T) {
 	sim.Simulate(t, simOpts(3, 2*time.Second), func(s *sim.Sim) {
@@ -408,6 +408,7 @@ func TestATCLU22Unsubscribe(t *testing.T) {
 			want error
 		}{
 			{lockstep.Address{}, lockstep.ErrNotFound},
+			{lockstep.PIDAt[subMsg]("n1", "/user/s3").Address(), lockstep.ErrNotFound}, // no UID
 			{lockstep.PIDAt[subMsg]("n2", "/user/s").Address(), lockstep.ErrNotLocal},
 		} {
 			err := m.Subscribe(e.addr)
@@ -415,7 +416,7 @@ func TestATCLU22Unsubscribe(t *testing.T) {
 				tt.Errorf("Subscribe(%v) = %v, want cluster: subscribe %v: %v", e.addr, err, e.addr, e.want)
 			}
 		}
-		for _, addr := range []lockstep.Address{s2.pid.Address(), lockstep.PIDAt[subMsg]("n1", "/user/never").Address(), s3.pid.Address(), s1.pid.Address(), s1.pid.Address()} {
+		for _, addr := range []lockstep.Address{s2.pid.Address(), s3.pid.Address(), s1.pid.Address(), s1.pid.Address()} {
 			if err := m.Subscribe(addr); err != nil {
 				tt.Errorf("Subscribe(%v): %v", addr, err)
 			}

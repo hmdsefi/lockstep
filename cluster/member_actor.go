@@ -26,6 +26,11 @@ const (
 	actorPath = "/system/" + actorName
 )
 
+// mailboxCapacity is the capacity of the membership actor's mailbox, whose policy is FailSend: a
+// full mailbox refuses peer messages (the protocol tolerates their loss) and local commands (whose
+// caller gets the error), and never drops or blocks.
+const mailboxCapacity = 1024
+
 // recordPrefix starts the kind of every record of the package (§8); the wire names start with it
 // too, and the source of a merged update is its message's wire name without it (CLU-410).
 const recordPrefix = "lockstep.cluster."

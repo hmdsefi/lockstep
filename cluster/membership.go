@@ -70,7 +70,10 @@ func Join(sys *lockstep.System, c Config) (*Membership, error) {
 	if !ok {
 		panic("cluster: hooks.SystemSpawner returned no lockstep.Spawner") // unreachable
 	}
-	pid, err := lockstep.Spawn(sp, actorName, func() lockstep.Actor[memberMsg] { return newMemberActor(m) })
+	// An explicit mailbox, so that a system default that drops or blocks never applies: a command
+	// that does not fit is refused, and Subscribe and Leave return the error.
+	pid, err := lockstep.Spawn(sp, actorName, func() lockstep.Actor[memberMsg] { return newMemberActor(m) },
+		lockstep.WithMailbox(mailboxCapacity, lockstep.FailSend))
 	if err != nil {
 		hooks.ReleaseCluster(sys)
 		return nil, fmt.Errorf("cluster: join: %w", err)
@@ -85,44 +88,55 @@ func Join(sys *lockstep.System, c Config) (*Membership, error) {
 func (m *Membership) View() *View { return m.view.Load() }
 
 // Subscribe makes the local actor at addr a subscriber of membership signals, which reach its
-// Signal method (lockstep.SignalReceiver). The membership actor adds it in a later turn and then
-// sends it one lockstep.NodeUp for every member other than this node that is up in the latest
-// View, in node name order. After that, whenever a published View shows a member other than this
-// node come up, the subscriber receives NodeUp, and whenever one goes down, NodeDown, with Left
-// set when the member left gracefully; a member that restarted under a new ID gives NodeDown of
-// the old ID, then NodeUp of the new one. Every subscriber receives the signals in the order of the
-// Views, so for a subscriber that stays running the signals about each node name alternate,
-// starting with NodeUp. A signal that arrives while the subscriber is not running (suspended, or
-// between the incarnations of a restart) is dropped, as the runtime drops other signals then, and
-// the alternation may break for that subscriber.
+// Signal method (lockstep.SignalReceiver). addr must name one actor, with its UID, as the Address
+// of a PID that Spawn returned does. Subscribe returns before the subscription takes effect: the
+// membership actor adds the subscriber in its next turn and then sends it one lockstep.NodeUp for
+// every member other than this node that is up in the latest View, in node name order. After
+// that, whenever a published View shows a member other than this node come up, the subscriber
+// receives NodeUp, and whenever one goes down, NodeDown, with Left set when the member left
+// gracefully; a member that restarted under a new ID gives NodeDown of the old ID, then NodeUp of
+// the new one. Every subscriber receives the signals in the order of the Views, so for a
+// subscriber that stays running the signals about each node name alternate, starting with NodeUp.
+// A signal that arrives while the subscriber is not running (suspended, or between the
+// incarnations of a restart) is dropped, as the runtime drops other signals then, and the
+// alternation may break for that subscriber. A subscriber that restarts keeps its UID and stays
+// subscribed, and subscribing it again does nothing, so after a restart it reads View for the
+// current members. An actor that does not implement SignalReceiver stays subscribed and ignores
+// the signals.
 //
-// Subscribing a subscriber again does nothing. A subscriber is removed, or not added, when a
-// signal cannot be delivered to it because no actor is alive at addr. Subscribe returns an error
-// wrapping lockstep.ErrNotFound for the zero Address, lockstep.ErrNotLocal for an address on
-// another node, ErrLeft once Leave was called or the node left, and an error wrapping the send's
-// error when the request cannot reach the membership actor. Subscriptions survive a restart of
-// the membership actor.
+// A subscriber is removed, or not added, when a signal cannot be delivered to it because no actor
+// is alive at addr. Subscribe returns an error wrapping lockstep.ErrNotFound for the zero Address
+// or an Address without a UID, lockstep.ErrNotLocal for an address on another node, ErrLeft once
+// Leave was called or the node left, and an error wrapping the send's error when the request
+// cannot reach the membership actor, for example lockstep.ErrMailboxFull. Subscriptions survive a
+// restart of the membership actor.
 func (m *Membership) Subscribe(addr lockstep.Address) error {
 	switch {
 	case addr.IsZero():
 		return fmt.Errorf("cluster: subscribe %v: %w", addr, lockstep.ErrNotFound)
 	case addr.Node() != m.self.Node:
 		return fmt.Errorf("cluster: subscribe %v: %w", addr, lockstep.ErrNotLocal)
+	case addr.UID() == 0:
+		return fmt.Errorf("cluster: subscribe %v: %w", addr, lockstep.ErrNotFound)
 	case m.leaving.Load() || m.left.Load():
 		return fmt.Errorf("cluster: subscribe %v: %w", addr, ErrLeft)
 	}
 	if err := lockstep.Send(m.sys, m.pid, memberMsg(subscribeCmd{Addr: addr})); err != nil {
+		if m.left.Load() {
+			return fmt.Errorf("cluster: subscribe %v: %w", addr, ErrLeft)
+		}
 		return fmt.Errorf("cluster: subscribe %v: %w", addr, err)
 	}
 	return nil
 }
 
-// Unsubscribe removes the subscriber at addr. The membership actor removes it in a later turn; the
-// subscriber receives no signal of a View published after that. An address that is not a
-// subscriber is ignored.
+// Unsubscribe removes the subscriber at addr. It returns before the removal takes effect: the
+// membership actor removes the subscriber in its next turn, and the subscriber receives no signal
+// of a View published after that. An address that is not a subscriber is ignored, and so is the
+// request when it cannot reach the membership actor (the actor stopped, or its mailbox is full).
 func (m *Membership) Unsubscribe(addr lockstep.Address) {
 	if err := lockstep.Send(m.sys, m.pid, memberMsg(unsubscribeCmd{Addr: addr})); err != nil {
-		return // the actor has stopped, so it sends no more signals
+		return // the actor has stopped, so it sends no more signals, or the request did not fit
 	}
 }
 
@@ -130,14 +144,18 @@ func (m *Membership) Unsubscribe(addr lockstep.Address) {
 // marks the own entry Left, tells every other up member, publishes the View that shows it and
 // stops, and the other members see this node as Left, not Dead. Shutting the System down leaves in
 // the same way. Leave returns ErrLeft when it was called before or the node has left, and an error
-// wrapping the send's error when the request cannot reach the membership actor. A System that left
-// cannot join again: Join returns ErrAlreadyJoined.
+// wrapping the send's error when the request cannot reach the membership actor, for example
+// lockstep.ErrMailboxFull; Leave may then be called again. A System that left cannot join again:
+// Join returns ErrAlreadyJoined.
 func (m *Membership) Leave() error {
 	if m.left.Load() || !m.leaving.CompareAndSwap(false, true) {
 		return ErrLeft
 	}
 	if err := lockstep.Send(m.sys, m.pid, memberMsg(leaveCmd{})); err != nil {
 		m.leaving.Store(false)
+		if m.left.Load() {
+			return ErrLeft // the actor left meanwhile, as a shutdown makes it leave
+		}
 		return fmt.Errorf("cluster: leave: %w", err)
 	}
 	return nil
