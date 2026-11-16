@@ -18,11 +18,16 @@ import "github.com/hmdsefi/lockstep/internal/engine"
 var SystemSpawner func(sys any) any
 
 // NodeDown ends every watch a local actor of sys holds on an actor of node, with
-// Terminated{watched, Failed(reason)}, as WatchesDown does, then marks node down: until NodeUp, a
-// Watch of an address on node delivers Terminated{addr, Failed(reason)} at once and hands nothing
-// to the transport. Marking a marked node again replaces the reason. A node equal to sys's own is
-// ignored. Message routing does not change: sends and asks to node go to the transport as before.
-// It records nothing, and panics if reason is nil (CLU-530).
+// Terminated{watched, Failed(reason)}, as WatchesDown does, and hands the transport a RemoteUnwatch
+// for each, so that the transport and the peer drop them too. Then it marks node down: until
+// NodeUp, a Watch of an address on node delivers Terminated{addr, Failed(reason)} at once and hands
+// nothing to the transport. Marking a marked node again replaces the reason. A node equal to
+// sys's own is ignored. Message routing does not change: sends and asks to node go to the
+// transport as before. It records nothing, and panics if reason is nil (CLU-530). Call it in engine
+// context, inside a turn or a callback, as package cluster does from the membership actor's turn:
+// the transport's Deliver gets the RemoteUnwatch envelopes, and a call that races a Watch of an
+// address on node from another goroutine could reach the transport ahead of that Watch's
+// RemoteWatch, which would then stay registered.
 var NodeDown func(sys any, node string, reason error)
 
 // NodeUp clears node's down mark; a node without a mark is a no-op (CLU-530).
