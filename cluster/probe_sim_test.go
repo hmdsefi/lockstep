@@ -868,6 +868,54 @@ func TestATCLU13RefreshSuspects(t *testing.T) {
 	})
 }
 
+// CLU-400, the refresh pings: n1 is told of x, a fake member that never answers, and y, one that
+// does, with RetransmitMult 20 so that y's update stays queued for the whole run. x goes Suspect
+// when a probe of it fails, and every probe tick that targets y then also pings x with Seq 0. Each
+// of those refresh pings carries x's suspicion, n1's belief about x, and nothing else: the queued
+// update about y is not spent on them. The probes carry it as before.
+func TestATCLU13RefreshForcedOnly(t *testing.T) {
+	sim.Simulate(t, simOpts(10, 9*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		c := newSimCluster(s)
+		c.node("n1", Config{RetransmitMult: 20})
+		x, y := c.fake("x", true), c.fake("y", false)
+		w.RunFor(time.Millisecond)
+		start := c.recs("n1", "start")[0].At
+		n1 := lockstep.PIDAt[memberMsg]("n1", actorPath)
+		w.RunFor(start.Add(100 * time.Millisecond).Sub(w.Sim.Now()))
+		msg := syncResp{From: toUpdate(c.view("n1").Self), Members: []update{x.self, y.self}}
+		if err := sim.Send(s, "n1", n1, memberMsg(msg)); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(start.Add(7 * time.Second).Sub(w.Sim.Now()))
+
+		refreshes, probes := 0, 0
+		for _, g := range x.got {
+			p, ok := g.msg.(ping)
+			if !ok {
+				continue
+			}
+			if p.Seq != refreshSeq {
+				probes++
+				continue
+			}
+			refreshes++
+			want := []update{{Node: "x", ID: x.self.ID, State: Suspect}}
+			if !slices.Equal(p.Updates, want) {
+				tt.Errorf("x got a refresh ping at %s with updates %v, want only the suspicion %v", g.at, p.Updates, want)
+			}
+		}
+		if refreshes == 0 {
+			tt.Errorf("x got %d probes and no refresh ping, want at least one", probes)
+		}
+		for _, g := range y.got {
+			if p, ok := g.msg.(ping); ok && p.Seq != refreshSeq && !slices.Contains(p.Updates, y.self) {
+				tt.Errorf("y got a probe at %s with updates %v, want its own update among them", g.at, p.Updates)
+			}
+		}
+	})
+}
+
 // AT-CLU-16, CLU-240, CLU-300: n1 probes x, a node that never answers, with SuspicionTimeout
 // 2.5s. "incarnation": x goes Suspect at incarnation 0 at 2s and is Alive at incarnation 1 at
 // 2.25s, so the probe of 2s fails at 3s and x goes Suspect at 1. The timer of incarnation 0 fires
