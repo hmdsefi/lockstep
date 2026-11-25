@@ -30,9 +30,6 @@ import (
 const (
 	// propKeys is the number of keys the traffic goes to, "k0" to "k<propKeys-1>".
 	propKeys = 40
-	// grainSeeds is the default number of seeds of AT-VAC-21 and AT-VAC-22; FAULTLINE_SEEDS
-	// overrides it.
-	grainSeeds = 30
 	// trafficStep is the virtual time between two rounds of traffic.
 	trafficStep = 50 * time.Millisecond
 	// propIdle and propHandoff are the counter kind's IdleTimeout and HandoffTimeout: short, so
@@ -205,24 +202,39 @@ func versions(ps []proc, ms []*Membership) string {
 	return strings.Join(parts, " ")
 }
 
-// faultyDuration returns the length of a run of faultyGrains: the fault phase, a recovery window
-// longer than R(N), and as long again after the final crash.
+// finalCrash is when faultyGrains crashes a node for good: just after the random faults ended, so
+// that the nodes the planner crashed have restarted.
+const finalCrash = faultyPhase + time.Second
+
+// faultyDuration returns the length of a run of faultyGrains: the fault phase, the final crash and
+// a recovery window of R(N) of the largest cluster and 5s after it.
 func faultyDuration() time.Duration {
-	return faultyPhase + 2*settleAfter()
+	return finalCrash + boundsOf(simConfig(), maxNodes).converge + 5*time.Second
 }
 
-// settleAfter returns the time the workload of faultyGrains leaves the cluster to converge after
-// its last fault: R(N) of the largest cluster and 5s.
-func settleAfter() time.Duration {
-	return boundsOf(simConfig(), maxNodes).converge + 5*time.Second
+// victim returns the node to crash for good: the node a random key, of those last seen active under
+// agreement on a live node, was last seen on; a random live node when there is none.
+func (a *agreement) victim(s *sim.Sim, r *rand.Rand) string {
+	var live []string
+	for _, key := range slices.Sorted(maps.Keys(a.last)) {
+		if s.System(a.last[key]) != nil {
+			live = append(live, a.last[key])
+		}
+	}
+	if len(live) == 0 {
+		for _, p := range a.tr.live() {
+			live = append(live, p.node)
+		}
+	}
+	return live[r.IntN(len(live))]
 }
 
 // faultyGrains is the workload of AT-VAC-21: the nodes of a drawn cluster seed each other and
 // host counter; random partitions, isolations, pauses and crashes (each crashed node restarted
 // with a new ID after a while) run until the recovery window, and from time to time the host of a
-// random live node fails (it restarts empty, VAC-450). Once the recovery window has outlasted
-// R(N), a random node crashes for good, so that its keys move to other nodes under agreement in
-// every seed. Grain traffic runs from start to end. The invariant checks VAC-800 after every
+// random live node fails (it restarts empty, VAC-450). When the random faults end, a node that a key
+// was last seen active on under agreement crashes for good, so that in every seed a key moves to
+// another node under agreement during the recovery window. Grain traffic runs from start to end. The invariant checks VAC-800 after every
 // event. It returns the processes of the run, the number of host failures injected and the number
 // of moves of keys between nodes under agreement before the final crash; the run is over when it
 // returns.
@@ -247,14 +259,13 @@ func faultyGrains(s *sim.Sim) ([]proc, int, int) {
 	tf := &traffic{s: s, c: c, names: names, r: w.Rand("grain/traffic")}
 	r := w.Rand("grain/host-fail")
 	fails, moved := 0, 0
-	crashAt := kernel.Time(0).Add(faultyPhase + settleAfter())
-	victim := names[w.Rand("grain/crash").IntN(len(names))]
+	crashAt := kernel.Time(0).Add(finalCrash)
 	for w.Sim.Now() < w.End() {
 		tf.runFor(min(trafficStep, w.End().Sub(w.Sim.Now())), 2)
 		if crashAt > 0 && w.Sim.Now() >= crashAt {
 			crashAt = 0
 			moved = a.moved
-			w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: victim})
+			w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: a.victim(s, w.Rand("grain/crash"))})
 		}
 		if r.IntN(200) != 0 || w.Sim.Now() >= kernel.Time(0).Add(faultyPhase) {
 			continue
@@ -515,10 +526,10 @@ func overlap(c *simCluster, all map[string][]span) error {
 // node, an invariant checks after every event: whenever agreement holds (VAC §3: every up joined
 // node is settled, and all of them list the same (Node, ID) pairs as up), no key is in the
 // HostInfo.Active of counter of two up joined nodes. An up joined node is a live process, by the
-// simulator's ground truth, whose membership has joined and has not left. After a recovery window
-// longer than R(N), one node crashes for good. At the end, R(N) later, agreement holds; during the
-// run it held with active keys, and keys moved to another node between checks under agreement (a
-// key that comes back on a restarted process of the same node does not count).
+// simulator's ground truth, whose membership has joined and has not left. When the random faults
+// end, one node crashes for good. At the end, more than R(N) later, agreement holds; during the run
+// it held with active keys, and keys moved to another node between checks under agreement (a key
+// that comes back on a restarted process of the same node does not count).
 //
 // The final crash moves keys in every seed. The random faults must move keys under agreement too,
 // in at least half the runs (when there are at least 10): faults shorter than D(N) heal before
@@ -582,9 +593,6 @@ func TestATVAC22OrderedHandover(t *testing.T) {
 		t.Errorf("no handoff request of %d runs found the key's activation running, want some", seeds)
 	}
 }
-
-// drawSeeds is the number of seeds of each workload of AT-VAC-23.
-const drawSeeds = 8
 
 // AT-VAC-23, §6: both workloads above, run twice per seed with faultline's determinism check
 // whatever LOCKSTEP_CHECK_DETERMINISM says, give equal trace hashes. At the end of each run, no
