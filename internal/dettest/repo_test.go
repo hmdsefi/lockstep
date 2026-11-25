@@ -25,6 +25,7 @@ const (
 	faultlineMod   = "github.com/hmdsefi/faultline"
 	gographMod     = "github.com/hmdsefi/gograph"
 	goleakMod      = "go.uber.org/goleak"
+	tenureMod      = "github.com/hmdsefi/tenure"
 
 	// pinnedFaultline is the faultline version of the root go.mod (REP-135). Upgrading faultline
 	// changes this constant, go.mod, go.sum and REP-010 in one change.
@@ -33,6 +34,9 @@ const (
 	faultlineGograph = "v0.8.2"
 	// pinnedGoleak is the goleak version of the root go.mod (REP-010).
 	pinnedGoleak = "v1.3.0"
+	// pinnedTenure is the tenure version of the root go.mod (REP-135); cluster imports its core
+	// package for rendezvous placement. tenure has no requirements of its own.
+	pinnedTenure = "v0.2.0"
 
 	goVersion = "1.26.0"
 )
@@ -117,9 +121,10 @@ func goModViolations(t *testing.T, path string) []string {
 		lines = append(lines, fmt.Sprintf("go.mod: retract [%s, %s] is not allowed", r.Low, r.High))
 	}
 
-	// The root module requires faultline, gograph and goleak only, each at the version REP-010
-	// pins (goleak is there for dettest.Main).
-	want := map[string]string{faultlineMod: pinnedFaultline, gographMod: faultlineGograph, goleakMod: pinnedGoleak}
+	// The root module requires faultline, gograph, goleak and tenure only, each at the version
+	// REP-010 pins (goleak is there for dettest.Main, tenure for cluster's placement).
+	want := map[string]string{faultlineMod: pinnedFaultline, gographMod: faultlineGograph, goleakMod: pinnedGoleak,
+		tenureMod: pinnedTenure}
 	seen := map[string]bool{}
 	for _, r := range m.Require {
 		seen[r.Path] = true
@@ -133,7 +138,7 @@ func goModViolations(t *testing.T, path string) []string {
 			lines = append(lines, fmt.Sprintf("go.mod: requires %s %s, want %s", r.Path, r.Version, v))
 		}
 	}
-	for _, p := range []string{faultlineMod, gographMod, goleakMod} {
+	for _, p := range []string{faultlineMod, gographMod, goleakMod, tenureMod} {
 		if !seen[p] {
 			lines = append(lines, fmt.Sprintf("go.mod: missing requirement %s %s", p, want[p]))
 		}
@@ -175,6 +180,18 @@ func TestGoMod(t *testing.T) {
 				return strings.Replace(s, goleakMod+" "+pinnedGoleak, goleakMod+" v1.2.0", 1)
 			},
 			want: []string{"requires " + goleakMod + " v1.2.0, want " + pinnedGoleak},
+		},
+		{
+			name:   "tenure removed",
+			change: func(s string) string { return dropRequire(s, tenureMod) },
+			want:   []string{"missing", tenureMod, pinnedTenure},
+		},
+		{
+			name: "tenure at another version",
+			change: func(s string) string {
+				return strings.Replace(s, tenureMod+" "+pinnedTenure, tenureMod+" v0.1.0", 1)
+			},
+			want: []string{"requires " + tenureMod + " v0.1.0, want " + pinnedTenure},
 		},
 		{
 			name: "faultline at another version",

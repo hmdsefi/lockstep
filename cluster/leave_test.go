@@ -84,7 +84,7 @@ func runLeave(t *testing.T, leave func(tt testing.TB, s *sim.Sim, c *simCluster)
 		if !slices.Equal(got, want) {
 			tt.Errorf("n3's records from the leave: %q, want %q", got, want)
 		}
-		if self := c.view("n3").Self; self != (Member{Node: "n3", ID: id3, State: Left}) {
+		if self := c.view("n3").Self; !sameMember(self, Member{Node: "n3", ID: id3, State: Left}) {
 			tt.Errorf("n3's own entry %v, want Left at incarnation 0", self)
 		}
 		if _, err := lockstep.Lookup[memberMsg](sys3, actorPath); !errors.Is(err, lockstep.ErrNotFound) && !errors.Is(err, lockstep.ErrStopped) {

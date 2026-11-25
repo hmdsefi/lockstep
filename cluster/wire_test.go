@@ -93,7 +93,7 @@ func TestUpdateMember(t *testing.T) {
 	if got := toUpdate(m); got != (update{Node: "a", ID: 3, Inc: 4, State: Suspect}) {
 		t.Fatalf("toUpdate = %+v", got)
 	}
-	if got := toUpdate(m).member(); got != m {
+	if got := toUpdate(m).member(); !sameMember(got, m) {
 		t.Fatalf("member = %+v", got)
 	}
 	// Every wire type is a memberMsg (checked at compile time).

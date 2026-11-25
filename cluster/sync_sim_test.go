@@ -376,7 +376,7 @@ func TestATCLU27ReconnectSync(t *testing.T) {
 			}
 			w.RunFor(partitionAt)
 			for _, n := range names {
-				if v := c.view(n); !slices.Equal(v.Members, current()) {
+				if v := c.view(n); !slices.EqualFunc(v.Members, current(), sameMember) {
 					tt.Fatalf("%s's view before the partition: %v, want %v", n, v.Members, current())
 				}
 			}
@@ -587,10 +587,10 @@ func alive(name string, id uint32) Member { return Member{Node: name, ID: id, St
 // of self.
 func expectView(tt testing.TB, name string, v *View, want []Member) {
 	tt.Helper()
-	if !slices.Equal(v.Members, want) {
+	if !slices.EqualFunc(v.Members, want, sameMember) {
 		tt.Errorf("%s's view %d has members %v, want %v", name, v.Version, v.Members, want)
 	}
-	if i := slices.IndexFunc(want, func(m Member) bool { return m.Node == name }); i < 0 || v.Self != want[i] {
+	if i := slices.IndexFunc(want, func(m Member) bool { return m.Node == name }); i < 0 || !sameMember(v.Self, want[i]) {
 		tt.Errorf("%s's view %d has Self %v", name, v.Version, v.Self)
 	}
 }

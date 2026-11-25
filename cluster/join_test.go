@@ -145,7 +145,7 @@ func TestATCLU01Join(t *testing.T) {
 			}
 			self := Member{Node: "n1", ID: sys.Incarnation(), Incarnation: 0, State: Alive}
 			for _, v := range []*View{first, c.view("n1")} {
-				if v.Version != 1 || v.Self != self || !slices.Equal(v.Members, []Member{self}) || !slices.Equal(v.Up(), []Member{self}) {
+				if v.Version != 1 || !reflect.DeepEqual(v.Self, self) || !reflect.DeepEqual(v.Members, []Member{self}) || !reflect.DeepEqual(v.Up(), []Member{self}) {
 					tt.Errorf("view %+v, want version 1 with only %v", v, self)
 				}
 			}
@@ -373,11 +373,11 @@ func TestATCLU29Views(t *testing.T) {
 				if sn.version != uint64(i+1) {
 					tt.Errorf("view %d has version %d, want %d", i, sn.version, i+1)
 				}
-				if sn.v.Version != sn.version || sn.v.Self != sn.self || !slices.Equal(sn.v.Members, sn.members) {
+				if sn.v.Version != sn.version || !reflect.DeepEqual(sn.v.Self, sn.self) || !reflect.DeepEqual(sn.v.Members, sn.members) {
 					tt.Errorf("view %d changed after it was published: %+v, was %v %v", sn.version, sn.v, sn.self, sn.members)
 				}
 			}
-			if last := views[len(views)-1].v; !slices.Equal(last.Members, []Member{self}) {
+			if last := views[len(views)-1].v; !reflect.DeepEqual(last.Members, []Member{self}) {
 				tt.Errorf("the last view holds %v, want only %v", last.Members, self)
 			}
 			v := views[1].v

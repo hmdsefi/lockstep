@@ -11,6 +11,7 @@ func Lockstep(root string) Module {
 		faultline = "github.com/hmdsefi/faultline"
 		gograph   = "github.com/hmdsefi/gograph/..."
 		goleak    = "go.uber.org/goleak"
+		tenure    = "github.com/hmdsefi/tenure"
 	)
 
 	// DET-050: the determinism class of every package directory.
@@ -73,7 +74,7 @@ func Lockstep(root string) Module {
 		"dedup":             std(),
 		"codec":             std(""),
 		"remote":            std("", "codec", "internal/engine", "internal/hooks", "internal/remoting"),
-		"cluster":           std("", "codec", "internal/hooks"),
+		"cluster":           {Stdlib: true, External: []string{tenure + "/core"}, Packages: []string{"", "codec", "internal/hooks"}},
 		"cmd/lockstep": {
 			Stdlib:   true,
 			External: []string{faultline + "/artifact", faultline + "/kernel", faultline + "/kernel/fault"},

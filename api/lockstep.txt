@@ -243,6 +243,8 @@ pkg github.com/hmdsefi/lockstep/cluster, const Suspect = 2
 pkg github.com/hmdsefi/lockstep/cluster, const Suspect MemberState
 pkg github.com/hmdsefi/lockstep/cluster, func DefaultConfig() Config
 pkg github.com/hmdsefi/lockstep/cluster, func Join(*lockstep.System, Config) (*Membership, error)
+pkg github.com/hmdsefi/lockstep/cluster, func Owner(*View, string, string) (string, bool)
+pkg github.com/hmdsefi/lockstep/cluster, func Score(string, string, string) uint64
 pkg github.com/hmdsefi/lockstep/cluster, method (*Config) Validate() error
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Leave() error
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Subscribe(lockstep.Address) error
@@ -266,6 +268,7 @@ pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SyncInterval time.D
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, ID uint32
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Incarnation uint64
+pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Kinds []string
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Node string
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, State MemberState
 pkg github.com/hmdsefi/lockstep/cluster, type MemberState uint8
