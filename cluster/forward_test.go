@@ -76,16 +76,14 @@ func twoNodes(s *sim.Sim, l *grainLog, texts *[]string, edit func(node string, c
 	return c
 }
 
-// keysOf returns the first n keys "k<i>" of kind that owner owns in node's view.
-func (c *simCluster) keysOf(node, kind, owner string, n int) []string {
-	var out []string
-	for i := 0; len(out) < n; i++ {
+// keyOf returns the first key "k<i>" of kind that owner owns in node's view.
+func (c *simCluster) keyOf(node, kind, owner string) string {
+	for i := 0; ; i++ {
 		key := "k" + strconv.Itoa(i)
 		if o, _ := Owner(c.view(node), kind, key); o == owner {
-			out = append(out, key)
+			return key
 		}
 	}
-	return out
 }
 
 // envOf returns the envelope of v for key of kind with hops, encoded as Grain.Send does.
@@ -118,7 +116,7 @@ func TestATVAC18RemoteSend(t *testing.T) {
 		var texts []string
 		c := twoNodes(s, l, &texts, nil)
 		m1, s1 := c.ms["n1"], s.System("n1")
-		key := c.keysOf("n1", "counter", "n2", 1)[0]
+		key := c.keyOf("n1", "counter", "n2")
 
 		g := GrainOf[gmsg](m1, "counter", key)
 		for n := 1; n <= 5; n++ {
@@ -163,14 +161,14 @@ func TestATVAC18Forward(t *testing.T) {
 				cfg.MaxHops = 2
 			}
 		})
-		key := c.keysOf("n2", "counter", "n1", 1)[0]
+		key := c.keyOf("n2", "counter", "n1")
 
 		sendEnv(tt, s, "n2", envOf(tt, "counter", key, 0, gmsg{N: 1}))
 		sendEnv(tt, s, "n2", envOf(tt, "counter", key, 1, gmsg{N: 2}))
 		sendEnv(tt, s, "n2", envOf(tt, "counter", key, 2, gmsg{N: 3})) // MaxHops
 		sendEnv(tt, s, "n2", envOf(tt, "counter", key, 7, gmsg{N: 4})) // beyond MaxHops
 		// By reference: n2 cannot encode it, since its registry does not hold gmsg.
-		sendLocal(tt, s, "n2", key, gmsg{N: 5})
+		sendLocalKind(tt, s, "n2", "counter", key, gmsg{N: 5})
 		w.RunFor(100 * time.Millisecond)
 		expectStrings(tt, "n2's forwards", c.grainRecs("n2", "forward"), []string{
 			"kind=counter key=" + key + " to=n1 hops=1",
@@ -188,7 +186,7 @@ func TestATVAC18Forward(t *testing.T) {
 
 		// n1 encodes by reference: a message it holds for a key that n2 owns, and one it cannot
 		// encode (NaN), which Send reports too.
-		mine := c.keysOf("n1", "text", "n2", 1)[0]
+		mine := c.keyOf("n1", "text", "n2")
 		sendLocalKind(tt, s, "n1", "text", mine, tmsg{S: "held"})
 		sendLocalKind(tt, s, "n1", "text", mine, tmsg{S: "nan", F: math.NaN()})
 		m1, s1 := c.ms["n1"], s.System("n1")
@@ -287,7 +285,7 @@ func TestATVAC18ForwardSendError(t *testing.T) {
 		l := &grainLog{}
 		var texts []string
 		c := twoNodes(s, l, &texts, nil)
-		key := c.keysOf("n1", "text", "n2", 1)[0]
+		key := c.keyOf("n1", "text", "n2")
 		big := tmsg{S: strings.Repeat("x", 5000)}
 		m1, s1 := c.ms["n1"], s.System("n1")
 		err := GrainOf[tmsg](m1, "text", key).Send(s1, big)
