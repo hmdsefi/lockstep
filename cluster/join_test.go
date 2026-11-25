@@ -41,7 +41,7 @@ func shutdown(t *testing.T, sys *lockstep.System) {
 }
 
 // expectPanic fails t unless fn panics with want.
-func expectPanic(t *testing.T, want string, fn func()) {
+func expectPanic(t testing.TB, want string, fn func()) {
 	t.Helper()
 	defer func() {
 		t.Helper()

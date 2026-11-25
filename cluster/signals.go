@@ -65,18 +65,28 @@ func (a *memberActor) noteTransitions(c change) {
 }
 
 // publish ends a turn: if the table changed in it, it publishes the next view and records it
-// (CLU-500), then delivers the turn's transitions in order (CLU-530). A published view is never
-// changed.
+// (CLU-500); if the node joined in it, it sets Membership.joined; after either it tells the grain
+// hosts (announceView); then it delivers the turn's transitions in order (CLU-530). A published
+// view is never changed.
 func (a *memberActor) publish(ctx *lockstep.Context[memberMsg]) {
+	joined := a.newlyJoined
+	a.newlyJoined = false
 	if !a.changed {
+		if joined {
+			a.m.joined.Store(true)
+			a.announceView(ctx)
+		}
 		return
 	}
 	a.changed = false
 	trans := a.trans
 	a.trans = nil
 	m := a.m
-	v := &View{Version: m.view.Load().Version + 1, Self: a.tbl.Self(), Members: a.tbl.Members()}
+	v := newView(m.view.Load().Version+1, a.tbl.Self(), a.tbl.Members())
 	m.view.Store(v)
+	if joined {
+		m.joined.Store(true) // after the view: who reads joined, then the view, sees v or later
+	}
 	ctl := tracer(ctx)
 	if ctl != nil {
 		up := 0
@@ -88,6 +98,7 @@ func (a *memberActor) publish(ctx *lockstep.Context[memberMsg]) {
 		ctl.Record(recordPrefix+"view", "version", strconv.FormatUint(v.Version, 10),
 			"members", strconv.Itoa(len(v.Members)), "up", strconv.Itoa(up))
 	}
+	a.announceView(ctx)
 	for _, t := range trans {
 		var sig lockstep.Signal
 		if t.up {
@@ -137,5 +148,22 @@ func (a *memberActor) subscribe(addr lockstep.Address) {
 func (a *memberActor) unsubscribe(addr lockstep.Address) {
 	if i := slices.Index(a.m.subs, addr); i >= 0 {
 		a.m.subs = slices.Delete(a.m.subs, i, i+1)
+	}
+}
+
+// announceView sends viewChanged to the host of every configured kind, by path, in the order of
+// Config.Kinds (VAC-300, CLU-500). A send error is ignored: a host reads the latest view and the
+// joined flag at every turn, so a notification it misses is made up for by its next message, and
+// a host that is not running reads them when it starts.
+func (a *memberActor) announceView(ctx *lockstep.Context[memberMsg]) {
+	for _, pid := range a.m.hostPIDs {
+		notifyHost(ctx, pid)
+	}
+}
+
+// notifyHost sends viewChanged to the host at pid and ignores a send error (announceView).
+func notifyHost(ctx *lockstep.Context[memberMsg], pid lockstep.PID[hostMsg]) {
+	if err := lockstep.Send(ctx, pid, hostMsg(viewChanged{})); err != nil {
+		return // the host catches up at its next turn
 	}
 }
