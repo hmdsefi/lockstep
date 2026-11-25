@@ -18,10 +18,11 @@ import (
 )
 
 // gmsg is the message type of the test grains: N is added to the grain's sum, a non-zero Reply is
-// answered with the sum, and Stop makes the activation stop after it.
+// answered with the sum, Stop makes the activation stop after it and Fail makes it fail after it.
 type gmsg struct {
 	N     int
 	Stop  bool
+	Fail  bool
 	Reply lockstep.ReplyTo[int]
 }
 
@@ -62,6 +63,9 @@ func logKind(name string, l *grainLog, opts ...KindOption) Kind {
 			if m.Stop {
 				ctx.Stop()
 			}
+			if m.Fail {
+				ctx.Fail(errors.New("grain failed"))
+			}
 		})
 	}, opts...)
 }
@@ -97,7 +101,8 @@ func expectHost(tt testing.TB, c *simCluster, node string, want HostInfo) {
 	tt.Helper()
 	got, ok := c.ms[node].Host(want.Kind)
 	if !ok || got.Kind != want.Kind || got.Version != want.Version || got.Joined != want.Joined ||
-		!slices.Equal(got.Active, want.Active) || got.Stopping != nil || got.Acquiring != nil || got.Buffered != want.Buffered {
+		!slices.Equal(got.Active, want.Active) || !slices.Equal(got.Stopping, want.Stopping) || got.Acquiring != nil ||
+		got.Buffered != want.Buffered {
 		tt.Errorf("%s's Host(%q) = %+v, %v, want %+v", node, want.Kind, got, ok, want)
 	}
 }
@@ -354,10 +359,11 @@ func TestHostRestartStartsEmpty(t *testing.T) {
 	})
 }
 
-// VAC-310 rules 4 to 7 before forwarding (3.4-05): a message for a key that another node owns is
-// dropped with reason no-owner, also when the key is active here (rule 4 comes before rule 5); a
-// key this node owns activates; once no up member hosts the kind (the node left), an active key
-// still gets its messages and another key is dropped with reason no-owner. The host applies the
+// VAC-310 rules 4 to 7 before forwarding (3.4-05), VAC-500 step 3: a message for a key that
+// another node owns is dropped with reason no-owner; an active key that another node owns in a new
+// view is passivated with reason ownership, so its next message is dropped too; a key this node
+// owns activates; once this node has left, its active keys are passivated with reason leave and
+// every key is dropped with reason no-owner (no up member hosts the kind). The host applies the
 // views the membership actor publishes (CLU-500): HostInfo.Version follows View().Version. n1 and
 // n2 do not know each other.
 func TestHostRoutingRules(t *testing.T) {
@@ -398,7 +404,9 @@ func TestHostRoutingRules(t *testing.T) {
 		}
 		w.RunFor(10 * time.Millisecond)
 		v := m.View()
-		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: v.Version, Joined: true, Active: []string{active}})
+		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: v.Version, Joined: true})
+		expectStrings(tt, "passivations", c.grainRecs("n1", "passivate"), []string{"kind=counter key=" + active + " reason=ownership"})
+		expectStrings(tt, "stopped", c.grainRecs("n1", "stopped"), []string{"kind=counter key=" + active})
 		for _, key := range theirs {
 			if o, _ := Owner(v, "counter", key); o != "a" {
 				tt.Fatalf("Owner(%s) = %s, want a", key, o)
@@ -416,8 +424,9 @@ func TestHostRoutingRules(t *testing.T) {
 			tt.Errorf("%s got %v, want [4]", mine[0], got)
 		}
 
-		// n2 has no other member. After it leaves, no up member hosts counter in its view: an
-		// active key still gets its messages (rule 5) and another key has no owner (rule 7).
+		// n2 has no other member. After it leaves, it is not up in its view: its active key is
+		// passivated with reason leave, and no up member hosts counter, so every key has no owner
+		// (rule 7).
 		m2, sys2 := c.ms["n2"], s.System("n2")
 		if err := GrainOf[gmsg](m2, "counter", "x").Send(sys2, gmsg{N: 7}); err != nil {
 			tt.Fatal(err)
@@ -431,14 +440,18 @@ func TestHostRoutingRules(t *testing.T) {
 		if self, _ := v.Member("n2"); self.State != Left {
 			tt.Fatalf("n2 is %v after Leave", self.State)
 		}
-		expectHost(tt, c, "n2", HostInfo{Kind: "counter", Version: v.Version, Joined: true, Active: []string{"x"}})
+		expectHost(tt, c, "n2", HostInfo{Kind: "counter", Version: v.Version, Joined: true})
+		expectStrings(tt, "n2's passivations", c.grainRecs("n2", "passivate"), []string{"kind=counter key=x reason=leave"})
 		sendLocal(tt, s, "n2", "x", gmsg{N: 8})
 		sendLocal(tt, s, "n2", "y", gmsg{N: 9})
 		w.RunFor(10 * time.Millisecond)
-		if got := l.of("x"); !slices.Equal(got, []int{7, 8}) {
-			tt.Errorf("x got %v, want [7 8]", got)
+		if got := l.of("x"); !slices.Equal(got, []int{7}) {
+			tt.Errorf("x got %v, want [7]", got)
 		}
-		expectStrings(tt, "n2's drops", c.grainRecs("n2", "drop"), []string{"kind=counter key=y reason=no-owner hops=0"})
+		expectStrings(tt, "n2's drops", c.grainRecs("n2", "drop"), []string{
+			"kind=counter key=x reason=no-owner hops=0",
+			"kind=counter key=y reason=no-owner hops=0",
+		})
 	})
 }
 
