@@ -7,25 +7,26 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/tenure/core"
 )
 
-// The grain hosts (VAC-300 to VAC-350, VAC-410, VAC-500, VAC-600). Join spawns the system actor
-// /system/grains, which spawns one host per configured kind at /system/grains/<kind>. A host
-// routes the messages for the grains of its kind (VAC-310), activates the keys this node owns as
-// its children, named by their escaped keys (VAC-410), delivers in arrival order (VAC-330), holds
-// messages it cannot route yet in buffers bounded across keys (VAC-340) and publishes HostInfo
-// (VAC-600). Hosts are actor code: no wall clock, randomness, goroutines, select, map ranges or
-// locks (§6).
+// The grain hosts (VAC-300 to VAC-350, VAC-410 to VAC-450, VAC-500, VAC-600). Join spawns the
+// system actor /system/grains, which spawns one host per configured kind at /system/grains/<kind>.
+// A host routes the messages for the grains of its kind (VAC-310), activates the keys this node
+// owns as its children, named by their escaped keys (VAC-410), delivers in arrival order
+// (VAC-330), passivates idle activations (VAC-420), holds messages it cannot route yet in buffers
+// bounded across keys (VAC-340) and publishes HostInfo (VAC-600). Hosts are actor code: no wall
+// clock, randomness, goroutines, select, map ranges or locks (§6).
 //
 // This file implements the local path (3.4-03): routing rules 1, 3, 5, 6 and 7; rule 4 (another
 // node owns the key) drops with no-owner until 3.4-05 forwards, and rule 2 (yields) comes with
 // 3.4-06, as do handoff peers: every activation is handoff=none. Of VAC-500, steps 1 (without the
-// previous view), 5 and 6.
+// previous view), 3, 5 and 6. Passivation and the stops of activations and hosts (3.4-04) are in
+// passivate.go.
 
 // The paths of the grains actor and of the hosts under it (VAC-300).
 const (
@@ -88,6 +89,9 @@ type viewChanged struct{}
 
 func (localGrain) hostMsg()  {}
 func (viewChanged) hostMsg() {}
+func (idleTick) hostMsg()    {}
+func (handoffAck) hostMsg()  {}
+func (hostCall) hostMsg()    {}
 
 // grainsMsg is the message type of the grains actor, which receives none.
 type grainsMsg struct{}
@@ -123,10 +127,11 @@ func (*grainsActor) Receive(*lockstep.Context[grainsMsg], grainsMsg) {}
 // grainPhase is the phase of a key that has state in a host.
 type grainPhase uint8
 
-// The phases of a key. 3.4-04 adds stopping and 3.4-06 acquiring; routing rule 3 holds the
-// messages of a key in any phase but active.
+// The phases of a key. 3.4-06 adds acquiring; routing rule 3 holds the messages of a key in any
+// phase but active.
 const (
-	phaseActive grainPhase = iota + 1 // a running activation: messages are delivered
+	phaseActive   grainPhase = iota + 1 // a running activation: messages are delivered
+	phaseStopping                       // the activation was asked to stop: messages are held
 )
 
 // grain is the state of one key in a host.
@@ -135,6 +140,11 @@ type grain struct {
 	addr  lockstep.Address // the activation
 	pid   any              // the activation's lockstep.PID[M], for Kind.send
 	held  []any            // the messages held for the key, in arrival order (rule 3)
+
+	gen   uint64           // the activation's generation, carried by its idle timer (VAC-420)
+	timer lockstep.TimerID // the activation's pending idle timer, cancelled when it stops
+	last  time.Time        // when the host last delivered to the activation, or activated it (VAC-420)
+	acks  []pendingAck     // the handoff acks to send once the activation has stopped (VAC-430, VAC-510)
 }
 
 // heldMsg is a message held in the joining buffer (rule 1).
@@ -159,8 +169,10 @@ type host struct {
 
 	keys     map[string]*grain // by raw key; never ranged
 	active   keyList           // the keys in phaseActive
+	stopping keyList           // the keys in phaseStopping
 	joining  []heldMsg         // held until the node has joined, in arrival order (rule 1)
 	buffered int               // the messages held in joining and in every key's held (VAC-340)
+	gen      uint64            // the generation of the last activation (VAC-420)
 	changed  bool              // HostInfo changed in this turn (VAC-600)
 }
 
@@ -175,14 +187,18 @@ func (h *host) Started(ctx *lockstep.Context[hostMsg]) {
 	h.endTurn()
 }
 
-// Receive routes a message for a grain; first it applies a newer view, which is all viewChanged
-// asks for.
+// Receive routes a message for a grain or handles an idle timer; first it applies a newer view,
+// which is all viewChanged asks for. A handoffAck does nothing until 3.4-06.
 func (h *host) Receive(ctx *lockstep.Context[hostMsg], msg hostMsg) {
 	h.sync(ctx)
 	switch msg := msg.(type) {
 	case localGrain:
 		h.route(ctx, msg.Key, msg.Msg)
-	case viewChanged:
+	case idleTick:
+		h.idle(ctx, msg)
+	case hostCall:
+		msg(ctx, h)
+	case viewChanged, handoffAck:
 	}
 	h.endTurn()
 }
@@ -194,18 +210,6 @@ func (h *host) Signal(ctx *lockstep.Context[hostMsg], sig lockstep.Signal) {
 		h.terminated(ctx, t)
 	}
 	h.endTurn()
-}
-
-// Stopped drops every held message with reason host and publishes a HostInfo without keys or
-// buffered messages: the activations, its children, have stopped before (VAC-450). It runs for a
-// restart too; the next incarnation starts empty.
-func (h *host) Stopped(ctx *lockstep.Context[hostMsg], _ lockstep.StopReason) {
-	for _, x := range h.joining {
-		h.drop(ctx, x.key, dropHost)
-	}
-	h.joining, h.buffered, h.active = nil, 0, keyList{}
-	h.keys = map[string]*grain{}
-	h.publish()
 }
 
 // endTurn publishes HostInfo if the turn changed it (VAC-600).
@@ -220,13 +224,14 @@ func (h *host) endTurn() {
 func (h *host) publish() {
 	h.changed = false
 	h.info.Store(&HostInfo{Kind: h.kind.name, Version: h.version, Joined: h.joined,
-		Active: h.active.snapshot(), Buffered: h.buffered})
+		Active: h.active.snapshot(), Stopping: h.stopping.snapshot(), Buffered: h.buffered})
 }
 
 // sync applies the latest view when it is newer than the applied one, or when the node has joined
 // since (VAC-300, VAC-500): it reads the joined flag first, so the view is at least the one of the
-// turn that joined. A newly joined node routes the joining buffer in arrival order (step 5); then
-// the host publishes HostInfo and records lockstep.grain.view (step 6).
+// turn that joined. The host passivates the active keys it does not own in the view (step 3); a
+// newly joined node routes the joining buffer in arrival order (step 5); then the host publishes
+// HostInfo and records lockstep.grain.view (step 6).
 func (h *host) sync(ctx *lockstep.Context[hostMsg]) {
 	joined := h.m.joined.Load()
 	v := h.m.view.Load()
@@ -236,6 +241,7 @@ func (h *host) sync(ctx *lockstep.Context[hostMsg]) {
 	newly := joined && !h.joined
 	h.applied, h.version, h.joined = true, v.Version, joined
 	h.members = v.place.hosts(h.kind.name)
+	h.passivateNotOwned(ctx, v.Self.State.Up())
 	if newly {
 		held := h.joining
 		h.joining = nil
@@ -291,18 +297,21 @@ func (h *host) hold(ctx *lockstep.Context[hostMsg], key string) bool {
 	return true
 }
 
-// deliver sends msg to the activation of key (VAC-330); a refused send drops it with reason
-// mailbox.
+// deliver sends msg to the activation of key (VAC-330) and makes it the activation's last
+// delivery (VAC-420); a refused send drops it with reason mailbox and is no delivery.
 func (h *host) deliver(ctx *lockstep.Context[hostMsg], key string, g *grain, msg any) {
 	if err := h.kind.send(ctx, g.pid, msg); err != nil {
 		h.drop(ctx, key, dropMailbox)
+		return
 	}
+	g.last = ctx.Now()
 }
 
 // activate activates key with no handoff peers and delivers msg to it (VAC-410): it spawns the
 // activation under the host, named by the escaped key, with the kind's activation options and the
-// kind's factory called with key, watches it, records lockstep.grain.activate and delivers. A
-// spawn that fails drops msg with reason activate and leaves the key without state.
+// kind's factory called with key, watches it, records lockstep.grain.activate, delivers and arms
+// the idle timer of the activation's generation (VAC-420). A spawn that fails drops msg with
+// reason activate and leaves the key without state.
 func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 	addr, pid, err := h.kind.spawn(ctx, escapeKey(key), key, h.kind.activation)
 	if err == nil {
@@ -318,7 +327,8 @@ func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 		h.drop(ctx, key, dropActivate)
 		return
 	}
-	g := &grain{phase: phaseActive, addr: addr, pid: pid}
+	h.gen++
+	g := &grain{phase: phaseActive, addr: addr, pid: pid, gen: h.gen, last: ctx.Now()}
 	h.keys[key] = g
 	h.active.add(key)
 	h.changed = true
@@ -326,27 +336,7 @@ func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 		ctl.Record(grainPrefix+"activate", "kind", h.kind.name, "key", escapeKey(key), "handoff", handoffNone)
 	}
 	h.deliver(ctx, key, g, msg)
-}
-
-// terminated handles the Terminated of an activation: the key of the current activation at t.Addr
-// loses its state and lockstep.grain.stopped is recorded, so that its next message activates it
-// again. A Terminated of an earlier activation is ignored. The activation's name is free by then.
-func (h *host) terminated(ctx *lockstep.Context[hostMsg], t lockstep.Terminated) {
-	p := t.Addr.Path()
-	key, ok := unescapeKey(p[strings.LastIndexByte(p, '/')+1:])
-	if !ok {
-		return
-	}
-	g := h.keys[key]
-	if g == nil || g.addr != t.Addr {
-		return
-	}
-	delete(h.keys, key)
-	h.active.remove(key)
-	h.changed = true
-	if ctl := tracer(ctx); ctl != nil {
-		ctl.Record(grainPrefix+"stopped", "kind", h.kind.name, "key", escapeKey(key))
-	}
+	g.timer = ctx.After(h.kind.idle, idleTick{Key: key, Gen: g.gen})
 }
 
 // keyList is a set of keys published as a sorted list in HostInfo (VAC-600). The sorted list is
