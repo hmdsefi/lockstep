@@ -808,9 +808,13 @@ func TestHandoffRequesterEntry(t *testing.T) {
 		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
 			Active: sorted(ka, kd), Acquiring: []string{kq}, Buffered: 1})
 
+		// The requests carry the ID of the requesting process in their Seq, as nextSeq makes it.
+		seq := func(node string, n uint64) uint64 { return uint64(c.id(node))<<32 | n }
+		ackOf := func(key, node string, n uint64) string { return fmt.Sprintf("ack %s n1 %d", key, seq(node, n)) }
+
 		// Up: no yield, the rest of VAC-510.
-		sendHost(tt, s, "n9", handoffReq{Kind: "counter", Key: ka, From: "n9", Seq: 21})
-		sendHost(tt, s, "n9", handoffReq{Kind: "counter", Key: kq, From: "n9", Seq: 22})
+		sendHost(tt, s, "n9", handoffReq{Kind: "counter", Key: ka, From: "n9", Seq: seq("n9", 21)})
+		sendHost(tt, s, "n9", handoffReq{Kind: "counter", Key: kq, From: "n9", Seq: seq("n9", 22)})
 		w.RunFor(100 * time.Millisecond)
 		expectStrings(tt, ka+"'s records", from(c.keyRecs("n1", ka), "passivate"), []string{
 			"passivate kind=counter key=" + ka + " reason=handover",
@@ -823,8 +827,8 @@ func TestHandoffRequesterEntry(t *testing.T) {
 		byKey := func(key string) []string {
 			return slices.DeleteFunc(peer.msgs(tt), func(m string) bool { return strings.Fields(m)[1] != key })
 		}
-		expectStrings(tt, "n9's last messages for "+ka, lastN(byKey(ka), 1), []string{"ack " + ka + " n1 21"})
-		expectStrings(tt, "n9's last messages for "+kq, lastN(byKey(kq), 2), []string{"env " + kq + " 1 1", "ack " + kq + " n1 22"})
+		expectStrings(tt, "n9's last messages for "+ka, lastN(byKey(ka), 1), []string{ackOf(ka, "n9", 21)})
+		expectStrings(tt, "n9's last messages for "+kq, lastN(byKey(kq), 2), []string{"env " + kq + " 1 1", ackOf(kq, "n9", 22)})
 		peer.ack = true
 		sendLocal(tt, s, "n1", ka, gmsg{N: 2})
 		w.RunFor(100 * time.Millisecond)
@@ -837,13 +841,13 @@ func TestHandoffRequesterEntry(t *testing.T) {
 		// Down: only the ack.
 		before := len(c.grainOnly("n1"))
 		for i, from := range []string{"n8", "n6"} {
-			sendHost(tt, s, from, handoffReq{Kind: "counter", Key: kd, From: from, Seq: uint64(31 + i)})
-			sendHost(tt, s, from, handoffReq{Kind: "counter", Key: kz, From: from, Seq: uint64(41 + i)})
+			sendHost(tt, s, from, handoffReq{Kind: "counter", Key: kd, From: from, Seq: seq(from, uint64(31+i))})
+			sendHost(tt, s, from, handoffReq{Kind: "counter", Key: kz, From: from, Seq: seq(from, uint64(41+i))})
 		}
 		w.RunFor(100 * time.Millisecond)
 		expectStrings(tt, "n1's records after the requests of down nodes", c.grainOnly("n1")[before:], nil)
-		expectStrings(tt, "n8 got", left.msgs(tt), []string{"ack " + kd + " n1 31", "ack " + kz + " n1 41"})
-		expectStrings(tt, "n6 got", dead.msgs(tt), []string{"ack " + kd + " n1 32", "ack " + kz + " n1 42"})
+		expectStrings(tt, "n8 got", left.msgs(tt), []string{ackOf(kd, "n8", 31), ackOf(kz, "n8", 41)})
+		expectStrings(tt, "n6 got", dead.msgs(tt), []string{ackOf(kd, "n6", 32), ackOf(kz, "n6", 42)})
 		sendLocal(tt, s, "n1", kd, gmsg{N: 2})
 		sendLocal(tt, s, "n1", kz, gmsg{N: 1})
 		w.RunFor(100 * time.Millisecond)
@@ -857,6 +861,92 @@ func TestHandoffRequesterEntry(t *testing.T) {
 		})
 		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
 			Active: sorted(ka, kd, kz)})
+	})
+}
+
+// VAC-510, VAC-530 (a rejoin): n1's view has n8 Left, with the ID of an earlier process, when the
+// new process of n8 asks for a key n1 has active. The request's Seq carries the new process's ID,
+// so the Left entry is not the requester's: n1 handles it as from a node without an entry. It
+// yields the key to n8, passivates its activation (handover) and acks once it has stopped, so the
+// two activations do not overlap. The stale Left entry does not end the yield at the next view;
+// the entry of the new process does, and the key then routes by n1's view again.
+func TestHandoffRequestFromNewProcess(t *testing.T) {
+	sim.Simulate(t, simOpts(3, 30*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		l := &grainLog{}
+		c := newSimCluster(s)
+		c.fakeHostNode("n9", true)
+		req := c.fakeHostNode("n8", false)
+		c.fake("n7", false)
+		cfg := simConfig()
+		cfg.Kinds = []Kind{logKind("counter", l)}
+		cfg.Registry = grainRegistry()
+		c.node("n1", cfg)
+		w.RunFor(10 * time.Millisecond)
+		c.addMember(tt, "n9", "counter")
+		// n8's earlier process, which left.
+		old := c.id("n8") + 1000
+		for _, st := range []MemberState{Alive, Left} {
+			u := update{Node: "n8", ID: old, State: st, Kinds: []string{"counter"}}
+			if err := sim.Send(s, "n1", lockstep.PIDAt[memberMsg]("n1", actorPath), memberMsg(syncReq{From: u})); err != nil {
+				tt.Fatal(err)
+			}
+		}
+		w.RunFor(10 * time.Millisecond)
+		if m, ok := c.view("n1").Member("n8"); !ok || m.State != Left || m.ID != old {
+			tt.Fatalf("n1's entry of n8: %v, %v, want Left with ID %d", m, ok, old)
+		}
+		if err := s.InjectFail(hostAt("n1", "counter").Address(), errors.New("restart")); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(100 * time.Millisecond)
+		k := ownedKeys("n1", []string{"n8", "n9"}, 1)[0]
+		sendLocal(tt, s, "n1", k, gmsg{N: 1})
+		w.RunFor(100 * time.Millisecond)
+
+		newSeq := uint64(c.id("n8"))<<32 | 1
+		sendHost(tt, s, "n8", handoffReq{Kind: "counter", Key: k, From: "n8", Seq: newSeq})
+		w.RunFor(100 * time.Millisecond)
+		sendLocal(tt, s, "n1", k, gmsg{N: 2})
+		w.RunFor(100 * time.Millisecond)
+		version := c.view("n1").Version
+		c.addMember(tt, "n7")
+		w.RunFor(100 * time.Millisecond)
+		if v := c.view("n1"); v.Version == version {
+			tt.Fatal("n1 applied no view with the stale entry of n8")
+		}
+		sendLocal(tt, s, "n1", k, gmsg{N: 3})
+		w.RunFor(100 * time.Millisecond)
+		expectStrings(tt, k+"'s records", from(c.keyRecs("n1", k), "yield"), []string{
+			"yield kind=counter key=" + k + " to=n8",
+			"passivate kind=counter key=" + k + " reason=handover",
+			"stopped kind=counter key=" + k,
+			"forward kind=counter key=" + k + " to=n8 hops=1",
+			"forward kind=counter key=" + k + " to=n8 hops=1",
+		})
+		stopped := c.recAt(tt, "n1", "stopped", "kind=counter key="+k)
+		i := slices.IndexFunc(req.got, func(g fakeGot) bool { _, ok := g.msg.(handoffAck); return ok })
+		if i < 0 || req.got[i].at < stopped {
+			tt.Errorf("n8 got no ack, or got it before the activation stopped at %v", stopped)
+		}
+		expectStrings(tt, "n8 got", req.msgs(tt), []string{
+			fmt.Sprintf("ack %s n1 %d", k, newSeq),
+			"env " + k + " 1 2",
+			"env " + k + " 1 3",
+		})
+
+		// The new process's entry ends the yield: n1 owns k and activates it again.
+		c.addMember(tt, "n8", "counter")
+		w.RunFor(100 * time.Millisecond)
+		if m, _ := c.view("n1").Member("n8"); m.ID != c.id("n8") || !m.State.Up() {
+			tt.Fatalf("n1's entry of n8 after the new process: %v", m)
+		}
+		sendLocal(tt, s, "n1", k, gmsg{N: 4})
+		w.RunFor(100 * time.Millisecond)
+		expectStrings(tt, k+"'s last record", lastN(c.keyRecs("n1", k), 1), []string{"activate kind=counter key=" + k + " handoff=none"})
+		if got := l.of(k); !slices.Equal(got, []int{1, 4}) {
+			tt.Errorf("%s got %v on n1, want [1 4]", k, got)
+		}
 	})
 }
 

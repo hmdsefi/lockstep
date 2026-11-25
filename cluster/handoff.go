@@ -60,10 +60,14 @@ func (handoffReq) hostMsg()   {}
 func (handoffTimer) hostMsg() {}
 
 // yield is the yield of a key to the node to (VAC-530): the host forwards the key's messages
-// there (rule 2).
+// there (rule 2). When the view in which the host set it had an entry for to of another process
+// (an earlier incarnation of the node), stale is that entry's ID: that entry does not end the
+// yield, only an entry of another process does.
 type yield struct {
-	key string
-	to  string
+	key      string
+	to       string
+	stale    uint32
+	hasStale bool
 }
 
 // shift applies the views part of v, the view to apply, with the node's joined flag (VAC-500 step
@@ -156,9 +160,11 @@ func (h *host) nextSeq() uint64 {
 }
 
 // handoffReq handles a request from req.From to hand the key over (VAC-510). What it does depends
-// on req.From's entry in the applied view:
+// on req.From's entry in the applied view, if that entry is of the requesting process: the one
+// whose ID is in the high 32 bits of req.Seq (nextSeq). An entry of another process, an earlier
+// incarnation of the node, counts as no entry:
 //   - no entry: the host records lockstep.grain.yield and yields the key to req.From until a view
-//     has an entry for it (VAC-530);
+//     has an entry for it other than the stale one (VAC-530);
 //   - an entry that is down (Dead or Left): the requester is gone, so a yield to it would never
 //     end while the entry stays, and it would take the key from this node for good. The host only
 //     acks at once, which is harmless, and changes nothing else;
@@ -176,15 +182,17 @@ func (h *host) handoffReq(ctx *lockstep.Context[hostMsg], req handoffReq) {
 		return
 	}
 	ack := pendingAck{to: req.From, seq: req.Seq}
-	switch m, known := h.view.Member(req.From); {
-	case known && !m.State.Up():
+	m, known := h.view.Member(req.From)
+	same := known && m.ID == uint32(req.Seq>>32)
+	switch {
+	case same && !m.State.Up():
 		h.sendAck(ctx, key, ack)
 		return
-	case !known:
+	case !same:
 		if ctl := tracer(ctx); ctl != nil {
 			ctl.Record(grainPrefix+"yield", "kind", h.kind.name, "key", req.Key, "to", req.From)
 		}
-		h.setYield(key, req.From)
+		h.setYield(yield{key: key, to: req.From, stale: m.ID, hasStale: known})
 	}
 	g := h.keys[key]
 	if g == nil {
@@ -317,22 +325,22 @@ func (h *host) yieldOf(key string) (string, bool) {
 	return h.yields[i].to, true
 }
 
-// setYield yields key to node, replacing an earlier yield of key.
-func (h *host) setYield(key, node string) {
-	i, ok := slices.BinarySearchFunc(h.yields, key, compareYield)
+// setYield sets the yield y, replacing an earlier yield of its key.
+func (h *host) setYield(y yield) {
+	i, ok := slices.BinarySearchFunc(h.yields, y.key, compareYield)
 	if ok {
-		h.yields[i].to = node
+		h.yields[i] = y
 		return
 	}
-	h.yields = slices.Insert(h.yields, i, yield{key: key, to: node})
+	h.yields = slices.Insert(h.yields, i, y)
 }
 
-// clearYields ends the yields to the nodes that have an entry, in any state, in v (VAC-500 step
-// 2, VAC-530).
+// clearYields ends the yields to the nodes that have an entry, in any state, in v, other than the
+// stale entry a yield was set against (VAC-500 step 2, VAC-530).
 func (h *host) clearYields(v *View) {
 	h.yields = slices.DeleteFunc(h.yields, func(y yield) bool {
-		_, ok := v.Member(y.to)
-		return ok
+		m, ok := v.Member(y.to)
+		return ok && (!y.hasStale || m.ID != y.stale)
 	})
 }
 
