@@ -81,3 +81,19 @@ func claimClusterHook(sys any) bool {
 func releaseClusterHook(sys any) {
 	hookSystem("ReleaseCluster", sys).clusterJoined.Store(false)
 }
+
+// checkSpawnOptionsHook is hooks.CheckSpawnOptions (VAC-010): it applies opts, in argument order, to
+// a spawn configuration that nothing uses and returns the error Spawn would return for the first
+// invalid one. An element that is not a non-nil SpawnOption is reported as an invalid option
+// instead of panicking as Spawn does.
+func checkSpawnOptionsHook(opts []any) error {
+	cfg := &spawnConfig{strategy: OneForOne(nil)}
+	for i, o := range opts {
+		so, ok := o.(SpawnOption)
+		if !ok || so == nil {
+			return fmt.Errorf("%w: option %d is %T, want a non-nil SpawnOption", ErrInvalidOption, i, o)
+		}
+		so(cfg)
+	}
+	return cfg.err
+}

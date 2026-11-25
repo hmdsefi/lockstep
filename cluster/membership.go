@@ -46,15 +46,17 @@ type Membership struct {
 // joined, the actor asks every other seed for its table at once and then every JoinRetryInterval;
 // a node whose seeds name no other node has joined at once.
 //
-// The first View, published before Join returns, holds only this node: Alive with incarnation 0
-// and the System's incarnation as its ID. A System joins at most once: a second Join returns
-// ErrAlreadyJoined, also after the node left or the membership actor stopped. Join panics if sys
-// is nil.
+// The first View, published before Join returns, holds only this node: Alive with incarnation 0,
+// the System's incarnation as its ID and the sorted names of c.Kinds as its Kinds (nil for none).
+// The other members learn the kinds from the membership protocol. A System joins at most once: a
+// second Join returns ErrAlreadyJoined, also after the node left or the membership actor stopped.
+// Join panics if sys is nil.
 func Join(sys *lockstep.System, c Config) (*Membership, error) {
 	if sys == nil {
 		panic("cluster: Join with nil System")
 	}
 	c.Seeds = slices.Clone(c.Seeds)
+	c.Kinds = slices.Clone(c.Kinds)
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -63,7 +65,7 @@ func Join(sys *lockstep.System, c Config) (*Membership, error) {
 	if !hooks.ClaimCluster(sys) {
 		return nil, ErrAlreadyJoined
 	}
-	self := Member{Node: sys.Node(), ID: sys.Incarnation(), State: Alive}
+	self := Member{Node: sys.Node(), ID: sys.Incarnation(), State: Alive, Kinds: kindNames(c.Kinds)}
 	m := &Membership{sys: sys, cfg: c, self: self}
 	m.view.Store(&View{Version: 1, Self: self, Members: []Member{self}})
 	sp, ok := hooks.SystemSpawner(sys).(lockstep.Spawner)

@@ -138,11 +138,11 @@ func runATCLU03Answer(t *testing.T) {
 		if len(got) != 1 {
 			tt.Fatalf("the probe got %d syncResps, want 1", len(got))
 		}
-		if got[0].From != self || !slices.Equal(got[0].Members, want) {
+		if !sameUpdate(got[0].From, self) || !slices.EqualFunc(got[0].Members, want, sameUpdate) {
 			tt.Errorf("n1 answered with From %v and Members %v, want From %v and %v", got[0].From, got[0].Members, self, want)
 		}
 		for i, m := range v.Members {
-			if toUpdate(m) != got[0].Members[i] {
+			if !sameUpdate(toUpdate(m), got[0].Members[i]) {
 				tt.Errorf("the answer's entry %d is %v, n1's table has %v", i, got[0].Members[i], m)
 			}
 		}

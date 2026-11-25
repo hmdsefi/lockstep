@@ -43,6 +43,7 @@ func init() {
 	hooks.EngineAddress = engineAddressHook
 	hooks.ClaimCluster = claimClusterHook
 	hooks.ReleaseCluster = releaseClusterHook
+	hooks.CheckSpawnOptions = checkSpawnOptionsHook
 }
 
 // buildSystem is hooks.NewSystem (ENG-200): it builds a system on eng with the options in opts,

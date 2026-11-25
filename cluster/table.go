@@ -30,7 +30,8 @@ type change struct {
 	Source     string // where the update came from (CLU-410), or "self"
 }
 
-// member returns the entry the change produced.
+// member returns the entry the change produced, without its Kinds, which a change does not carry:
+// the table has them (Get).
 func (c change) member() Member {
 	return Member{Node: c.Node, ID: c.ID, Incarnation: c.Inc, State: c.To}
 }
@@ -219,6 +220,9 @@ func (t *table) Apply(u Member, direct bool, source string, now time.Time) (chan
 			return change{}, applyIgnored
 		}
 		c.From = r.m.State
+		// A process's kinds are fixed: an update with the entry's ID never changes them, and a
+		// tombstone keeps them for the restore (VAC-700).
+		u.Kinds = r.m.Kinds
 	case !u.State.Up(), !direct && !r.tomb && r.m.State.Up():
 		return change{}, applyIgnored
 	default:

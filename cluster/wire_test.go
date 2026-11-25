@@ -5,6 +5,8 @@ package cluster
 
 import (
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hmdsefi/lockstep/codec"
@@ -13,7 +15,9 @@ import (
 // TestATCLU26WireTypes checks that the seven wire types are registered in the default registry
 // under CLU-700's names, round-trip through codec.JSON, and are accepted by JSON.Supports.
 func TestATCLU26WireTypes(t *testing.T) {
-	u := func(n string, s MemberState) update { return update{Node: n, ID: 7, Inc: 1 << 40, State: s} }
+	u := func(n string, s MemberState) update {
+		return update{Node: n, ID: 7, Inc: 1 << 40, State: s, Kinds: []string{"counter", "session.v2"}}
+	}
 	ups := []update{u("a", Alive), u("b", Suspect), u("c", Dead), u("d", Left)}
 	cases := []struct {
 		name string
@@ -75,6 +79,16 @@ func TestInvalidUpdates(t *testing.T) {
 		{"state zero", update{Node: "a"}, reasonBadState},
 		{"state past Left", update{Node: "a", State: Left + 1}, reasonBadState},
 		{"state max", update{Node: "a", State: 255}, reasonBadState},
+		{"kinds", update{Node: "a", State: Alive, Kinds: []string{"a", "b.1", "c_2-x"}}, ""},
+		{"kinds empty", update{Node: "a", State: Alive, Kinds: []string{}}, ""},
+		{"kinds unsorted", update{Node: "a", State: Alive, Kinds: []string{"b", "a"}}, reasonBadKinds},
+		{"kinds duplicate", update{Node: "a", State: Alive, Kinds: []string{"a", "a"}}, reasonBadKinds},
+		{"kinds empty name", update{Node: "a", State: Alive, Kinds: []string{""}}, reasonBadKinds},
+		{"kinds invalid name", update{Node: "a", State: Alive, Kinds: []string{"a", "B"}}, reasonBadKinds},
+		{"kinds dot", update{Node: "a", State: Alive, Kinds: []string{".."}}, reasonBadKinds},
+		{"kinds long name", update{Node: "a", State: Alive, Kinds: []string{strings.Repeat("a", 65)}}, reasonBadKinds},
+		{"kinds after state", update{Node: "a", Kinds: []string{"b", "a"}}, reasonBadState},
+		{"kinds after node", update{State: Alive, Kinds: []string{"b", "a"}}, reasonEmptyNode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := validUpdate(tc.u); got != tc.want {
@@ -82,7 +96,7 @@ func TestInvalidUpdates(t *testing.T) {
 			}
 		})
 	}
-	if reasonEmptyNode != "empty-node" || reasonBadState != "bad-state" {
+	if reasonEmptyNode != "empty-node" || reasonBadState != "bad-state" || reasonBadKinds != "bad-kinds" {
 		t.Fatal("the reasons are part of the invalid record")
 	}
 }
@@ -90,12 +104,28 @@ func TestInvalidUpdates(t *testing.T) {
 // TestUpdateMember checks the conversions between Member and update.
 func TestUpdateMember(t *testing.T) {
 	m := Member{Node: "a", ID: 3, Incarnation: 4, State: Suspect}
-	if got := toUpdate(m); got != (update{Node: "a", ID: 3, Inc: 4, State: Suspect}) {
+	if got := toUpdate(m); !sameUpdate(got, update{Node: "a", ID: 3, Inc: 4, State: Suspect}) {
 		t.Fatalf("toUpdate = %+v", got)
 	}
 	if got := toUpdate(m).member(); !sameMember(got, m) {
 		t.Fatalf("member = %+v", got)
 	}
+	// Kinds travel with the entry in both directions; an empty list is nil in a Member.
+	k := Member{Node: "a", ID: 3, State: Alive, Kinds: []string{"a", "b"}}
+	if got := toUpdate(k); !sameUpdate(got, update{Node: "a", ID: 3, State: Alive, Kinds: []string{"a", "b"}}) {
+		t.Fatalf("toUpdate with kinds = %+v", got)
+	}
+	if got := toUpdate(k).member(); !sameMember(got, k) {
+		t.Fatalf("member with kinds = %+v", got)
+	}
+	if got := (update{Node: "a", State: Alive, Kinds: []string{}}).member(); got.Kinds != nil {
+		t.Fatalf("member of an empty Kinds has Kinds %#v, want nil", got.Kinds)
+	}
 	// Every wire type is a memberMsg (checked at compile time).
 	_ = []memberMsg{update{}, ping{}, pingReq{}, ack{}, syncReq{}, syncResp{}, leave{}}
+}
+
+// sameUpdate reports whether two updates are equal, Kinds included.
+func sameUpdate(a, b update) bool {
+	return a.Node == b.Node && a.ID == b.ID && a.Inc == b.Inc && a.State == b.State && slices.Equal(a.Kinds, b.Kinds)
 }

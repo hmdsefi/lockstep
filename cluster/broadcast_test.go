@@ -52,7 +52,7 @@ func TestATCLU10ForcedUpdateFirst(t *testing.T) {
 			if (got != nil) != tc.forced {
 				t.Fatalf("%s entry: forced = %v, want %v", tc.state, got, tc.forced)
 			}
-			if got != nil && *got != toUpdate(x) {
+			if got != nil && !sameUpdate(*got, toUpdate(x)) {
 				t.Fatalf("%s entry: forced = %+v, want %+v", tc.state, *got, toUpdate(x))
 			}
 		}
@@ -64,7 +64,7 @@ func TestATCLU10ForcedUpdateFirst(t *testing.T) {
 			if !tb.Reap("x", 1, 4, s, t0.Add(retention)) {
 				t.Fatal("Reap failed")
 			}
-			if got := forcedUpdate(tb, "x"); got == nil || *got != toUpdate(x) {
+			if got := forcedUpdate(tb, "x"); got == nil || !sameUpdate(*got, toUpdate(x)) {
 				t.Fatalf("%s tombstone: forced = %v, want %+v", s, got, toUpdate(x))
 			}
 		}
@@ -77,7 +77,7 @@ func TestATCLU10ForcedUpdateFirst(t *testing.T) {
 		f := update{Node: "z", ID: 9, Inc: 3, State: Dead}
 		got := b.take(&f, 1, 100)
 		wantNodes(t, got, "z", "b") // max 1 applies to the queued ones only
-		if got[0] != f {
+		if !sameUpdate(got[0], f) {
 			t.Fatalf("forced = %+v, want %+v", got[0], f)
 		}
 		if b.len() != 2 {

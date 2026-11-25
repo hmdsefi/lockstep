@@ -166,7 +166,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			if len(got) != 1 {
 				tt.Fatalf("x received %v, want one ack", got)
 			}
-			if a, ok := got[0].msg.(ack); !ok || a.Seq != 78 || a.Target != "n1" || len(a.Updates) == 0 || a.Updates[0] != deadA {
+			if a, ok := got[0].msg.(ack); !ok || a.Seq != 78 || a.Target != "n1" || len(a.Updates) == 0 || !sameUpdate(a.Updates[0], deadA) {
 				tt.Errorf("x received %+v, want an ack of seq 78 whose first update is %+v", got[0].msg, deadA)
 			}
 			if m, _ := c.view("n1").Member("x"); !sameMember(m, deadA.member()) {
@@ -503,7 +503,7 @@ func TestATCLU06IndirectProbe(t *testing.T) {
 					tt.Fatalf("t received %v, want one ping", tg.got[seen:])
 				}
 				p, ok := tg.got[seen].msg.(ping)
-				if !ok || p.From != toUpdate(self) || p.Target != "t" || p.TargetID != tg.self.ID {
+				if !ok || !sameUpdate(p.From, toUpdate(self)) || p.Target != "t" || p.TargetID != tg.self.ID {
 					tt.Fatalf("t received %+v, want a ping from n1 for t", tg.got[seen].msg)
 				}
 				return p
@@ -901,7 +901,7 @@ func TestATCLU13RefreshForcedOnly(t *testing.T) {
 			}
 			refreshes++
 			want := []update{{Node: "x", ID: x.self.ID, State: Suspect}}
-			if !slices.Equal(p.Updates, want) {
+			if !slices.EqualFunc(p.Updates, want, sameUpdate) {
 				tt.Errorf("x got a refresh ping at %s with updates %v, want only the suspicion %v", g.at, p.Updates, want)
 			}
 		}
@@ -909,7 +909,7 @@ func TestATCLU13RefreshForcedOnly(t *testing.T) {
 			tt.Errorf("x got %d probes and no refresh ping, want at least one", probes)
 		}
 		for _, g := range y.got {
-			if p, ok := g.msg.(ping); ok && p.Seq != refreshSeq && !slices.Contains(p.Updates, y.self) {
+			if p, ok := g.msg.(ping); ok && p.Seq != refreshSeq && !slices.ContainsFunc(p.Updates, func(u update) bool { return sameUpdate(u, y.self) }) {
 				tt.Errorf("y got a probe at %s with updates %v, want its own update among them", g.at, p.Updates)
 			}
 		}
@@ -1054,13 +1054,13 @@ func (c *simCluster) fake(name string, mute bool) *fakeMember {
 // equalAck reports whether msg is the ack want, updates included.
 func equalAck(msg memberMsg, want ack) bool {
 	a, ok := msg.(ack)
-	return ok && equalAckIgnoringUpdates(a, want) && slices.Equal(a.Updates, want.Updates)
+	return ok && equalAckIgnoringUpdates(a, want) && slices.EqualFunc(a.Updates, want.Updates, sameUpdate)
 }
 
 // equalAckIgnoringUpdates reports whether msg is the ack want, apart from its updates.
 func equalAckIgnoringUpdates(msg memberMsg, want ack) bool {
 	a, ok := msg.(ack)
-	return ok && a.From == want.From && a.Seq == want.Seq && a.Target == want.Target
+	return ok && sameUpdate(a.From, want.From) && a.Seq == want.Seq && a.Target == want.Target
 }
 
 // bySeq returns recs by their seq attribute.

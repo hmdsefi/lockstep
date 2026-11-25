@@ -46,12 +46,13 @@ func (a nodePlainActor) Receive(_ *lockstep.Context[any], m any) {
 // engine.ValidNodeName. EngineAddress converts a lockstep.Address and panics for anything else.
 func TestClusterHooksSet(t *testing.T) {
 	for name, set := range map[string]bool{
-		"SystemSpawner":  hooks.SystemSpawner != nil,
-		"NodeDown":       hooks.NodeDown != nil,
-		"NodeUp":         hooks.NodeUp != nil,
-		"EngineAddress":  hooks.EngineAddress != nil,
-		"ClaimCluster":   hooks.ClaimCluster != nil,
-		"ReleaseCluster": hooks.ReleaseCluster != nil,
+		"SystemSpawner":     hooks.SystemSpawner != nil,
+		"NodeDown":          hooks.NodeDown != nil,
+		"NodeUp":            hooks.NodeUp != nil,
+		"EngineAddress":     hooks.EngineAddress != nil,
+		"ClaimCluster":      hooks.ClaimCluster != nil,
+		"ReleaseCluster":    hooks.ReleaseCluster != nil,
+		"CheckSpawnOptions": hooks.CheckSpawnOptions != nil,
 	} {
 		if !set {
 			t.Errorf("hooks.%s is nil after package lockstep's init", name)
@@ -109,6 +110,55 @@ func TestClaimCluster(t *testing.T) {
 	panicsWith(t, "lockstep: hooks.ClaimCluster: sys has type <nil>, want a non-nil *lockstep.System", func() { hooks.ClaimCluster(nil) })
 	panicsWith(t, "lockstep: hooks.ReleaseCluster: sys has type int, want a non-nil *lockstep.System", func() { hooks.ReleaseCluster(1) })
 }
+
+// VAC-010: CheckSpawnOptions returns the error a Spawn with the options returns (the first invalid
+// option's, in argument order, wrapping ErrInvalidOption), nil for valid options, and an
+// ErrInvalidOption error instead of a panic for an element that is not a SpawnOption.
+func TestCheckSpawnOptions(t *testing.T) {
+	sys := newProdSystem(t, lockstep.WithNodeName("n1"))
+	spawn := func(opts ...lockstep.SpawnOption) error {
+		_, err := lockstep.Spawn(sys, "", func() lockstep.Actor[int] { return nodePlainIntActor{} }, opts...)
+		return err
+	}
+	as := func(opts ...lockstep.SpawnOption) []any {
+		out := make([]any, len(opts))
+		for i, o := range opts {
+			out[i] = o
+		}
+		return out
+	}
+	valid := []lockstep.SpawnOption{lockstep.WithMailbox(8, lockstep.FailSend), lockstep.WithActorThroughput(2), lockstep.WithStrategy(lockstep.OneForOne(nil))}
+	if err := hooks.CheckSpawnOptions(as(valid...)); err != nil {
+		t.Fatalf("CheckSpawnOptions(valid) = %v, want nil", err)
+	}
+	if err := hooks.CheckSpawnOptions(nil); err != nil {
+		t.Fatalf("CheckSpawnOptions(nil) = %v, want nil", err)
+	}
+	for name, opts := range map[string][]lockstep.SpawnOption{
+		"mailbox":     {lockstep.WithMailbox(0, lockstep.FailSend)},
+		"throughput":  {lockstep.WithActorThroughput(0)},
+		"first wins":  {lockstep.WithActorThroughput(-1), lockstep.WithMailbox(0, lockstep.FailSend)},
+		"after valid": {lockstep.WithMailbox(8, lockstep.FailSend), lockstep.WithActorThroughput(0)},
+	} {
+		got, want := hooks.CheckSpawnOptions(as(opts...)), spawn(opts...)
+		if !errors.Is(got, lockstep.ErrInvalidOption) || want == nil || got.Error() != want.Error() {
+			t.Errorf("%s: CheckSpawnOptions = %v, Spawn = %v: want the same ErrInvalidOption error", name, got, want)
+		}
+	}
+	for name, opts := range map[string][]any{
+		"nil option": {lockstep.SpawnOption(nil)},
+		"nil any":    {nil},
+		"wrong type": {42},
+	} {
+		if err := hooks.CheckSpawnOptions(opts); !errors.Is(err, lockstep.ErrInvalidOption) {
+			t.Errorf("%s: CheckSpawnOptions = %v, want an ErrInvalidOption error", name, err)
+		}
+	}
+}
+
+type nodePlainIntActor struct{}
+
+func (nodePlainIntActor) Receive(*lockstep.Context[int], int) {}
 
 func TestATMSG32NodeSignals(t *testing.T) {
 	var _ lockstep.Signal = lockstep.NodeDown{}
