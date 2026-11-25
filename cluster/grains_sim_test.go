@@ -237,9 +237,11 @@ func expectAnswer(tt testing.TB, what, got, node string, count int) {
 	}
 }
 
-// timedRec is a lockstep.grain record of counter as "<kind> <attrs>", with its time.
+// timedRec is a lockstep.grain record of counter as "<kind> <attrs>", with its time and its
+// sequence number in the trace.
 type timedRec struct {
 	at  kernel.Time
+	seq uint64
 	rec string
 }
 
@@ -250,7 +252,7 @@ func (c *simCluster) keyLog(name, key string, since kernel.Time) []timedRec {
 	for _, r := range c.s.World().Sim.Records() {
 		if r.Node == id && r.At >= since && strings.HasPrefix(r.Kind, grainPrefix) && attr(r, "kind") == "counter" &&
 			attr(r, "key") == key {
-			out = append(out, timedRec{r.At, strings.TrimPrefix(r.Kind, grainPrefix) + " " + attrs(r)})
+			out = append(out, timedRec{r.At, r.Seq, strings.TrimPrefix(r.Kind, grainPrefix) + " " + attrs(r)})
 		}
 	}
 	return out
@@ -268,13 +270,50 @@ func recsOf(l []timedRec) []string {
 // timeOf returns the time of the first record of l that is rec, and fails tt when there is none.
 func timeOf(tt testing.TB, l []timedRec, rec string) kernel.Time {
 	tt.Helper()
+	return find(tt, l, rec).at
+}
+
+// find returns the first record of l that is rec, and fails tt when there is none.
+func find(tt testing.TB, l []timedRec, rec string) timedRec {
+	tt.Helper()
 	for _, r := range l {
 		if r.rec == rec {
-			return r.at
+			return r
 		}
 	}
 	tt.Fatalf("no record %q in %q", rec, recsOf(l))
-	return 0
+	return timedRec{}
+}
+
+// ackSends returns the lockstep.send records of the handoffAcks that the host of counter on node
+// from sent to the one on node to, from since on, in order. The record does not name the key.
+func (c *simCluster) ackSends(from, to string, since kernel.Time) []kernel.Record {
+	id := c.n[from].ID()
+	src, dst := "lockstep://"+from+grainsPath+"/counter", "lockstep://"+to+grainsPath+"/counter"
+	var out []kernel.Record
+	for _, r := range c.s.World().Sim.Records() {
+		if r.Node == id && r.At >= since && r.Kind == "lockstep.send" && attr(r, "msg") == "cluster.handoffAck" &&
+			pathOf(attr(r, "from")) == src && pathOf(attr(r, "to")) == dst {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// expectAckAfter fails tt unless the i-th handoffAck (from 0) that from's host of counter sent to
+// to's host, from since on, comes after the record stopped in the trace. A stop and an ack can
+// happen at the same virtual time, and the ack crosses the network while the stop is local, so
+// only the order of the records shows that the ack waited for the stop.
+func (c *simCluster) expectAckAfter(tt testing.TB, from, to string, since kernel.Time, i int, stopped timedRec) {
+	tt.Helper()
+	acks := c.ackSends(from, to, since)
+	if len(acks) <= i {
+		tt.Errorf("%s sent %d handoff acks to %s, want at least %d", from, len(acks), to, i+1)
+		return
+	}
+	if acks[i].Seq < stopped.seq {
+		tt.Errorf("%s sent its handoff ack %d to %s at %s, before %q at %s", from, i, to, acks[i].At, stopped.rec, stopped.at)
+	}
 }
 
 // grainKinds returns the kinds (without the prefix) of node name's lockstep.grain records.
@@ -428,14 +467,17 @@ func TestATVAC12OwnerCrash(t *testing.T) {
 // n4 restarts with a new ID and gets k0 back through handoff: its host starts with no previous
 // view, so it asks n1, the runner-up, which stops its activation (passivated for ownership when it
 // saw n4 first, or for the handover when the request came first) and acks once it has stopped. n4
-// activates k0 (handoff=acked) no earlier than that, and answers. No message reaches k0 twice.
+// activates k0 (handoff=acked) no earlier than that, and answers. No message reaches k0 twice. The
+// wait for n4 is bounded by R(N) + HandoffTimeout: n4 joins and the views converge within R(N)
+// (CLU-830), and the acquisition ends within HandoffTimeout after that.
 func TestATVAC13RestartedOwner(t *testing.T) {
-	sim.Simulate(t, simOpts(3, 60*time.Second), func(s *sim.Sim) {
+	sim.Simulate(t, simOpts(3, 90*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		l := &counterLog{}
 		names := []string{"n1", "n2", "n3", "n4"}
 		c := counterCluster(s, l, names)
 		expectAnswer(tt, "k0", c.ask(tt, "n2", "k0", 1), "n4", 1)
+		limit := boundsOf(simConfig(names...), len(names)).converge + DefaultHandoffTimeout
 		oldID := c.id("n4")
 
 		w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: "n4"})
@@ -445,7 +487,7 @@ func TestATVAC13RestartedOwner(t *testing.T) {
 		restart := w.Sim.Now()
 		w.Faults.Inject(fault.Event{Kind: fault.KindRestart, Node: "n4"})
 		n := 2
-		await(tt, w, 100*time.Millisecond, 20*time.Second, "n4 activates k0", func() bool {
+		await(tt, w, 100*time.Millisecond, limit, "n4 activates k0", func() bool {
 			if c.joined("n2") {
 				n++
 				c.send(tt, "n2", "k0", n)
@@ -473,9 +515,10 @@ func TestATVAC13RestartedOwner(t *testing.T) {
 			got[0] != rec("passivate", "k0", "reason=handover")) || got[1] != rec("stopped", "k0", "") {
 			tt.Errorf("n1's records of k0 after n4's restart are %q, want a passivation (ownership or handover) and stopped", got)
 		}
-		stopped := timeOf(tt, n1, rec("stopped", "k0", ""))
-		if act := timeOf(tt, n4, rec("activate", "k0", "handoff=acked")); act < stopped {
-			tt.Errorf("n4 activated k0 at %s, before n1's activation stopped at %s", act, stopped)
+		stopped := find(tt, n1, rec("stopped", "k0", ""))
+		c.expectAckAfter(tt, "n1", "n4", restart, 0, stopped)
+		if act := timeOf(tt, n4, rec("activate", "k0", "handoff=acked")); act < stopped.at {
+			tt.Errorf("n4 activated k0 at %s, before n1's activation stopped at %s", act, stopped.at)
 		}
 		got := 0
 		for _, d := range l.got {
@@ -584,8 +627,9 @@ func joinTakeover(s *sim.Sim) joinRun {
 
 // AT-VAC-15, VAC-400, VAC-510, VAC-520: n4 joins and takes k0 and k8 over (see joinTakeover). It
 // asks n1 for k0 and n3 for k8, the runner-ups, which have not heard of it yet: each yields the
-// key, passivates its activation with reason handover and acks once it has stopped, and n4
-// activates the key (handoff=acked) no earlier than the old owner's stopped record. Every message
+// key, passivates its activation with reason handover and acks once it has stopped (its ack's send
+// record comes after its stopped record), and n4 activates the key (handoff=acked) no earlier
+// than that. Every message
 // reaches its grain once: those before the join on the old owner, the others on n4.
 func TestATVAC15JoinTakesKeys(t *testing.T) {
 	sim.Simulate(t, simOpts(3, 30*time.Second), func(s *sim.Sim) {
@@ -605,9 +649,10 @@ func TestATVAC15JoinTakesKeys(t *testing.T) {
 				rec("passivate", k.key, "reason=handover"),
 				rec("stopped", k.key, ""),
 			})
-			stopped := timeOf(tt, old, rec("stopped", k.key, ""))
-			if act := timeOf(tt, n4, rec("activate", k.key, "handoff=acked")); act < stopped {
-				tt.Errorf("n4 activated %s at %s, before %s's activation stopped at %s", k.key, act, k.old, stopped)
+			stopped := find(tt, old, rec("stopped", k.key, ""))
+			c.expectAckAfter(tt, k.old, "n4", r.join, 0, stopped)
+			if act := timeOf(tt, n4, rec("activate", k.key, "handoff=acked")); act < stopped.at {
+				tt.Errorf("n4 activated %s at %s, before %s's activation stopped at %s", k.key, act, k.old, stopped.at)
 			}
 			expectStrings(tt, k.key+"'s messages on "+k.old, intStrings(l.of(k.old, k.key)), []string{"1"})
 		}
@@ -912,7 +957,9 @@ func TestATVAC26HostFailureAcquiring(t *testing.T) {
 		s.DropBetween(hostAt("n3", "counter").Address(), host, 1_000_000)
 
 		first := w.Sim.Now()
-		for _, key := range []string{"k8", "k0"} {
+		// k0 first in both phases: if acquisitions were numbered from 1 per host incarnation, the
+		// stale ack of the first acquisition of k0 would match the second one.
+		for _, key := range []string{"k0", "k8"} {
 			c.send(tt, "n4", key, 1)
 			c.send(tt, "n4", key, 2)
 		}
@@ -963,7 +1010,8 @@ func TestATVAC26HostFailureAcquiring(t *testing.T) {
 		if len(k8) == 3 && k8[1].at.Sub(k8[0].at) != handoff {
 			tt.Errorf("the second acquisition of k8 timed out %s after it started, want %s", k8[1].at.Sub(k8[0].at), handoff)
 		}
-		expectStrings(tt, "n4's records of k0 before the failure", recsOf(c.keyLog("n4", "k0", first))[:2], []string{
+		before := recsOf(c.keyLog("n4", "k0", first))
+		expectStrings(tt, "n4's records of k0 before the failure", before[:min(2, len(before))], []string{
 			rec("handoff", "k0", "peers=n1"),
 			rec("drop", "k0", "reason=host hops=0"),
 		})

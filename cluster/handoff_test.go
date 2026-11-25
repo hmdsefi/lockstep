@@ -530,7 +530,10 @@ func TestATVAC29Requests(t *testing.T) {
 		expectStrings(tt, "n8 got for "+ks, byKey(ks), []string{"env " + ks + " 1 2", "ack " + ks + " n1 12"})
 		expectStrings(tt, "n8 got for "+kq, byKey(kq), []string{"env " + kq + " 1 1", "env " + kq + " 1 2", "ack " + kq + " n1 13"})
 		expectStrings(tt, "n8 got for "+kz, byKey(kz), []string{"ack " + kz + " n1 14"})
-		for _, key := range []string{ka, ks} {
+		for i, key := range []string{ka, ks} {
+			// The ack's send record comes after the stop's: the arrival time alone cannot show it,
+			// since the stop is local and takes no virtual time.
+			c.expectAckAfter(tt, "n1", "n8", 0, i, find(tt, c.keyLog("n1", key, 0), "stopped kind=counter key="+key))
 			stopped := c.recAt(tt, "n1", "stopped", "kind=counter key="+key)
 			i := slices.IndexFunc(req.got, func(g fakeGot) bool { a, ok := g.msg.(handoffAck); return ok && a.Key == key })
 			if i < 0 || req.got[i].at < stopped {
@@ -729,6 +732,7 @@ func TestHandoffJoin(t *testing.T) {
 			"passivate kind=counter key=" + k + " reason=handover",
 			"stopped kind=counter key=" + k,
 		})
+		c.expectAckAfter(tt, "n1", "n2", 0, 0, find(tt, c.keyLog("n1", k, 0), "stopped kind=counter key="+k))
 		stopped := c.recAt(tt, "n1", "stopped", "kind=counter key="+k)
 		if act := c.recAt(tt, "n2", "activate", "kind=counter key="+k+" handoff=acked"); act < stopped {
 			tt.Errorf("n2 activated %s at %v, before n1's activation stopped at %v", k, act, stopped)
@@ -924,6 +928,7 @@ func TestHandoffRequestFromNewProcess(t *testing.T) {
 			"forward kind=counter key=" + k + " to=n8 hops=1",
 			"forward kind=counter key=" + k + " to=n8 hops=1",
 		})
+		c.expectAckAfter(tt, "n1", "n8", 0, 0, find(tt, c.keyLog("n1", k, 0), "stopped kind=counter key="+k))
 		stopped := c.recAt(tt, "n1", "stopped", "kind=counter key="+k)
 		i := slices.IndexFunc(req.got, func(g fakeGot) bool { _, ok := g.msg.(handoffAck); return ok })
 		if i < 0 || req.got[i].at < stopped {
