@@ -374,6 +374,16 @@ func TestRunnerUp(t *testing.T) {
 		t.Errorf("runnerUp(k0) with a suspect n4 = %q, %v, want n1", got, ok)
 	}
 
+	// Only the members that host the kind take part.
+	mixed := hostView("n1:a:counter", "n2:a:other", "n3:a:other", "n4:a:counter,other")
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("m%d", i)
+		want := refRank([]string{"n2", "n3", "n4"}, "other", key)
+		if got, ok := runnerUp(mixed, "other", key); !ok || got != want[1] {
+			t.Fatalf("runnerUp(other, %s) = %q, %v, want %q", key, got, ok, want[1])
+		}
+	}
+
 	// With fewer than two hosting members there is none.
 	for name, v := range map[string]*View{
 		"no members":    {Version: 1},
@@ -438,6 +448,17 @@ func TestHostingLookup(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(100, func() { o, r := lookup(ms, "counter", "key7"); sink += o + r }); n != 0 {
 		t.Errorf("lookup allocates %v times, want 0", n)
+	}
+
+	// Another kind ranks over the members that host it.
+	others := hosting(v.Members, "other")
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("o%d", i)
+		owner, runner := lookup(others, "other", key)
+		want := rank(v, "other", key, 2)
+		if owner < 0 || runner < 0 || others[owner].ID != want[0] || others[runner].ID != want[1] {
+			t.Fatalf("lookup(other, %s) = %d, %d, want %v", key, owner, runner, want)
+		}
 	}
 
 	// Fewer than two hosting members.

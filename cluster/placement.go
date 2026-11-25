@@ -100,7 +100,7 @@ func escapeKey(key string) string {
 	out := make([]byte, 0, len(key)+8)
 	for i := 0; i < len(key); i++ {
 		b := key[i]
-		if keepByte(b) && !(dots && b == '.') {
+		if keepByte(b) && (!dots || b != '.') {
 			out = append(out, b)
 			continue
 		}
