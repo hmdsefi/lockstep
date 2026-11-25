@@ -108,7 +108,8 @@ func sendEnv(tt testing.TB, s *sim.Sim, node string, env grainEnvelope) {
 // AT-VAC-18 (Send), VAC-200, VAC-210, VAC-220, VAC-330: Send and Ask to a grain that another node
 // owns encode the message and send it to the owner's host, which activates the grain and delivers
 // the messages decoded, in send order; Ask's reply comes back across the nodes. The sending node
-// keeps nothing and forwards nothing.
+// keeps nothing and forwards nothing. n2 joined with n1 in its view, so it first asks n1, the
+// runner-up, to hand the key over (VAC-400): the activation is handoff=acked.
 func TestATVAC18RemoteSend(t *testing.T) {
 	sim.Simulate(t, simOpts(3, 3*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -133,7 +134,7 @@ func TestATVAC18RemoteSend(t *testing.T) {
 			tt.Errorf("%s got %v, want [1 2 3 4 5 10] in send order", key, got)
 		}
 		expectStrings(tt, "n2's activations", c.grainRecs("n2", "activate"),
-			[]string{"kind=counter key=" + key + " handoff=none"})
+			[]string{"kind=counter key=" + key + " handoff=acked"})
 		for _, kind := range []string{"activate", "forward", "drop"} {
 			expectStrings(tt, "n1's "+kind+" records", c.grainRecs("n1", kind), nil)
 		}

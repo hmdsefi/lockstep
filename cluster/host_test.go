@@ -101,7 +101,7 @@ func expectHost(tt testing.TB, c *simCluster, node string, want HostInfo) {
 	tt.Helper()
 	got, ok := c.ms[node].Host(want.Kind)
 	if !ok || got.Kind != want.Kind || got.Version != want.Version || got.Joined != want.Joined ||
-		!slices.Equal(got.Active, want.Active) || !slices.Equal(got.Stopping, want.Stopping) || got.Acquiring != nil ||
+		!slices.Equal(got.Active, want.Active) || !slices.Equal(got.Stopping, want.Stopping) || !slices.Equal(got.Acquiring, want.Acquiring) ||
 		got.Buffered != want.Buffered {
 		tt.Errorf("%s's Host(%q) = %+v, %v, want %+v", node, want.Kind, got, ok, want)
 	}

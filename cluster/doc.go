@@ -75,5 +75,14 @@
 // node that sends to or hosts the kind. While the views of the nodes disagree about the owner, a
 // host forwards the message to the owner it sees, at most Config.MaxHops times.
 //
+// When the members change, so do the owners of some keys. A node that becomes the owner of a key
+// does not activate it at once when another node may still run it (the key's previous owner, or
+// the runner-up of the ranking after this node joined): it first asks those nodes to stop their
+// activation, holds the key's messages, and activates the key when every one of them has
+// answered, or when the kind's HandoffTimeout has passed. A node that is asked stops its
+// activation, answers once it has stopped, and sends the messages it holds or receives for the key
+// to the new owner until its own view of the members shows that node. So once the views of the
+// nodes agree, no key is active on two nodes.
+//
 // Membership.Host describes the host of a kind on this node.
 package cluster
