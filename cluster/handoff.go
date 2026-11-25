@@ -23,7 +23,9 @@ import (
 // the key to the requester: it forwards the key's held messages and every later message for the
 // key to the requester, stops its activation if it has one, and acknowledges once the activation
 // has stopped. The yield lasts until the peer applies a view that has an entry for the requester:
-// from then on its own view routes the key.
+// from then on its own view routes the key. A peer whose view already has an entry for the
+// requester sets no yield, and one whose view shows the requester down only acknowledges: the
+// requester is gone, and a yield to it would hold the key away from its owner for good.
 //
 // Handoff messages are best effort (VAC-540): a lost request or ack ends at the timeout, and a
 // stale or duplicate ack, or a stale timer, does nothing. An acquisition is numbered with a
@@ -72,7 +74,7 @@ func (h *host) shift(v *View, joined bool) {
 	if h.applied && (joined != h.joined || !slices.EqualFunc(members, h.members, sameNode)) {
 		h.prevApplied, h.prevJoined, h.prevMembers = true, h.joined, h.members
 	}
-	h.applied, h.version, h.joined, h.members = true, v.Version, joined, members
+	h.applied, h.version, h.joined, h.members, h.view = true, v.Version, joined, members, v
 }
 
 // sameNode reports whether a and b name the same node.
@@ -128,15 +130,20 @@ func (h *host) acquire(ctx *lockstep.Context[hostMsg], key string, msg, v any, h
 	h.acquiring.add(key)
 	esc := escapeKey(key)
 	for _, p := range peers {
-		req := handoffReq{Kind: h.kind.name, Key: esc, From: h.self, Seq: seq}
-		if err := lockstep.Send(ctx, hostAt(p, h.kind.name), hostMsg(req)); err != nil {
-			continue // best effort: the acquisition ends at its timeout (VAC-540)
-		}
+		h.sendReq(ctx, p, handoffReq{Kind: h.kind.name, Key: esc, From: h.self, Seq: seq})
 	}
 	if ctl := tracer(ctx); ctl != nil {
 		ctl.Record(grainPrefix+"handoff", "kind", h.kind.name, "key", esc, "peers", strings.Join(peers, ","))
 	}
 	g.timer = ctx.After(h.kind.handoff, handoffTimer{Key: key, Seq: seq})
+}
+
+// sendReq sends req to the host of the kind on peer. Requests are best effort (VAC-540): a send
+// error is ignored, and the acquisition ends at its timeout.
+func (h *host) sendReq(ctx *lockstep.Context[hostMsg], peer string, req handoffReq) {
+	if err := lockstep.Send(ctx, hostAt(peer, h.kind.name), hostMsg(req)); err != nil {
+		return // the acquisition activates at its HandoffTimeout
+	}
 }
 
 // nextSeq returns the sequence number of a new acquisition: the node ID in the high 32 bits and,
@@ -148,22 +155,37 @@ func (h *host) nextSeq() uint64 {
 	return uint64(h.m.self.ID)<<32 | *h.seqs&math.MaxUint32
 }
 
-// handoffReq handles a request from req.From to hand the key over (VAC-510): it records
-// lockstep.grain.yield, yields the key to req.From, forwards the key's held messages there in
-// order, and then, by the key's phase: passivates an active key (reason handover) and acks once
-// it has stopped; acks a stopping key once it has stopped; abandons an acquisition and acks; acks
-// at once a key with no state. A request that no host of this version sends (a key that is not
-// escaped, another kind, no sender or this node as the sender) is ignored.
+// handoffReq handles a request from req.From to hand the key over (VAC-510). What it does depends
+// on req.From's entry in the applied view:
+//   - no entry: the host records lockstep.grain.yield and yields the key to req.From until a view
+//     has an entry for it (VAC-530);
+//   - an entry that is down (Dead or Left): the requester is gone, so a yield to it would never
+//     end while the entry stays, and it would take the key from this node for good. The host only
+//     acks at once, which is harmless, and changes nothing else;
+//   - an entry that is up: a yield would end at the next view anyway and would override the
+//     routing of this node's view until then, so the host sets none.
+//
+// Unless the requester is down, the host then forwards the key's held messages to req.From in
+// order and, by the key's phase: passivates an active key (reason handover) and acks once it has
+// stopped; acks a stopping key once it has stopped; abandons an acquisition and acks; acks at once
+// a key with no state. A request that no host of this version sends (a key that is not escaped,
+// another kind, no sender or this node as the sender) is ignored.
 func (h *host) handoffReq(ctx *lockstep.Context[hostMsg], req handoffReq) {
 	key, ok := unescapeKey(req.Key)
 	if !ok || req.Kind != h.kind.name || req.From == "" || req.From == h.self {
 		return
 	}
-	if ctl := tracer(ctx); ctl != nil {
-		ctl.Record(grainPrefix+"yield", "kind", h.kind.name, "key", req.Key, "to", req.From)
-	}
-	h.setYield(key, req.From)
 	ack := pendingAck{to: req.From, seq: req.Seq}
+	switch m, known := h.view.Member(req.From); {
+	case known && !m.State.Up():
+		h.sendAck(ctx, key, ack)
+		return
+	case !known:
+		if ctl := tracer(ctx); ctl != nil {
+			ctl.Record(grainPrefix+"yield", "kind", h.kind.name, "key", req.Key, "to", req.From)
+		}
+		h.setYield(key, req.From)
+	}
 	g := h.keys[key]
 	if g == nil {
 		h.sendAck(ctx, key, ack)

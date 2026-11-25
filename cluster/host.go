@@ -163,11 +163,13 @@ type host struct {
 	self string
 
 	// The applied view C (VAC-500): its version and joined flag, and the hosting members of the
-	// kind in it, shared with the view's placement. applied is false before the first.
+	// kind in it, shared with the view's placement, and the view itself, for the entries of the
+	// nodes that send handoff requests (VAC-510). applied is false before the first.
 	applied bool
 	version uint64
 	joined  bool
 	members []core.Member
+	view    *View
 
 	// The previous view P (VAC-400, handoff.go): its joined flag and hosting members of the kind.
 	// prevApplied is false while P is none.

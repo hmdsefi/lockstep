@@ -745,3 +745,191 @@ func TestHandoffJoin(t *testing.T) {
 		}
 	})
 }
+
+// reportMember makes n1's membership actor merge the entry of member in state, with the ID of
+// its current process and hosting kinds, as hearsay in a syncReq from n9.
+func (c *simCluster) reportMember(tt testing.TB, member string, state MemberState, kinds ...string) {
+	tt.Helper()
+	from := update{Node: "n9", ID: c.id("n9"), State: Alive, Kinds: []string{"counter"}}
+	u := update{Node: member, ID: c.id(member), State: state, Kinds: kinds}
+	msg := memberMsg(syncReq{From: from, Members: []update{u}})
+	if err := sim.Send(c.s, "n1", lockstep.PIDAt[memberMsg]("n1", actorPath), msg); err != nil {
+		tt.Fatal(err)
+	}
+}
+
+// VAC-510 by the requester's entry in the applied view (TestATVAC29Requests has the requester
+// without an entry, which gets a yield). A requester that is up in it gets no yield, since one
+// would end at the next view and override this view's routing until then, but the rest of VAC-510
+// applies: n1 passivates its active key (handover) and acks once it has stopped, forwards an
+// acquiring key's held message and abandons it, and its next messages route by n1's view. A
+// requester that is down in it (Left or Dead) is gone: n1 only acks at once, keeps its activation
+// and activates a key without state on its next message, as its view says.
+func TestHandoffRequesterEntry(t *testing.T) {
+	sim.Simulate(t, simOpts(3, 30*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		l := &grainLog{}
+		c := newSimCluster(s)
+		peer := c.fakeHostNode("n9", true)
+		left := c.fakeHostNode("n8", false)
+		dead := c.fakeHostNode("n6", false)
+		cfg := simConfig()
+		cfg.Kinds = []Kind{logKind("counter", l, WithHandoffTimeout(time.Minute))}
+		cfg.Registry = grainRegistry()
+		c.node("n1", cfg)
+		w.RunFor(10 * time.Millisecond)
+		c.addMember(tt, "n9", "counter")
+		c.addMember(tt, "n8", "counter")
+		c.addMember(tt, "n6", "counter")
+		w.RunFor(10 * time.Millisecond)
+		c.reportMember(tt, "n8", Left, "counter")
+		c.reportMember(tt, "n6", Dead, "counter")
+		w.RunFor(10 * time.Millisecond)
+		for _, e := range []struct {
+			node string
+			want MemberState
+		}{{"n9", Alive}, {"n8", Left}, {"n6", Dead}} {
+			if m, ok := c.view("n1").Member(e.node); !ok || m.State != e.want {
+				tt.Fatalf("n1's entry of %s: %v, %v, want %v", e.node, m, ok, e.want)
+			}
+		}
+		if err := s.InjectFail(hostAt("n1", "counter").Address(), errors.New("restart")); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(100 * time.Millisecond)
+		keys := ownedKeys("n1", []string{"n9"}, 4)
+		ka, kq, kd, kz := keys[0], keys[1], keys[2], keys[3]
+		sendLocal(tt, s, "n1", ka, gmsg{N: 1})
+		sendLocal(tt, s, "n1", kd, gmsg{N: 1})
+		w.RunFor(100 * time.Millisecond)
+		peer.ack = false
+		sendLocal(tt, s, "n1", kq, gmsg{N: 1})
+		w.RunFor(100 * time.Millisecond)
+		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
+			Active: sorted(ka, kd), Acquiring: []string{kq}, Buffered: 1})
+
+		// Up: no yield, the rest of VAC-510.
+		sendHost(tt, s, "n9", handoffReq{Kind: "counter", Key: ka, From: "n9", Seq: 21})
+		sendHost(tt, s, "n9", handoffReq{Kind: "counter", Key: kq, From: "n9", Seq: 22})
+		w.RunFor(100 * time.Millisecond)
+		expectStrings(tt, ka+"'s records", from(c.keyRecs("n1", ka), "passivate"), []string{
+			"passivate kind=counter key=" + ka + " reason=handover",
+			"stopped kind=counter key=" + ka,
+		})
+		expectStrings(tt, kq+"'s records", c.keyRecs("n1", kq), []string{
+			"handoff kind=counter key=" + kq + " peers=n9",
+			"forward kind=counter key=" + kq + " to=n9 hops=1",
+		})
+		byKey := func(key string) []string {
+			return slices.DeleteFunc(peer.msgs(tt), func(m string) bool { return strings.Fields(m)[1] != key })
+		}
+		expectStrings(tt, "n9's last messages for "+ka, lastN(byKey(ka), 1), []string{"ack " + ka + " n1 21"})
+		expectStrings(tt, "n9's last messages for "+kq, lastN(byKey(kq), 2), []string{"env " + kq + " 1 1", "ack " + kq + " n1 22"})
+		peer.ack = true
+		sendLocal(tt, s, "n1", ka, gmsg{N: 2})
+		w.RunFor(100 * time.Millisecond)
+		expectStrings(tt, ka+"'s last records", lastN(c.keyRecs("n1", ka), 3), []string{
+			"handoff kind=counter key=" + ka + " peers=n9",
+			"handoff.ack kind=counter key=" + ka + " from=n9 remaining=0",
+			"activate kind=counter key=" + ka + " handoff=acked",
+		})
+
+		// Down: only the ack.
+		before := len(c.grainOnly("n1"))
+		for i, from := range []string{"n8", "n6"} {
+			sendHost(tt, s, from, handoffReq{Kind: "counter", Key: kd, From: from, Seq: uint64(31 + i)})
+			sendHost(tt, s, from, handoffReq{Kind: "counter", Key: kz, From: from, Seq: uint64(41 + i)})
+		}
+		w.RunFor(100 * time.Millisecond)
+		expectStrings(tt, "n1's records after the requests of down nodes", c.grainOnly("n1")[before:], nil)
+		expectStrings(tt, "n8 got", left.msgs(tt), []string{"ack " + kd + " n1 31", "ack " + kz + " n1 41"})
+		expectStrings(tt, "n6 got", dead.msgs(tt), []string{"ack " + kd + " n1 32", "ack " + kz + " n1 42"})
+		sendLocal(tt, s, "n1", kd, gmsg{N: 2})
+		sendLocal(tt, s, "n1", kz, gmsg{N: 1})
+		w.RunFor(100 * time.Millisecond)
+		if got := l.of(kd); !slices.Equal(got, []int{1, 2}) {
+			tt.Errorf("%s got %v, want [1 2] from one activation", kd, got)
+		}
+		expectStrings(tt, kz+"'s records", c.keyRecs("n1", kz), []string{
+			"handoff kind=counter key=" + kz + " peers=n9",
+			"handoff.ack kind=counter key=" + kz + " from=n9 remaining=0",
+			"activate kind=counter key=" + kz + " handoff=acked",
+		})
+		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
+			Active: sorted(ka, kd, kz)})
+	})
+}
+
+// VAC-510, VAC-530 (a late request from a node that left): n1 and n3 form a cluster; n2 joins
+// through n3 and owns k, ahead of n1. The messages from n2's host to n1's take 4s, so n2's
+// handoffReq reaches n1 only after n2 has left and n1's view shows it Left. n1 must not yield k
+// to n2, which would forward k's messages to a node that is gone until n2's entry is reaped and
+// for good after: it acks, and k stays active on n1 and gets its messages.
+func TestHandoffLateRequestFromLeftNode(t *testing.T) {
+	sim.Simulate(t, simOpts(3, 30*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		l := &grainLog{}
+		c := newSimCluster(s)
+		boot := func(node string, seeds ...string) {
+			cfg := simConfig(seeds...)
+			cfg.Kinds = []Kind{logKind("counter", l, WithHandoffTimeout(500*time.Millisecond))}
+			cfg.Registry = grainRegistry()
+			c.node(node, cfg)
+		}
+		boot("n1", "n1", "n3")
+		boot("n3", "n1", "n3")
+		w.RunFor(2 * time.Second)
+		var k string
+		for i := 0; k == ""; i++ {
+			key := "k" + strconv.Itoa(i)
+			if r := refRank([]string{"n1", "n2", "n3"}, "counter", key); r[0] == "n2" && r[1] == "n1" {
+				k = key
+			}
+		}
+		send := func(node string, n int) {
+			tt.Helper()
+			if err := GrainOf[gmsg](c.ms[node], "counter", k).Send(s.System(node), gmsg{N: n}); err != nil {
+				tt.Fatal(err)
+			}
+		}
+		s.DelayBetween(hostAt("n2", "counter").Address(), hostAt("n1", "counter").Address(), 4*time.Second, 4*time.Second)
+		boot("n2", "n3")
+		for c.ms["n2"] == nil || !c.ms["n2"].joined.Load() {
+			w.RunFor(time.Millisecond)
+		}
+		send("n2", 1)
+		w.RunFor(time.Second) // n2 activates k at its HandoffTimeout
+		if err := c.ms["n2"].Leave(); err != nil {
+			tt.Fatal(err)
+		}
+		for m, ok := c.view("n1").Member("n2"); !ok || m.State != Left; m, ok = c.view("n1").Member("n2") {
+			w.RunFor(10 * time.Millisecond)
+		}
+		send("n1", 2)
+		w.RunFor(4 * time.Second) // the request arrives
+		send("n1", 3)
+		w.RunFor(time.Second)
+
+		expectStrings(tt, "n2's records of "+k, c.keyRecs("n2", k)[:3], []string{
+			"handoff kind=counter key=" + k + " peers=n1",
+			"handoff.timeout kind=counter key=" + k + " missing=n1",
+			"activate kind=counter key=" + k + " handoff=timeout",
+		})
+		acked := slices.ContainsFunc(c.grainTrace("n1"), func(r string) bool {
+			return strings.HasPrefix(r, "send lockstep://n2"+grainsPath+"/counter") && strings.HasSuffix(r, "cluster.handoffAck")
+		})
+		if !acked {
+			tt.Error("n1 sent n2 no ack: the late request did not arrive")
+		}
+		for _, kind := range []string{"yield ", "passivate ", "forward ", "drop "} {
+			expectStrings(tt, "n1's "+kind+"records of "+k, grepRecs(c.keyRecs("n1", k), kind), nil)
+		}
+		if got := l.of(k); !slices.Equal(got, []int{1, 2, 3}) {
+			tt.Errorf("%s got %v, want [1 2 3]: 1 on n2, then 2 and 3 on n1", k, got)
+		}
+		info, _ := c.ms["n1"].Host("counter")
+		if !slices.Contains(info.Active, k) {
+			tt.Errorf("n1's Active is %q, want %s in it", info.Active, k)
+		}
+	})
+}
