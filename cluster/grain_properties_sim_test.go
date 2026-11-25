@@ -258,7 +258,7 @@ func faultyGrains(s *sim.Sim) ([]proc, int) {
 }
 
 // joiningGrains is the workload of AT-VAC-22: the nodes of a drawn cluster start one at a time,
-// each seeding the nodes started before it, with no fault. Each waits until every node started so
+// each seeding one random node started before it, with no fault. Each waits until every node started so
 // far has joined, the views have exactly them up and every host has applied its node's view, and
 // up to 2s longer, before the next starts. Grain traffic runs from the first node's start until 5s
 // after the last node joined. It returns the cluster and the deliveries; the run is over when it
@@ -271,7 +271,13 @@ func joiningGrains(s *sim.Sim) (*simCluster, *counterLog) {
 	tf := &traffic{s: s, c: c, r: w.Rand("grain/traffic")}
 	r := w.Rand("grain/joins")
 	for i, n := range names {
-		c.counterNode(n, l, names[:i+1], propOpts...)
+		// One seed started before: a join syncs with every seed at once, so with more seeds every
+		// node would know the joiner before it asks them for a key.
+		seeds := []string{n}
+		if i > 0 {
+			seeds = append(seeds, names[r.IntN(i)])
+		}
+		c.counterNode(n, l, seeds, propOpts...)
 		tf.names = names[:i+1]
 		deadline := w.Sim.Now().Add(20 * time.Second)
 		for {
@@ -334,6 +340,111 @@ func spans(tt testing.TB, c *simCluster) map[string][]span {
 	return out
 }
 
+// hostNode returns the node of addr when addr names the host of counter, from its string form
+// "lockstep://<node>/system/grains/counter#<uid>".
+func hostNode(addr string) (string, bool) {
+	rest, ok := strings.CutPrefix(addr, "lockstep://")
+	node, path, _ := strings.Cut(rest, "/")
+	path, _, _ = strings.Cut(path, "#")
+	return node, ok && "/"+path == grainsPath+"/counter"
+}
+
+// handoffReqs are the handoff requests one host got and has not handled yet, in mailbox order.
+type handoffReqs []struct{ key, from string }
+
+// ackOrder checks from the trace that no host acks a handoff request while its activation of the
+// requested key runs (VAC-510): a request for a key whose activation runs on the peer is acked
+// only in the turn that records the key's lockstep.grain.stopped. An activation stops in no
+// virtual time, so an ack sent at the request instead would still reach the requester after the
+// stop, and the spans would not overlap; this check catches it.
+//
+// The trace names no key in an ack, so the check follows the requests: the requester's
+// lockstep.grain.handoff record names the key and the peers it sent requests to, a peer's
+// lockstep.deliver of a cluster.handoffReq from the requester's host takes the next request on
+// that link (links and mailboxes are FIFO), and a turn of the peer's host that consumed a
+// cluster.handoffReq (simulation turns take one user message) handles the next request its
+// mailbox took. In each turn of a host, the acks to a node must not outnumber the requests from
+// it, handled in the turn, for keys with no running activation there, plus the acks the turn's
+// stopped records released to it. It returns the number of requests that found the key's
+// activation running. It needs a run without faults: a lost request would misalign the queues.
+func ackOrder(c *simCluster) (running int, err error) {
+	nodeOf := map[kernel.NodeID]string{}
+	for name, n := range c.n { //lockstep:maporder builds a lookup table; order does not matter
+		nodeOf[n.ID()] = name
+	}
+	type pair struct{ a, b string }
+	sent := map[pair][]string{}        // by (requester, peer): the keys requested, not yet delivered
+	queued := map[string]handoffReqs{} // by peer: the requests its host's mailbox took
+	open := map[pair]bool{}            // by (node, escaped key): the activation runs
+	owed := map[pair][]string{}        // by (node, escaped key): the requesters owed an ack at the stop
+	acks := map[string][]string{}      // by node: the nodes its host acked in the current turn
+	allowed := map[string][]string{}   // by node: the nodes the current turn may ack, once each
+	for _, rec := range c.s.World().Sim.Records() {
+		node := nodeOf[rec.Node]
+		switch rec.Kind {
+		case grainPrefix + "activate":
+			open[pair{node, attr(rec, "key")}] = true
+		case grainPrefix + "stopped":
+			k := pair{node, attr(rec, "key")}
+			delete(open, k)
+			allowed[node] = append(allowed[node], owed[k]...)
+			delete(owed, k)
+		case grainPrefix + "handoff":
+			for _, p := range strings.Split(attr(rec, "peers"), ",") {
+				sent[pair{node, p}] = append(sent[pair{node, p}], attr(rec, "key"))
+			}
+		case "lockstep.deliver":
+			from, ok1 := hostNode(attr(rec, "from"))
+			to, ok2 := hostNode(attr(rec, "to"))
+			if !ok1 || !ok2 || attr(rec, "msg") != "cluster.handoffReq" {
+				continue
+			}
+			q := sent[pair{from, to}]
+			if len(q) == 0 {
+				return running, fmt.Errorf("%s's host took a handoff request from %s at %s that no handoff record announced", to, from, rec.At)
+			}
+			sent[pair{from, to}] = q[1:]
+			queued[to] = append(queued[to], struct{ key, from string }{q[0], from})
+		case "lockstep.send":
+			from, ok1 := hostNode(attr(rec, "from"))
+			to, ok2 := hostNode(attr(rec, "to"))
+			if ok1 && ok2 && attr(rec, "msg") == "cluster.handoffAck" {
+				acks[from] = append(acks[from], to)
+			}
+		case "lockstep.turn":
+			if h, ok := hostNode(attr(rec, "actor")); ok && h == node && attr(rec, "msg") == "cluster.handoffReq" {
+				q := queued[node]
+				if len(q) == 0 {
+					return running, fmt.Errorf("%s's host handled a handoff request at %s that its mailbox never took", node, rec.At)
+				}
+				r := q[0]
+				queued[node] = q[1:]
+				if k := (pair{node, r.key}); open[k] {
+					running++
+					owed[k] = append(owed[k], r.from)
+				} else {
+					allowed[node] = append(allowed[node], r.from)
+				}
+			}
+			for _, to := range acks[node] {
+				i := slices.Index(allowed[node], to)
+				if i < 0 {
+					return running, fmt.Errorf("%s's host acked %s at %s while the requested activation still ran there (%s)",
+						node, to, rec.At, attrs(rec))
+				}
+				allowed[node] = slices.Delete(allowed[node], i, i+1)
+			}
+			acks[node], allowed[node] = acks[node][:0], allowed[node][:0]
+		}
+	}
+	for k, q := range sent { //lockstep:maporder any leftover is an error
+		if len(q) > 0 {
+			return running, fmt.Errorf("%d handoff requests from %s to %s never reached its host", len(q), k.a, k.b)
+		}
+	}
+	return running, nil
+}
+
 // overlap returns the first pair of spans of one key on different nodes that overlap, as an
 // error, or nil. A span that is still running at the end lasts forever.
 func overlap(c *simCluster, all map[string][]span) error {
@@ -379,17 +490,26 @@ func TestATVAC21SingleActivation(t *testing.T) {
 // ones before and every host applied them, with grain traffic throughout. From the trace's
 // lockstep.grain.activate and lockstep.grain.stopped records of counter, the activation spans of
 // a key on different nodes never overlap: a node activates a key only after the activation on any
-// other node stopped. Keys change owners in every seed, some acquisitions end acked, and no message
-// reaches its grain twice.
+// other node stopped. An activation stops in no virtual time, so the spans would not overlap even
+// if the old owner acked before its activation stopped; ackOrder checks the acks' order on the old
+// owner as well. Keys change owners in every seed, some acquisitions end acked, no message reaches
+// its grain twice, and across the seeds some requests find the key's activation running.
 func TestATVAC22OrderedHandover(t *testing.T) {
+	seeds, running := 0, 0
 	sim.Simulate(t, simOpts(grainSeeds, joiningDuration), func(s *sim.Sim) {
 		tt := s.World().T()
 		c, l := joiningGrains(s)
+		seeds++
 		l.atMostOnce(tt)
 		all := spans(tt, c)
 		if err := overlap(c, all); err != nil {
 			tt.Error(err)
 		}
+		n, err := ackOrder(c)
+		if err != nil {
+			tt.Error(err)
+		}
+		running += n
 		moved := 0
 		for _, ss := range all { //lockstep:maporder counts only
 			if slices.ContainsFunc(ss, func(sp span) bool { return sp.node != ss[0].node }) {
@@ -406,6 +526,9 @@ func TestATVAC22OrderedHandover(t *testing.T) {
 			tt.Errorf("%d keys moved between nodes and %d activations were acked, want some of each", moved, acked)
 		}
 	})
+	if seeds >= 10 && running == 0 {
+		t.Errorf("no handoff request of %d runs found the key's activation running, want some", seeds)
+	}
 }
 
 // drawSeeds is the number of seeds of each workload of AT-VAC-23.
