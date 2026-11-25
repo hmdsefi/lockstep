@@ -268,10 +268,7 @@ func (h *host) route(ctx *lockstep.Context[hostMsg], key string, msg any) {
 		}
 		return
 	}
-	owner := -1
-	if len(h.members) > 0 {
-		owner, _ = lookup(h.members, h.kind.name, key)
-	}
+	owner, _ := lookup(h.members, h.kind.name, key) // -1 when no up member hosts the kind
 	switch {
 	case owner >= 0 && h.members[owner].ID != h.self: // rule 4, until forwarding comes
 		h.drop(ctx, key, dropNoOwner)
