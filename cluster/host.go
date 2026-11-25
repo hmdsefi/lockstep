@@ -158,7 +158,7 @@ type host struct {
 	members []core.Member
 
 	keys     map[string]*grain // by raw key; never ranged
-	active   []string          // the keys in phaseActive, sorted
+	active   keyList           // the keys in phaseActive
 	joining  []heldMsg         // held until the node has joined, in arrival order (rule 1)
 	buffered int               // the messages held in joining and in every key's held (VAC-340)
 	changed  bool              // HostInfo changed in this turn (VAC-600)
@@ -203,7 +203,7 @@ func (h *host) Stopped(ctx *lockstep.Context[hostMsg], _ lockstep.StopReason) {
 	for _, x := range h.joining {
 		h.drop(ctx, x.key, dropHost)
 	}
-	h.joining, h.buffered, h.active = nil, 0, nil
+	h.joining, h.buffered, h.active = nil, 0, keyList{}
 	h.keys = map[string]*grain{}
 	h.publish()
 }
@@ -215,14 +215,12 @@ func (h *host) endTurn() {
 	}
 }
 
-// publish stores a new HostInfo from the host's state (VAC-600).
+// publish stores a new HostInfo from the host's state (VAC-600). Its key lists are shared with
+// the previous HostInfo unless their sets changed since.
 func (h *host) publish() {
 	h.changed = false
-	info := &HostInfo{Kind: h.kind.name, Version: h.version, Joined: h.joined, Buffered: h.buffered}
-	if len(h.active) > 0 {
-		info.Active = slices.Clone(h.active)
-	}
-	h.info.Store(info)
+	h.info.Store(&HostInfo{Kind: h.kind.name, Version: h.version, Joined: h.joined,
+		Active: h.active.snapshot(), Buffered: h.buffered})
 }
 
 // sync applies the latest view when it is newer than the applied one, or when the node has joined
@@ -249,7 +247,7 @@ func (h *host) sync(ctx *lockstep.Context[hostMsg]) {
 	h.publish()
 	if ctl := tracer(ctx); ctl != nil {
 		ctl.Record(grainPrefix+"view", "kind", h.kind.name, "version", strconv.FormatUint(h.version, 10),
-			"joined", strconv.FormatBool(h.joined), "active", strconv.Itoa(len(h.active)))
+			"joined", strconv.FormatBool(h.joined), "active", strconv.Itoa(h.active.len()))
 	}
 }
 
@@ -322,7 +320,8 @@ func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 	}
 	g := &grain{phase: phaseActive, addr: addr, pid: pid}
 	h.keys[key] = g
-	h.addActive(key)
+	h.active.add(key)
+	h.changed = true
 	if ctl := tracer(ctx); ctl != nil {
 		ctl.Record(grainPrefix+"activate", "kind", h.kind.name, "key", escapeKey(key), "handoff", handoffNone)
 	}
@@ -343,26 +342,70 @@ func (h *host) terminated(ctx *lockstep.Context[hostMsg], t lockstep.Terminated)
 		return
 	}
 	delete(h.keys, key)
-	h.removeActive(key)
+	h.active.remove(key)
+	h.changed = true
 	if ctl := tracer(ctx); ctl != nil {
 		ctl.Record(grainPrefix+"stopped", "kind", h.kind.name, "key", escapeKey(key))
 	}
 }
 
-// addActive inserts key into the sorted active list.
-func (h *host) addActive(key string) {
-	if i, found := slices.BinarySearch(h.active, key); !found {
-		h.active = slices.Insert(h.active, i, key)
-		h.changed = true
-	}
+// keyList is a set of keys published as a sorted list in HostInfo (VAC-600). The sorted list is
+// never modified in place, so a published HostInfo can share it; changes collect in added and
+// removed until the next snapshot merges them, in time linear in the list, once per turn.
+type keyList struct {
+	sorted  []string // nil when empty
+	added   []string // keys not in sorted, added since the last snapshot
+	removed []string // keys of sorted, removed since the last snapshot
 }
 
-// removeActive removes key from the sorted active list.
-func (h *host) removeActive(key string) {
-	if i, found := slices.BinarySearch(h.active, key); found {
-		h.active = slices.Delete(h.active, i, i+1)
-		h.changed = true
+// add adds key, which is not in the set.
+func (l *keyList) add(key string) {
+	if i := slices.Index(l.removed, key); i >= 0 {
+		l.removed = slices.Delete(l.removed, i, i+1)
+		return
 	}
+	l.added = append(l.added, key)
+}
+
+// remove removes key, which is in the set.
+func (l *keyList) remove(key string) {
+	if i := slices.Index(l.added, key); i >= 0 {
+		l.added = slices.Delete(l.added, i, i+1)
+		return
+	}
+	l.removed = append(l.removed, key)
+}
+
+// len returns the size of the set.
+func (l *keyList) len() int { return len(l.sorted) + len(l.added) - len(l.removed) }
+
+// snapshot returns the set as a sorted list, nil when empty. The list is shared: the next
+// snapshot returns the same slice unless the set changed.
+func (l *keyList) snapshot() []string {
+	if len(l.added) == 0 && len(l.removed) == 0 {
+		return l.sorted
+	}
+	slices.Sort(l.added)
+	slices.Sort(l.removed)
+	var out []string
+	if n := l.len(); n > 0 {
+		out = make([]string, 0, n)
+	}
+	a, r := l.added, l.removed
+	for _, k := range l.sorted {
+		if len(r) > 0 && r[0] == k {
+			r = r[1:]
+			continue
+		}
+		for len(a) > 0 && a[0] < k {
+			out = append(out, a[0])
+			a = a[1:]
+		}
+		out = append(out, k)
+	}
+	out = append(out, a...)
+	l.sorted, l.added, l.removed = out, l.added[:0], l.removed[:0]
+	return out
 }
 
 // drop records the drop of a message for key with reason (VAC-350). A message sent by reference

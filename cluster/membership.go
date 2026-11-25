@@ -56,16 +56,17 @@ type Membership struct {
 // joined, the actor asks every other seed for its table at once and then every JoinRetryInterval;
 // a node whose seeds name no other node has joined at once.
 //
-// Join then starts the system actor /system/grains and under it one host per kind of c.Kinds, at
-// /system/grains/<kind>, which runs the activations of the grains of that kind that this node
-// owns (see Grain). If they cannot be started, Join stops the membership actor again and returns
-// the error.
+// Join then starts the system actor /system/grains, which starts one host per kind of c.Kinds, at
+// /system/grains/<kind>, to run the activations of the grains of that kind that this node owns
+// (see Grain). If /system/grains cannot be spawned, Join stops the membership actor again and
+// returns the error. The hosts start after Join returns: a host that cannot be spawned fails
+// /system/grains, which its supervisor restarts, and Join does not see it.
 //
 // The first View, published before Join returns, holds only this node: Alive with incarnation 0,
 // the System's incarnation as its ID and the sorted names of c.Kinds as its Kinds (nil for none).
 // The other members learn the kinds from the membership protocol. A System joins at most once: a
 // second Join returns ErrAlreadyJoined, also after the node left or the membership actor stopped,
-// and after a Join that could not start the grain hosts. Join panics if sys is nil.
+// and after a Join that could not spawn /system/grains. Join panics if sys is nil.
 func Join(sys *lockstep.System, c Config) (*Membership, error) {
 	if sys == nil {
 		panic("cluster: Join with nil System")
@@ -102,8 +103,9 @@ func Join(sys *lockstep.System, c Config) (*Membership, error) {
 		return nil, fmt.Errorf("cluster: join: %w", err)
 	}
 	m.pid = pid
-	// The grain hosts come after the membership actor (VAC-300). If they cannot start, the
-	// membership actor is stopped again and the System stays marked joined, as after a Leave.
+	// The grains actor comes after the membership actor (VAC-300) and spawns the hosts in its own
+	// Started. If the grains actor cannot be spawned, the membership actor is stopped again and the
+	// System stays marked joined, as after a Leave.
 	if err := spawnGrains(sp, m); err != nil {
 		if serr := lockstep.Stop(sys, pid.Address()); serr != nil {
 			err = errors.Join(err, serr)

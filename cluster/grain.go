@@ -4,6 +4,7 @@
 package cluster
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -64,8 +65,9 @@ func (g Grain[M]) Send(from lockstep.Sender, msg M) error {
 // lockstep.ReplyTo to make the request and sends it as Grain.Send does. When an option is invalid
 // it returns the reply NewReply resolved, and when Grain.Send would return an error it returns the
 // reply already failed with that error; build is not called in either case. A request that a host
-// drops later fails nothing: the reply resolves at its timeout. Ask panics if build is nil, and
-// as NewReply does.
+// drops later fails nothing: the reply resolves at its timeout. If build panics, the reply fails
+// with an error that starts with "cluster: send <kind>/<key>: " before the panic propagates. Ask
+// panics if build is nil, and as NewReply does.
 func Ask[R, M any](from lockstep.Sender, g Grain[M], build func(lockstep.ReplyTo[R]) M,
 	opts ...lockstep.AskOption) *lockstep.Reply[R] {
 	if build == nil {
@@ -77,12 +79,29 @@ func Ask[R, M any](from lockstep.Sender, g Grain[M], build func(lockstep.ReplyTo
 	}
 	i, err := g.target()
 	if err == nil {
-		err = g.send(from, i, build(rt))
+		err = g.send(from, i, buildRequest(from, g, rt, build))
 	}
 	if err != nil {
 		rt.Fail(from, err) // before Ask returns (VAC-210)
 	}
 	return r
+}
+
+// errBuildPanicked fails the reply of an Ask whose build panicked.
+var errBuildPanicked = errors.New("cluster: ask: build panicked")
+
+// buildRequest calls build with rt and returns the request. If build panics, it fails rt before
+// the panic propagates, so that the reply does not wait for its timeout.
+func buildRequest[R, M any](from lockstep.Sender, g Grain[M], rt lockstep.ReplyTo[R], build func(lockstep.ReplyTo[R]) M) M {
+	built := false
+	defer func() {
+		if !built {
+			rt.Fail(from, g.wrap(errBuildPanicked))
+		}
+	}()
+	msg := build(rt)
+	built = true
+	return msg
 }
 
 // target runs Send's checks in their order (VAC-200) and returns the index in Config.Kinds of the

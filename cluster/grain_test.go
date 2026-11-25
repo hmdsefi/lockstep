@@ -211,13 +211,30 @@ func long257() string { return strings.Repeat("b", 257) }
 
 // AT-VAC-30, VAC-210, MSG-380, MSG-390: Ask creates the reply with NewReply, calls build once and
 // sends the request as Send does; the activation answers. An invalid option returns NewReply's
-// failed reply, and every error of Send fails the reply before Ask returns; build is not called
-// when a check fails, and is called once when the send itself fails. A nil build panics.
+// failed reply, and every error of Send (zero Grain, invalid key, left, not joined, wrong type, no
+// owner) fails the reply before Ask returns, without calling build; an error of the send itself
+// fails it too, after build was called once. A build that panics fails the reply before the panic
+// propagates. A nil build panics. n1 has joined, n2 never joins, n3 leaves.
 func TestATVAC30Ask(t *testing.T) {
-	sim.Simulate(t, simOpts(1, time.Second), func(s *sim.Sim) {
+	sim.Simulate(t, simOpts(1, 2*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
 		l := &grainLog{}
-		_, m, sys := oneNode(s, logKind("counter", l), logKind("tiny", l, WithHostOptions(lockstep.WithMailbox(1, lockstep.FailSend))))
+		c := newSimCluster(s)
+		kinds := []Kind{logKind("counter", l), logKind("tiny", l, WithHostOptions(lockstep.WithMailbox(1, lockstep.FailSend)))}
+		joined := simConfig()
+		joined.Kinds = kinds
+		lone := simConfig("n2", "n9") // n9 does not exist: n2 never joins
+		lone.Kinds = kinds
+		c.node("n1", joined)
+		c.node("n2", lone)
+		c.node("n3", joined)
+		w.RunFor(10 * time.Millisecond)
+		m, sys := c.ms["n1"], s.System("n1")
+		if err := c.ms["n3"].Leave(); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(10 * time.Millisecond)
+
 		calls := 0
 		build := func(n int) func(lockstep.ReplyTo[int]) gmsg {
 			return func(rt lockstep.ReplyTo[int]) gmsg {
@@ -242,26 +259,41 @@ func TestATVAC30Ask(t *testing.T) {
 
 		// Failed before Ask returns, without calling build.
 		calls = 0
+		strCalls := 0
+		buildStr := func(lockstep.ReplyTo[int]) string {
+			strCalls++
+			return ""
+		}
 		for _, c := range []struct {
 			what   string
 			r      *lockstep.Reply[int]
 			target error
+			text   string
 		}{
-			{"invalid option", Ask(sys, g, build(1), lockstep.WithTimeout(0)), lockstep.ErrInvalidOption},
-			{"zero grain", Ask(sys, Grain[gmsg]{}, build(1)), ErrNotJoined},
-			{"invalid key", Ask(sys, GrainOf[gmsg](m, "counter", ""), build(1)), ErrInvalidKey},
-			{"no owner", Ask(sys, GrainOf[gmsg](m, "nothere", "k"), build(1)), ErrNoOwner},
+			{"invalid option", Ask(sys, g, build(1), lockstep.WithTimeout(0)), lockstep.ErrInvalidOption, ""},
+			{"zero grain", Ask(sys, Grain[gmsg]{}, build(1)), ErrNotJoined, "cluster: not joined"},
+			{"invalid key", Ask(sys, GrainOf[gmsg](m, "counter", ""), build(1)), ErrInvalidKey,
+				"cluster: send counter/: cluster: invalid key"},
+			{"left", Ask(s.System("n3"), GrainOf[gmsg](c.ms["n3"], "counter", "k"), build(1)), ErrLeft,
+				"cluster: send counter/k: cluster: left"},
+			{"not joined", Ask(s.System("n2"), GrainOf[gmsg](c.ms["n2"], "counter", "k"), build(1)), ErrNotJoined,
+				"cluster: send counter/k: cluster: not joined"},
+			{"wrong type", Ask(sys, GrainOf[string](m, "counter", "k"), buildStr), lockstep.ErrWrongType,
+				`cluster: send counter/k: lockstep: wrong message type: kind "counter" takes cluster.gmsg, not string`},
+			{"no owner", Ask(sys, GrainOf[gmsg](m, "nothere", "k"), build(1)), ErrNoOwner,
+				"cluster: send nothere/k: cluster: no owner"},
 		} {
 			if !askResolved(c.r) {
 				tt.Errorf("%s: the reply has not resolved when Ask returned", c.what)
 				continue
 			}
-			if _, err := c.r.Await(context.Background()); !errors.Is(err, c.target) {
-				tt.Errorf("%s: %v, want %v", c.what, err, c.target)
+			_, err := c.r.Await(context.Background())
+			if !errors.Is(err, c.target) || c.text != "" && err.Error() != c.text {
+				tt.Errorf("%s: %v, want %q (wrapping %v)", c.what, err, c.text, c.target)
 			}
 		}
-		if calls != 0 {
-			tt.Errorf("build called %d times by failed asks", calls)
+		if calls != 0 || strCalls != 0 {
+			tt.Errorf("build called %d and %d times by failed asks", calls, strCalls)
 		}
 
 		// The send's error fails the reply too; build was called.
@@ -276,18 +308,62 @@ func TestATVAC30Ask(t *testing.T) {
 		if _, err := r.Await(context.Background()); !errors.Is(err, lockstep.ErrMailboxFull) || !strings.HasPrefix(err.Error(), "cluster: send tiny/k: ") {
 			tt.Errorf("ask to a full host: %v, want ErrMailboxFull wrapped", err)
 		}
+		w.RunFor(10 * time.Millisecond)
+
+		// A build that panics fails the reply before the panic leaves Ask.
+		var panicked *lockstep.Reply[int]
+		expectPanic(tt, "boom", func() {
+			panicked = Ask(sys, g, func(lockstep.ReplyTo[int]) gmsg { panic("boom") })
+		})
+		if panicked != nil {
+			tt.Error("Ask returned although build panicked")
+		}
+		if fails := recordsOfKind(s, "lockstep.reply"); !strings.Contains(fails, "cluster: send counter/k: cluster: ask: build panicked") {
+			tt.Errorf("no failed reply for the panicking build in the lockstep.reply records:%s", fails)
+		}
 
 		expectPanic(tt, "cluster: Ask with nil build function", func() { Ask[int](sys, g, nil) })
 	})
 }
 
-// Send's owner lookup allocates nothing (VAC-110): the placement of the published view ranks with
-// core.AppendRank.
+// recordsOfKind returns the records of kind, one per line, for searching and failure messages.
+func recordsOfKind(s *sim.Sim, kind string) string {
+	var b strings.Builder
+	for _, r := range s.World().Sim.Records() {
+		if r.Kind == kind {
+			b.WriteString("\n  " + attrs(r))
+		}
+	}
+	return b.String()
+}
+
+// Send's checks and owner lookup allocate nothing (VAC-110): the placement of the published view
+// ranks with core.AppendRank, here over three hosting members (n1 and the made-up a and b).
 func TestSendLookupAllocs(t *testing.T) {
 	sim.Simulate(t, simOpts(1, time.Second), func(s *sim.Sim) {
-		tt := s.World().T()
+		w, tt := s.World(), s.World().T()
 		_, m, _ := oneNode(s, validKind("counter"))
-		g := GrainOf[int](m, "counter", "some-key")
+		if err := sim.Send(s, "n1", lockstep.PIDAt[memberMsg]("n1", actorPath), memberMsg(syncReq{
+			From:    update{Node: "a", ID: 7, State: Alive, Kinds: []string{"counter"}},
+			Members: []update{{Node: "b", ID: 8, State: Alive, Kinds: []string{"counter"}}},
+		})); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(10 * time.Millisecond)
+		v := m.View()
+		if n := len(v.place.hosts("counter")); n != 3 {
+			tt.Fatalf("%d hosting members of counter in %v, want 3", n, v.Members)
+		}
+		keyOf := map[string]string{} // a key of each owner
+		for _, key := range []string{"k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9"} {
+			if o, _ := Owner(v, "counter", key); keyOf[o] == "" {
+				keyOf[o] = key
+			}
+		}
+		if len(keyOf) != 3 {
+			tt.Fatalf("owners of k0 to k9: %v; the test needs keys of all three", keyOf)
+		}
+		g := GrainOf[int](m, "counter", keyOf["n1"])
 		if n := testing.AllocsPerRun(100, func() {
 			if _, err := g.target(); err != nil {
 				panic(err)
@@ -295,7 +371,55 @@ func TestSendLookupAllocs(t *testing.T) {
 		}); n != 0 {
 			tt.Errorf("Send's checks and owner lookup allocate %v times, want 0", n)
 		}
+		for _, node := range []string{"a", "b", "n1"} {
+			key := keyOf[node]
+			if n := testing.AllocsPerRun(100, func() {
+				if o, _ := v.place.owner("counter", key); o != node {
+					panic(o)
+				}
+			}); n != 0 {
+				tt.Errorf("the owner lookup of %s (%s's) allocates %v times, want 0", key, node, n)
+			}
+		}
 	})
+}
+
+// keyList keeps a sorted snapshot that it never modifies in place, merges the changes of a turn
+// and returns the same slice while the set does not change.
+func TestKeyList(t *testing.T) {
+	var l keyList
+	if got := l.snapshot(); got != nil || l.len() != 0 {
+		t.Fatalf("empty snapshot %q, len %d", got, l.len())
+	}
+	for _, k := range []string{"m", "c", "x", "a"} {
+		l.add(k)
+	}
+	first := l.snapshot()
+	if !slices.Equal(first, []string{"a", "c", "m", "x"}) || l.len() != 4 {
+		t.Fatalf("snapshot %q, len %d", first, l.len())
+	}
+	if again := l.snapshot(); &again[0] != &first[0] {
+		t.Error("an unchanged set must return the same slice")
+	}
+	l.remove("c")
+	l.add("b")
+	l.add("z")
+	l.remove("z") // added and removed in the same turn
+	l.remove("x")
+	l.add("x") // removed and added back
+	second := l.snapshot()
+	if !slices.Equal(second, []string{"a", "b", "m", "x"}) || l.len() != 4 {
+		t.Errorf("snapshot %q, len %d, want [a b m x]", second, l.len())
+	}
+	if !slices.Equal(first, []string{"a", "c", "m", "x"}) {
+		t.Errorf("the first snapshot changed to %q", first)
+	}
+	for _, k := range second {
+		l.remove(k)
+	}
+	if got := l.snapshot(); got != nil || l.len() != 0 {
+		t.Errorf("snapshot after removing all %q, len %d, want nil", got, l.len())
+	}
 }
 
 // placement holds the hosting members of every kind an up member names, sorted by node, and
