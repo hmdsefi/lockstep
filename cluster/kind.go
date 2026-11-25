@@ -84,14 +84,15 @@ func NewKind[M any](name string, factory func(key string) lockstep.Actor[M], opt
 		_, ok := v.(M)
 		return ok
 	}
+	typ := k.typ
 	k.send = func(from lockstep.Sender, to, msg any) error {
 		pid, ok := to.(lockstep.PID[M])
 		if !ok {
-			return fmt.Errorf("cluster: kind %q: activation is a %T, want a lockstep.PID[%v]", name, to, k.typ)
+			return fmt.Errorf("cluster: kind %q: activation is a %T, want a lockstep.PID[%v]", name, to, typ)
 		}
 		m, ok := msg.(M)
 		if !ok {
-			return fmt.Errorf("cluster: kind %q: message is a %T, want %v", name, msg, k.typ)
+			return fmt.Errorf("cluster: kind %q: message is a %T, want %v", name, msg, typ)
 		}
 		return lockstep.Send(from, pid, m)
 	}
