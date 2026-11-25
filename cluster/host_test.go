@@ -359,13 +359,12 @@ func TestHostRestartStartsEmpty(t *testing.T) {
 	})
 }
 
-// VAC-310 rules 4 to 7 before forwarding (3.4-05), VAC-500 step 3: a message for a key that
-// another node owns is dropped with reason no-owner; an active key that another node owns in a new
-// view is passivated with reason ownership, so its next message is dropped too; a key this node
-// owns activates; once this node has left, its active keys are passivated with reason leave and
-// every key is dropped with reason no-owner (no up member hosts the kind). The host applies the
-// views the membership actor publishes (CLU-500): HostInfo.Version follows View().Version. n1 and
-// n2 do not know each other.
+// VAC-310 rules 4 to 7, VAC-500 step 3: a message for a key that another node owns is forwarded to
+// it; an active key that another node owns in a new view is passivated with reason ownership, so
+// its next message is forwarded too; a key this node owns activates; once this node has left, its
+// active keys are passivated with reason leave and every key is dropped with reason no-owner (no
+// up member hosts the kind). The host applies the views the membership actor publishes (CLU-500):
+// HostInfo.Version follows View().Version. n1 and n2 do not know each other.
 func TestHostRoutingRules(t *testing.T) {
 	sim.Simulate(t, simOpts(2, 3*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -373,6 +372,7 @@ func TestHostRoutingRules(t *testing.T) {
 		c := newSimCluster(s)
 		cfg := simConfig()
 		cfg.Kinds = []Kind{logKind("counter", l)}
+		cfg.Registry = grainRegistry()
 		c.node("n1", cfg)
 		c.node("n2", cfg)
 		w.RunFor(10 * time.Millisecond)
@@ -416,10 +416,11 @@ func TestHostRoutingRules(t *testing.T) {
 		sendLocal(tt, s, "n1", active, gmsg{N: 3})
 		sendLocal(tt, s, "n1", mine[0], gmsg{N: 4})
 		w.RunFor(10 * time.Millisecond)
-		expectStrings(tt, "drops", c.grainRecs("n1", "drop"), []string{
-			"kind=counter key=" + theirs[1] + " reason=no-owner hops=0",
-			"kind=counter key=" + active + " reason=no-owner hops=0",
+		expectStrings(tt, "forwards", c.grainRecs("n1", "forward"), []string{
+			"kind=counter key=" + theirs[1] + " to=a hops=1",
+			"kind=counter key=" + active + " to=a hops=1",
 		})
+		expectStrings(tt, "drops", c.grainRecs("n1", "drop"), nil)
 		if got := l.of(mine[0]); !slices.Equal(got, []int{4}) {
 			tt.Errorf("%s got %v, want [4]", mine[0], got)
 		}

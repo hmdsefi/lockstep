@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hmdsefi/lockstep/codec"
 )
 
 // TestConfigValidate checks CLU-010: zero fields get their defaults, negative ones do not, and the
@@ -23,7 +25,8 @@ func TestConfigValidate(t *testing.T) {
 			c.IndirectProbes != d.IndirectProbes || c.SuspicionTimeout != d.SuspicionTimeout ||
 			c.SyncInterval != d.SyncInterval || c.JoinRetryInterval != d.JoinRetryInterval ||
 			c.RetransmitMult != d.RetransmitMult || c.MaxPiggyback != d.MaxPiggyback ||
-			c.DeadRetention != d.DeadRetention {
+			c.DeadRetention != d.DeadRetention || c.MaxHops != d.MaxHops || c.Registry != d.Registry ||
+			c.Codec != d.Codec {
 			t.Fatalf("Validate(zero) left %+v, want %+v", c, d)
 		}
 		want := Config{
@@ -37,6 +40,28 @@ func TestConfigValidate(t *testing.T) {
 			d.RetransmitMult != want.RetransmitMult || d.MaxPiggyback != want.MaxPiggyback ||
 			d.DeadRetention != want.DeadRetention {
 			t.Fatalf("DefaultConfig() = %+v, want %+v", d, want)
+		}
+		// The grain fields: MaxHops 3, the process registry and the JSON codec.
+		if d.MaxHops != 3 || DefaultMaxHops != 3 || d.Registry != codec.Default() || d.Codec != (codec.JSON{}) {
+			t.Fatalf("DefaultConfig() grain fields: MaxHops %d, Registry %p, Codec %#v", d.MaxHops, d.Registry, d.Codec)
+		}
+	})
+
+	t.Run("grain fields kept", func(t *testing.T) {
+		r := codec.NewRegistry()
+		c := Config{MaxHops: 1, Registry: r, Codec: stubCodec{}}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate = %v", err)
+		}
+		if c.MaxHops != 1 || c.Registry != r || c.Codec != (stubCodec{}) {
+			t.Fatalf("Validate changed set grain fields: %+v", c)
+		}
+	})
+
+	t.Run("max hops before kinds", func(t *testing.T) {
+		c := Config{MaxHops: -1, Kinds: []Kind{validKind("Bad")}}
+		if err := c.Validate(); err == nil || err.Error() != "cluster: invalid config: MaxHops: -1 is less than 1" {
+			t.Fatalf("Validate = %v, want the MaxHops row", err)
 		}
 	})
 
@@ -98,6 +123,7 @@ func TestConfigValidate(t *testing.T) {
 		{"retransmit mult", func(c *Config) { c.RetransmitMult = -1 }, "RetransmitMult: -1 is less than 1"},
 		{"max piggyback", func(c *Config) { c.MaxPiggyback = -2 }, "MaxPiggyback: -2 is less than 1"},
 		{"dead retention", func(c *Config) { c.DeadRetention = -time.Minute }, "DeadRetention: -1m0s is not positive"},
+		{"max hops", func(c *Config) { c.MaxHops = -2 }, "MaxHops: -2 is less than 1"},
 	}
 	check := func(t *testing.T, c Config, want string) {
 		t.Helper()
@@ -131,3 +157,8 @@ func TestConfigValidate(t *testing.T) {
 		}
 	}
 }
+
+// stubCodec is a codec.Codec that Validate must keep as it is.
+type stubCodec struct{ codec.JSON }
+
+func (stubCodec) Name() string { return "stub" }

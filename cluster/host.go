@@ -22,11 +22,11 @@ import (
 // bounded across keys (VAC-340) and publishes HostInfo (VAC-600). Hosts are actor code: no wall
 // clock, randomness, goroutines, select, map ranges or locks (§6).
 //
-// This file implements the local path (3.4-03): routing rules 1, 3, 5, 6 and 7; rule 4 (another
-// node owns the key) drops with no-owner until 3.4-05 forwards, and rule 2 (yields) comes with
-// 3.4-06, as do handoff peers: every activation is handoff=none. Of VAC-500, steps 1 (without the
-// previous view), 3, 5 and 6. Passivation and the stops of activations and hosts (3.4-04) are in
-// passivate.go.
+// This file implements routing rules 1 and 3 to 7; rule 4 (another node owns the key) forwards,
+// and forward.go has the envelopes, the forwarding and the decoding before a delivery (3.4-05).
+// Rule 2 (yields) comes with 3.4-06, as do handoff peers: every activation is handoff=none. Of
+// VAC-500, steps 1 (without the previous view), 3, 5 and 6. Passivation and the stops of
+// activations and hosts (3.4-04) are in passivate.go.
 
 // The paths of the grains actor and of the hosts under it (VAC-300).
 const (
@@ -41,7 +41,7 @@ const hostMailbox = 1024
 // grainPrefix starts the kind of every grain record (§6).
 const grainPrefix = "lockstep.grain."
 
-// The drop reasons of this file (VAC-350).
+// The drop reasons of this file (VAC-350); forward.go has the others.
 const (
 	dropBuffer   = "buffer"
 	dropHost     = "host"
@@ -77,7 +77,7 @@ type HostInfo struct {
 type hostMsg interface{ hostMsg() }
 
 // localGrain is a message for the grain Key, sent by reference from this node (Grain.Send). Msg is
-// a value of the kind's message type.
+// a value of the kind's message type. A message from another node comes as a grainEnvelope.
 type localGrain struct {
 	Key string
 	Msg any
@@ -187,13 +187,16 @@ func (h *host) Started(ctx *lockstep.Context[hostMsg]) {
 	h.endTurn()
 }
 
-// Receive routes a message for a grain or handles an idle timer; first it applies a newer view,
-// which is all viewChanged asks for. A handoffAck does nothing until 3.4-06.
+// Receive routes a message for a grain, from this node or another one, or handles an idle timer;
+// first it applies a newer view, which is all viewChanged asks for. A handoffAck does nothing
+// until 3.4-06.
 func (h *host) Receive(ctx *lockstep.Context[hostMsg], msg hostMsg) {
 	h.sync(ctx)
 	switch msg := msg.(type) {
 	case localGrain:
 		h.route(ctx, msg.Key, msg.Msg)
+	case grainEnvelope:
+		h.envelope(ctx, msg)
 	case idleTick:
 		h.idle(ctx, msg)
 	case hostCall:
@@ -257,39 +260,45 @@ func (h *host) sync(ctx *lockstep.Context[hostMsg]) {
 	}
 }
 
-// route applies the first routing rule that fits the message msg for key (VAC-310).
+// route applies the first routing rule that fits the message msg for key (VAC-310). msg is a value
+// sent by reference on this node, or an encoded message from another node, which stays encoded
+// until it is delivered.
 func (h *host) route(ctx *lockstep.Context[hostMsg], key string, msg any) {
 	if !h.joined { // rule 1
-		if h.hold(ctx, key) {
+		if h.hold(ctx, key, msg) {
 			h.joining = append(h.joining, heldMsg{key: key, msg: msg})
 		}
 		return
 	}
 	g := h.keys[key]
 	if g != nil && g.phase != phaseActive { // rule 3
-		if h.hold(ctx, key) {
+		if h.hold(ctx, key, msg) {
 			g.held = append(g.held, msg)
 		}
 		return
 	}
 	owner, _ := lookup(h.members, h.kind.name, key) // -1 when no up member hosts the kind
 	switch {
-	case owner >= 0 && h.members[owner].ID != h.self: // rule 4, until forwarding comes
-		h.drop(ctx, key, dropNoOwner)
+	case owner >= 0 && h.members[owner].ID != h.self: // rule 4
+		h.forward(ctx, key, msg, h.members[owner].ID)
 	case g != nil: // rule 5
-		h.deliver(ctx, key, g, msg)
-	case owner >= 0: // rule 6: this node owns key
-		h.activate(ctx, key, msg)
+		if v, hops, ok := h.open(ctx, key, msg); ok {
+			h.deliver(ctx, key, g, v, hops)
+		}
+	case owner >= 0: // rule 6: this node owns key; a message that cannot be delivered activates nothing
+		if v, hops, ok := h.open(ctx, key, msg); ok {
+			h.activate(ctx, key, v, hops)
+		}
 	default: // rule 7
-		h.drop(ctx, key, dropNoOwner)
+		h.drop(ctx, key, hopsOf(msg), dropNoOwner)
 	}
 }
 
-// hold makes room for one more held message (VAC-340): it reports false, after dropping the
-// message for key with reason buffer, when the host's buffers are full.
-func (h *host) hold(ctx *lockstep.Context[hostMsg], key string) bool {
+// hold makes room for one more held message (VAC-340): it reports false, after dropping msg, the
+// message for key, with reason buffer, when the host's buffers are full.
+func (h *host) hold(ctx *lockstep.Context[hostMsg], key string, msg any) bool {
 	if h.buffered >= h.kind.buffer {
-		h.drop(ctx, key, dropBuffer)
+		h.drop(ctx, key, hopsOf(msg), dropBuffer)
 		return false
 	}
 	h.buffered++
@@ -297,22 +306,24 @@ func (h *host) hold(ctx *lockstep.Context[hostMsg], key string) bool {
 	return true
 }
 
-// deliver sends msg to the activation of key (VAC-330) and makes it the activation's last
-// delivery (VAC-420); a refused send drops it with reason mailbox and is no delivery.
-func (h *host) deliver(ctx *lockstep.Context[hostMsg], key string, g *grain, msg any) {
-	if err := h.kind.send(ctx, g.pid, msg); err != nil {
-		h.drop(ctx, key, dropMailbox)
+// deliver sends v, the value of a message that made hops hops, to the activation of key (VAC-330)
+// and makes it the activation's last delivery (VAC-420); a refused send drops it with reason
+// mailbox and is no delivery.
+func (h *host) deliver(ctx *lockstep.Context[hostMsg], key string, g *grain, v any, hops int) {
+	if err := h.kind.send(ctx, g.pid, v); err != nil {
+		h.drop(ctx, key, hops, dropMailbox)
 		return
 	}
 	g.last = ctx.Now()
 }
 
-// activate activates key with no handoff peers and delivers msg to it (VAC-410): it spawns the
-// activation under the host, named by the escaped key, with the kind's activation options and the
-// kind's factory called with key, watches it, records lockstep.grain.activate, delivers and arms
-// the idle timer of the activation's generation (VAC-420). A spawn that fails drops msg with
-// reason activate and leaves the key without state.
-func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
+// activate activates key with no handoff peers and delivers v, the value of a message that made
+// hops hops, to it (VAC-410): it spawns the activation under the host, named by the escaped key,
+// with the kind's activation options and the kind's factory called with key, watches it, records
+// lockstep.grain.activate, delivers and arms the idle timer of the activation's generation
+// (VAC-420). A spawn that fails drops the message with reason activate and leaves the key without
+// state.
+func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, v any, hops int) {
 	addr, pid, err := h.kind.spawn(ctx, escapeKey(key), key, h.kind.activation)
 	if err == nil {
 		if err = lockstep.Watch(ctx, addr); err != nil {
@@ -324,7 +335,7 @@ func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 		}
 	}
 	if err != nil {
-		h.drop(ctx, key, dropActivate)
+		h.drop(ctx, key, hops, dropActivate)
 		return
 	}
 	h.gen++
@@ -335,7 +346,7 @@ func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 	if ctl := tracer(ctx); ctl != nil {
 		ctl.Record(grainPrefix+"activate", "kind", h.kind.name, "key", escapeKey(key), "handoff", handoffNone)
 	}
-	h.deliver(ctx, key, g, msg)
+	h.deliver(ctx, key, g, v, hops)
 	g.timer = ctx.After(h.kind.idle, idleTick{Key: key, Gen: g.gen})
 }
 
@@ -398,10 +409,15 @@ func (l *keyList) snapshot() []string {
 	return out
 }
 
-// drop records the drop of a message for key with reason (VAC-350). A message sent by reference
-// has made no hops.
-func (h *host) drop(ctx *lockstep.Context[hostMsg], key, reason string) {
+// drop records the drop of a message for key that made hops hops, with reason (VAC-350). A message
+// sent by reference on this node has made none.
+func (h *host) drop(ctx *lockstep.Context[hostMsg], key string, hops int, reason string) {
+	h.dropEscaped(ctx, escapeKey(key), hops, reason)
+}
+
+// dropEscaped is drop for a key that is already escaped.
+func (h *host) dropEscaped(ctx *lockstep.Context[hostMsg], key string, hops int, reason string) {
 	if ctl := tracer(ctx); ctl != nil {
-		ctl.Record(grainPrefix+"drop", "kind", h.kind.name, "key", escapeKey(key), "reason", reason, "hops", "0")
+		ctl.Record(grainPrefix+"drop", "kind", h.kind.name, "key", key, "reason", reason, "hops", strconv.Itoa(hops))
 	}
 }

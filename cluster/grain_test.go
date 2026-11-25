@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/codec"
 	"github.com/hmdsefi/lockstep/sim"
 )
 
@@ -118,7 +119,8 @@ func TestATVAC05LocalActivation(t *testing.T) {
 
 // AT-VAC-06, VAC-200: Send returns the first error in the order zero Grain, invalid key, left, not
 // joined, wrong type, no owner, then the send's error; all but the first are wrapped with the kind
-// and the escaped key. An owner on another node is reported as no owner until forwarding comes.
+// and the escaped key. For an owner on another node, a message that cannot be encoded returns the
+// encode error, wrapped with the kind and the escaped key.
 func TestATVAC06SendErrors(t *testing.T) {
 	sim.Simulate(t, simOpts(1, 3*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()
@@ -198,8 +200,9 @@ func TestATVAC06SendErrors(t *testing.T) {
 		if key == "" {
 			tt.Fatal("a owns none of k0 to k9")
 		}
-		expectErr(tt, "remote owner", GrainOf[gmsg](m1, "counter", key).Send(s1, gmsg{}), ErrNoOwner,
-			"cluster: send counter/"+key+": cluster: no owner: the owner a is another node, which is not supported yet")
+		// codec.Default() does not hold gmsg.
+		expectErr(tt, "remote owner", GrainOf[gmsg](m1, "counter", key).Send(s1, gmsg{}), codec.ErrNotRegistered,
+			"cluster: encode counter/"+key+": codec: type not registered: cluster.gmsg")
 		if n := len(c.grainRecs("n1", "activate")); n != 1 {
 			tt.Errorf("%d activations on n1, want only tiny/k's", n)
 		}
@@ -365,7 +368,7 @@ func TestSendLookupAllocs(t *testing.T) {
 		}
 		g := GrainOf[int](m, "counter", keyOf["n1"])
 		if n := testing.AllocsPerRun(100, func() {
-			if _, err := g.target(); err != nil {
+			if _, _, err := g.target(); err != nil {
 				panic(err)
 			}
 		}); n != 0 {

@@ -231,6 +231,8 @@ pkg github.com/hmdsefi/lockstep/cluster, const DefaultIndirectProbes = 3
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultIndirectProbes ideal-int
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultJoinRetryInterval = 1000000000
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultJoinRetryInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultMaxHops = 3
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultMaxHops ideal-int
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultMaxPiggyback = 8
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultMaxPiggyback ideal-int
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultProbeInterval = 1000000000
@@ -274,13 +276,16 @@ pkg github.com/hmdsefi/lockstep/cluster, method (Kind) Name() string
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) String() string
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) Up() bool
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Codec codec.Codec
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, DeadRetention time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, IndirectProbes int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, JoinRetryInterval time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Kinds []Kind
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, MaxHops int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, MaxPiggyback int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, ProbeInterval time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, ProbeTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Registry *codec.Registry
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, RetransmitMult int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Seeds []string
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SuspicionTimeout time.Duration
