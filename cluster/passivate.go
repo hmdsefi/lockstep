@@ -162,7 +162,7 @@ func (h *host) sendAck(ctx *lockstep.Context[hostMsg], key string, a pendingAck)
 // empty and applies the latest view as its first.
 func (h *host) Stopped(ctx *lockstep.Context[hostMsg], _ lockstep.StopReason) {
 	for _, x := range h.joining {
-		h.drop(ctx, x.key, dropHost)
+		h.drop(ctx, x.key, hopsOf(x.msg), dropHost)
 	}
 	keys := slices.Concat(h.active.snapshot(), h.stopping.snapshot())
 	slices.Sort(keys)
@@ -171,8 +171,8 @@ func (h *host) Stopped(ctx *lockstep.Context[hostMsg], _ lockstep.StopReason) {
 		if ctl != nil {
 			ctl.Record(grainPrefix+"stopped", "kind", h.kind.name, "key", escapeKey(key))
 		}
-		for range h.keys[key].held {
-			h.drop(ctx, key, dropHost)
+		for _, msg := range h.keys[key].held {
+			h.drop(ctx, key, hopsOf(msg), dropHost)
 		}
 	}
 	h.joining, h.buffered, h.active, h.stopping = nil, 0, keyList{}, keyList{}

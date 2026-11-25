@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/codec"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
@@ -22,6 +23,9 @@ const (
 	DefaultRetransmitMult    = 4
 	DefaultMaxPiggyback      = 8
 	DefaultDeadRetention     = time.Minute
+	// DefaultMaxHops is the number of times a grain message may be forwarded from one node to
+	// another before it is dropped.
+	DefaultMaxHops = 3
 )
 
 // Config configures cluster membership on one node. A zero field means its default; a negative
@@ -65,6 +69,18 @@ type Config struct {
 	// every other field: a kind needs a valid name, a factory, positive IdleTimeout,
 	// HandoffTimeout and Buffer options, and valid spawn options. It does not change Kinds.
 	Kinds []Kind
+	// MaxHops is the number of times a message for a grain may be forwarded between nodes, which
+	// happens while their views of the cluster disagree about the grain's owner. A message that
+	// has been forwarded MaxHops times is dropped instead. Zero means 3.
+	MaxHops int
+	// Registry holds the message types of the grains this node sends to or hosts: a message for a
+	// grain whose owner is another node travels as its wire name and the bytes Codec makes of it,
+	// so its type must be registered under the same name on the sending and the owning node. Nil
+	// means codec.Default().
+	Registry *codec.Registry
+	// Codec encodes and decodes the messages for grains whose owner is another node. It must be
+	// the same on every node. Nil means codec.JSON{}.
+	Codec codec.Codec
 }
 
 // DefaultConfig returns a Config with every default filled in and no seeds.
@@ -79,6 +95,9 @@ func DefaultConfig() Config {
 		RetransmitMult:    DefaultRetransmitMult,
 		MaxPiggyback:      DefaultMaxPiggyback,
 		DeadRetention:     DefaultDeadRetention,
+		MaxHops:           DefaultMaxHops,
+		Registry:          codec.Default(),
+		Codec:             codec.JSON{},
 	}
 }
 
@@ -122,6 +141,8 @@ func (c *Config) Validate() error {
 		return invalid("MaxPiggyback", "%d is less than 1", c.MaxPiggyback)
 	case c.DeadRetention <= 0:
 		return invalid("DeadRetention", "%s is not positive", c.DeadRetention)
+	case c.MaxHops < 1:
+		return invalid("MaxHops", "%d is less than 1", c.MaxHops)
 	}
 	return c.validateKinds()
 }
@@ -202,5 +223,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.DeadRetention == 0 {
 		c.DeadRetention = d.DeadRetention
+	}
+	if c.MaxHops == 0 {
+		c.MaxHops = d.MaxHops
+	}
+	if c.Registry == nil {
+		c.Registry = d.Registry
+	}
+	if c.Codec == nil {
+		c.Codec = d.Codec
 	}
 }

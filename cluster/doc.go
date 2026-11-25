@@ -70,5 +70,10 @@
 //		return err
 //	}
 //
+// A message for a grain that another node owns is encoded with Config.Registry and Config.Codec
+// and sent to that node's host, so its type must be registered under the same wire name on every
+// node that sends to or hosts the kind. While the views of the nodes disagree about the owner, a
+// host forwards the message to the owner it sees, at most Config.MaxHops times.
+//
 // Membership.Host describes the host of a kind on this node.
 package cluster
