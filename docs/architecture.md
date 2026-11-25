@@ -780,10 +780,10 @@ so only code that bypasses it leaks one.
 ## Static analysis
 
 `lockstep-vet` lives in the nested module `github.com/hmdsefi/lockstep/analysis`, because it needs
-`golang.org/x/tools`, and the root module requires only faultline, gograph, tenure (rendezvous placement in `cluster`) and, for tests,
-`go.uber.org/goleak`. It
-finds actor code by its `Receive`, `Started`, `Stopped` and `Signal` methods and follows the calls
-they make inside the same package. Its checks are:
+`golang.org/x/tools`, and the root module requires only faultline, gograph, tenure (rendezvous
+placement in `cluster`) and, for tests, `go.uber.org/goleak`. It finds actor code by its
+`Receive`, `Started`, `Stopped` and `Signal` methods and follows the calls they make inside the
+same package. Its checks are:
 
 - `LS100`: wall-clock time, global `math/rand`, `crypto/rand`, goroutines, `select`, channel
   operations, map ranges, environment reads and blocking calls in actor code.
