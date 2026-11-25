@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,10 +40,10 @@ func hostStates(s *sim.Sim, c *simCluster, node, kind string) *[]string {
 	return &states
 }
 
-// callHost runs f in a turn of node's host of counter.
-func callHost(tt testing.TB, s *sim.Sim, node string, f hostCall) {
+// callHost runs f in a turn of n1's host of counter.
+func callHost(tt testing.TB, s *sim.Sim, f hostCall) {
 	tt.Helper()
-	if err := sim.Send(s, node, lockstep.PIDAt[hostMsg](node, grainsPath+"/counter"), hostMsg(f)); err != nil {
+	if err := sim.Send(s, "n1", lockstep.PIDAt[hostMsg]("n1", grainsPath+"/counter"), hostMsg(f)); err != nil {
 		tt.Fatalf("send a call to the host: %v", err)
 	}
 }
@@ -194,7 +195,7 @@ func TestATVAC11TerminatedOrder(t *testing.T) {
 
 		// One host turn: passivate k, add two pending acks and route two messages for k, which
 		// rule 3 holds.
-		callHost(tt, s, "n1", func(ctx *lockstep.Context[hostMsg], h *host) {
+		callHost(tt, s, func(ctx *lockstep.Context[hostMsg], h *host) {
 			g := h.keys["k"]
 			h.passivate(ctx, "k", g, reasonIdle)
 			g.acks = append(g.acks, pendingAck{to: "n1", seq: 7}, pendingAck{to: "n1", seq: 8})
@@ -303,7 +304,7 @@ func TestHostStopDropsHeld(t *testing.T) {
 		}
 		w.RunFor(10 * time.Millisecond)
 
-		callHost(tt, s, "n1", func(ctx *lockstep.Context[hostMsg], h *host) {
+		callHost(tt, s, func(ctx *lockstep.Context[hostMsg], h *host) {
 			g := h.keys["z"]
 			h.passivate(ctx, "z", g, reasonIdle)
 			g.acks = append(g.acks, pendingAck{to: "n1", seq: 1})
@@ -340,6 +341,90 @@ func TestHostStopDropsHeld(t *testing.T) {
 		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: 1, Joined: true, Active: []string{"z"}})
 		if got := l.of("z"); !slices.Equal(got, []int{1, 4}) {
 			tt.Errorf("z got %v, want [1 4]", got)
+		}
+	})
+}
+
+// VAC-430, MBX-160: passivating calls lockstep.Stop, whose stop runs before the messages already
+// in the activation's mailbox (system messages come first in a turn), so the stop drains them as
+// lockstep dead letters with reason stopped; the host records no grain drop for them.
+func TestPassivateDeadLettersQueued(t *testing.T) {
+	sim.Simulate(t, simOpts(3, 2*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		l := &grainLog{}
+		c, m, sys := oneNode(s, logKind("counter", l))
+		if err := GrainOf[gmsg](m, "counter", "k").Send(sys, gmsg{N: 1}); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(10 * time.Millisecond)
+
+		// One host turn: deliver two messages to k's mailbox (rule 5), then passivate k.
+		callHost(tt, s, func(ctx *lockstep.Context[hostMsg], h *host) {
+			h.route(ctx, "k", gmsg{N: 2})
+			h.route(ctx, "k", gmsg{N: 3})
+			h.passivate(ctx, "k", h.keys["k"], reasonIdle)
+		})
+		w.RunFor(10 * time.Millisecond)
+
+		if got := l.of("k"); !slices.Equal(got, []int{1}) {
+			tt.Errorf("k got %v, want [1]: the delivered messages were not processed", got)
+		}
+		var dead []string
+		for _, r := range s.World().Sim.Records() {
+			if r.Kind == "lockstep.deadletter" && pathOf(attr(r, "to")) == "lockstep://n1"+grainsPath+"/counter/k" {
+				dead = append(dead, attr(r, "reason")+" "+attr(r, "msg"))
+			}
+		}
+		expectStrings(tt, "dead letters to k", dead, []string{"stopped cluster.gmsg", "stopped cluster.gmsg"})
+		if got := c.grainRecs("n1", "drop"); len(got) != 0 {
+			tt.Errorf("grain drops %q, want none", got)
+		}
+		expectStrings(tt, "passivate", c.grainRecs("n1", "passivate"), []string{"kind=counter key=k reason=idle"})
+		expectStrings(tt, "stopped", c.grainRecs("n1", "stopped"), []string{"kind=counter key=k"})
+	})
+}
+
+// VAC-440, VAC-500 step 3: an activation that stopped by itself is no longer alive when the host,
+// before it handles the Terminated, applies a view in which another node owns the key. Stop fails,
+// so the key moves to stopping without a passivate record, and the Terminated ends it with
+// lockstep.grain.stopped. The test publishes that view itself during the turn that delivers the
+// message that stops the activation, so the host applies it at the start of its Terminated turn.
+func TestPassivateAfterSelfStop(t *testing.T) {
+	sim.Simulate(t, simOpts(3, 2*time.Second), func(s *sim.Sim) {
+		w, tt := s.World(), s.World().T()
+		l := &grainLog{}
+		c, m, sys := oneNode(s, logKind("counter", l))
+		key := ""
+		for i := 0; key == ""; i++ {
+			if k := "k" + strconv.Itoa(i); Score("a", "counter", k) > Score("n1", "counter", k) {
+				key = k
+			}
+		}
+		if err := GrainOf[gmsg](m, "counter", key).Send(sys, gmsg{N: 1}); err != nil {
+			tt.Fatal(err)
+		}
+		w.RunFor(10 * time.Millisecond)
+
+		callHost(tt, s, func(ctx *lockstep.Context[hostMsg], h *host) {
+			h.route(ctx, key, gmsg{N: 2, Stop: true})
+			v := m.View()
+			members := slices.Clone(v.Members)
+			i, _ := slices.BinarySearchFunc(members, "a", compareNode)
+			members = slices.Insert(members, i, Member{Node: "a", ID: 7, State: Alive, Kinds: []string{"counter"}})
+			m.view.Store(newView(v.Version+1, v.Self, members))
+		})
+		w.RunFor(10 * time.Millisecond)
+
+		if got := c.grainRecs("n1", "passivate"); len(got) != 0 {
+			tt.Errorf("passivate records %q, want none: the activation had stopped by itself", got)
+		}
+		expectStrings(tt, "stopped", c.grainRecs("n1", "stopped"), []string{"kind=counter key=" + key})
+		if got := l.of(key); !slices.Equal(got, []int{1, 2}) {
+			tt.Errorf("%s got %v, want [1 2]", key, got)
+		}
+		info, _ := m.Host("counter")
+		if len(info.Active) != 0 || len(info.Stopping) != 0 || info.Version != m.View().Version {
+			tt.Errorf("HostInfo %+v, want no keys at version %d", info, m.View().Version)
 		}
 	})
 }

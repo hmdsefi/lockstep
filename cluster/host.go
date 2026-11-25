@@ -141,9 +141,10 @@ type grain struct {
 	pid   any              // the activation's lockstep.PID[M], for Kind.send
 	held  []any            // the messages held for the key, in arrival order (rule 3)
 
-	gen  uint64       // the activation's generation, carried by its idle timer (VAC-420)
-	last time.Time    // when the host last delivered to the activation, or activated it (VAC-420)
-	acks []pendingAck // the handoff acks to send once the activation has stopped (VAC-430, VAC-510)
+	gen   uint64           // the activation's generation, carried by its idle timer (VAC-420)
+	timer lockstep.TimerID // the activation's pending idle timer, cancelled when it stops
+	last  time.Time        // when the host last delivered to the activation, or activated it (VAC-420)
+	acks  []pendingAck     // the handoff acks to send once the activation has stopped (VAC-430, VAC-510)
 }
 
 // heldMsg is a message held in the joining buffer (rule 1).
@@ -335,7 +336,7 @@ func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, msg any) {
 		ctl.Record(grainPrefix+"activate", "kind", h.kind.name, "key", escapeKey(key), "handoff", handoffNone)
 	}
 	h.deliver(ctx, key, g, msg)
-	ctx.After(h.kind.idle, idleTick{Key: key, Gen: g.gen})
+	g.timer = ctx.After(h.kind.idle, idleTick{Key: key, Gen: g.gen})
 }
 
 // keyList is a set of keys published as a sorted list in HostInfo (VAC-600). The sorted list is

@@ -67,23 +67,28 @@ func (h *host) idle(ctx *lockstep.Context[hostMsg], t idleTick) {
 		return
 	}
 	if e := ctx.Now().Sub(g.last); e < h.kind.idle {
-		ctx.After(h.kind.idle-e, t)
+		g.timer = ctx.After(h.kind.idle-e, t)
 		return
 	}
 	h.passivate(ctx, t.Key, g, reasonIdle)
 }
 
 // passivate asks the activation of the active key to stop and moves key to stopping (VAC-430),
-// recording lockstep.grain.passivate with reason. The key leaves the host at the activation's
-// Terminated. Stop fails only when the activation has already stopped by itself; its Terminated
-// is then on its way, since the host watches it.
+// recording lockstep.grain.passivate with reason, and cancels its idle timer. The key leaves the
+// host at the activation's Terminated. Stop fails only when the activation has already stopped by
+// itself, and its Terminated is then on its way, since the host watches it: the key moves to
+// stopping without a passivate record (VAC-440).
+//
+// Stop runs before the messages already in the activation's mailbox (system messages come first),
+// and the stop drains them as lockstep dead letters (reason stopped), not as grain drops.
 func (h *host) passivate(ctx *lockstep.Context[hostMsg], key string, g *grain, reason string) {
-	_ = lockstep.Stop(ctx, g.addr)
+	stopped := lockstep.Stop(ctx, g.addr) == nil
+	ctx.CancelTimer(g.timer)
 	g.phase = phaseStopping
 	h.active.remove(key)
 	h.stopping.add(key)
 	h.changed = true
-	if ctl := tracer(ctx); ctl != nil {
+	if ctl := tracer(ctx); ctl != nil && stopped {
 		ctl.Record(grainPrefix+"passivate", "kind", h.kind.name, "key", escapeKey(key), "reason", reason)
 	}
 }
@@ -119,6 +124,7 @@ func (h *host) terminated(ctx *lockstep.Context[hostMsg], t lockstep.Terminated)
 	}
 	delete(h.keys, key)
 	if g.phase == phaseActive {
+		ctx.CancelTimer(g.timer)
 		h.active.remove(key)
 	} else {
 		h.stopping.remove(key)
