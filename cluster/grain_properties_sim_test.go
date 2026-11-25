@@ -98,6 +98,9 @@ type agreement struct {
 	checks int // the checks made
 	agreed int // the checks at which agreement held
 	busy   int // the checks at which agreement held and some key was active
+	moved  int // the times a key was active, under agreement, on another node than before
+
+	last map[string]string // by key: the node it was last active on under agreement
 }
 
 // upJoined returns the up joined nodes (VAC §3): the live processes whose membership has joined
@@ -117,9 +120,9 @@ func (a *agreement) upJoined() ([]proc, []*Membership) {
 	return ps, ms
 }
 
-// holds reports whether agreement holds among the up joined nodes ms: every one is settled, its
-// host of counter has applied its node's latest view, and every one lists the same (Node, ID)
-// pairs as up in its view. It returns "" when it holds, else why not.
+// holds reports whether agreement holds among the up joined nodes ms: the host of counter of every
+// one has applied its node's latest view, and every one lists the same (Node, ID) pairs as up in
+// its view. It returns "" when it holds, else why not.
 func holds(ps []proc, ms []*Membership) string {
 	for i, m := range ms {
 		v := m.View()
@@ -154,7 +157,8 @@ func sameUp(a, b *View) bool {
 }
 
 // single checks VAC-800 now: when agreement holds, no key is in the HostInfo.Active of counter of
-// two up joined nodes. A process that is live but not an up joined node has no activation: it has
+// two up joined nodes. It also counts the keys that moved to another node between the checks
+// under agreement. A process that is live but not an up joined node has no activation: it has
 // not joined, so its host holds every message (VAC-310 rule 1).
 func (a *agreement) single() error {
 	a.tr.observe()
@@ -176,6 +180,14 @@ func (a *agreement) single() error {
 					versions(ps, ms), key, ps[j].node, ps[j].id, ps[i].node, ps[i].id, upIDs(m.View()))
 			}
 			owner[key] = i
+			at := ps[i].node
+			if prev, ok := a.last[key]; ok && prev != at {
+				a.moved++
+			}
+			if a.last == nil {
+				a.last = map[string]string{}
+			}
+			a.last[key] = at
 		}
 	}
 	if owner != nil {
@@ -193,13 +205,28 @@ func versions(ps []proc, ms []*Membership) string {
 	return strings.Join(parts, " ")
 }
 
+// faultyDuration returns the length of a run of faultyGrains: the fault phase, a recovery window
+// longer than R(N), and as long again after the final crash.
+func faultyDuration() time.Duration {
+	return faultyPhase + 2*settleAfter()
+}
+
+// settleAfter returns the time the workload of faultyGrains leaves the cluster to converge after
+// its last fault: R(N) of the largest cluster and 5s.
+func settleAfter() time.Duration {
+	return boundsOf(simConfig(), maxNodes).converge + 5*time.Second
+}
+
 // faultyGrains is the workload of AT-VAC-21: the nodes of a drawn cluster seed each other and
 // host counter; random partitions, isolations, pauses and crashes (each crashed node restarted
 // with a new ID after a while) run until the recovery window, and from time to time the host of a
-// random live node fails (it restarts empty, VAC-450). Grain traffic runs from start to end. The
-// invariant checks VAC-800 after every event. It returns the processes of the run and the number
-// of host failures injected; the run is over when it returns.
-func faultyGrains(s *sim.Sim) ([]proc, int) {
+// random live node fails (it restarts empty, VAC-450). Once the recovery window has outlasted
+// R(N), a random node crashes for good, so that its keys move to other nodes under agreement in
+// every seed. Grain traffic runs from start to end. The invariant checks VAC-800 after every
+// event. It returns the processes of the run, the number of host failures injected and the number
+// of moves of keys between nodes under agreement before the final crash; the run is over when it
+// returns.
+func faultyGrains(s *sim.Sim) ([]proc, int, int) {
 	w, tt := s.World(), s.World().T()
 	names := propCluster(w)
 	c := newSimCluster(s)
@@ -219,9 +246,16 @@ func faultyGrains(s *sim.Sim) ([]proc, int) {
 
 	tf := &traffic{s: s, c: c, names: names, r: w.Rand("grain/traffic")}
 	r := w.Rand("grain/host-fail")
-	fails := 0
+	fails, moved := 0, 0
+	crashAt := kernel.Time(0).Add(faultyPhase + settleAfter())
+	victim := names[w.Rand("grain/crash").IntN(len(names))]
 	for w.Sim.Now() < w.End() {
 		tf.runFor(min(trafficStep, w.End().Sub(w.Sim.Now())), 2)
+		if crashAt > 0 && w.Sim.Now() >= crashAt {
+			crashAt = 0
+			moved = a.moved
+			w.Faults.Inject(fault.Event{Kind: fault.KindCrash, Node: victim})
+		}
 		if r.IntN(200) != 0 || w.Sim.Now() >= kernel.Time(0).Add(faultyPhase) {
 			continue
 		}
@@ -239,8 +273,9 @@ func faultyGrains(s *sim.Sim) ([]proc, int) {
 		}
 	}
 
-	// The recovery window outlasts R(N): every live node has joined and agreement holds, with
-	// the traffic's keys active somewhere.
+	// R(N) and more have passed since the final crash: every live node has joined and agreement
+	// holds. During the run, agreement held with keys active, and keys moved to another node
+	// between such checks (at least those of the node that crashed for good).
 	tr.observe()
 	if err := tr.converged(); err != nil {
 		tt.Errorf("not converged at the end: %v", err)
@@ -251,10 +286,11 @@ func faultyGrains(s *sim.Sim) ([]proc, int) {
 	} else if why := holds(ps, ms); why != "" {
 		tt.Errorf("no agreement at the end: %s", why)
 	}
-	if a.busy == 0 || tf.sent == 0 {
-		tt.Errorf("agreement held with active keys at %d of %d checks (%d in all), after %d sends: want some", a.busy, a.checks, a.agreed, tf.sent)
+	if a.busy == 0 || a.moved == 0 || tf.sent == 0 {
+		tt.Errorf("agreement held with active keys at %d of %d checks (%d in all) and keys moved %d times under it, after %d sends: want some of each",
+			a.busy, a.checks, a.agreed, a.moved, tf.sent)
 	}
-	return tr.procs, fails
+	return tr.procs, fails, moved
 }
 
 // joiningGrains is the workload of AT-VAC-22: the nodes of a drawn cluster start one at a time,
@@ -356,7 +392,9 @@ type handoffReqs []struct{ key, from string }
 // requested key runs (VAC-510): a request for a key whose activation runs on the peer is acked
 // only in the turn that records the key's lockstep.grain.stopped. An activation stops in no
 // virtual time, so an ack sent at the request instead would still reach the requester after the
-// stop, and the spans would not overlap; this check catches it.
+// stop, and the spans would not overlap; this check catches it. It covers requests that find the
+// key's activation active: in the joins of AT-VAC-22 no request reaches a key whose activation is
+// already stopping, so the stopping case of VAC-510 (ack after Terminated) is left to AT-VAC-29.
 //
 // The trace names no key in an ack, so the check follows the requests: the requester's
 // lockstep.grain.handoff record names the key and the peers it sent requests to, a peer's
@@ -477,13 +515,27 @@ func overlap(c *simCluster, all map[string][]span) error {
 // node, an invariant checks after every event: whenever agreement holds (VAC §3: every up joined
 // node is settled, and all of them list the same (Node, ID) pairs as up), no key is in the
 // HostInfo.Active of counter of two up joined nodes. An up joined node is a live process, by the
-// simulator's ground truth, whose membership has joined and has not left. At the end, after a
-// recovery window longer than R(N), agreement holds, and it held with active keys during the run.
+// simulator's ground truth, whose membership has joined and has not left. After a recovery window
+// longer than R(N), one node crashes for good. At the end, R(N) later, agreement holds; during the
+// run it held with active keys, and keys moved to another node between checks under agreement (a
+// key that comes back on a restarted process of the same node does not count).
+//
+// The final crash moves keys in every seed. The random faults must move keys under agreement too,
+// in at least half the runs (when there are at least 10): faults shorter than D(N) heal before
+// anyone sees a node down, and with them about 85% of the runs move no key before the final crash,
+// against about 14% with these faults.
 func TestATVAC21SingleActivation(t *testing.T) {
-	worst := boundsOf(simConfig(), maxNodes)
-	sim.Simulate(t, simOpts(grainSeeds, faultyPhase+worst.converge+5*time.Second), func(s *sim.Sim) {
-		faultyGrains(s)
+	runs, moving := 0, 0
+	sim.Simulate(t, simOpts(grainSeeds, faultyDuration()), func(s *sim.Sim) {
+		_, _, moved := faultyGrains(s)
+		runs++
+		if moved > 0 {
+			moving++
+		}
 	})
+	if runs >= 10 && 2*moving < runs {
+		t.Errorf("the random faults moved keys under agreement in %d of %d runs, want at least half", moving, runs)
+	}
 }
 
 // AT-VAC-22, VAC-810: nodes join one at a time with no fault, each after the views agreed on the
@@ -541,7 +593,6 @@ const drawSeeds = 8
 // As a control, the first incarnation of the membership actor of the first process seen, which
 // draws its probe order (CLU §6), has drawn from its stream.
 func TestATVAC23Determinism(t *testing.T) {
-	worst := boundsOf(simConfig(), maxNodes)
 	run := func(t *testing.T, d time.Duration, body func(s *sim.Sim) ([]proc, int)) {
 		opts := simOpts(drawSeeds, d)
 		opts.CheckDeterminism = true
@@ -553,7 +604,10 @@ func TestATVAC23Determinism(t *testing.T) {
 		})
 	}
 	t.Run("faults", func(t *testing.T) {
-		run(t, faultyPhase+worst.converge+5*time.Second, faultyGrains)
+		run(t, faultyDuration(), func(s *sim.Sim) ([]proc, int) {
+			procs, fails, _ := faultyGrains(s)
+			return procs, fails
+		})
 	})
 	t.Run("joins", func(t *testing.T) {
 		run(t, joiningDuration, func(s *sim.Sim) ([]proc, int) {
