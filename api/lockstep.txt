@@ -219,8 +219,14 @@ pkg github.com/hmdsefi/lockstep/cluster, const Alive = 1
 pkg github.com/hmdsefi/lockstep/cluster, const Alive MemberState
 pkg github.com/hmdsefi/lockstep/cluster, const Dead = 3
 pkg github.com/hmdsefi/lockstep/cluster, const Dead MemberState
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultBuffer = 1024
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultBuffer ideal-int
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultDeadRetention = 60000000000
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultDeadRetention time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultHandoffTimeout = 5000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultHandoffTimeout time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultIdleTimeout = 600000000000
+pkg github.com/hmdsefi/lockstep/cluster, const DefaultIdleTimeout time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultIndirectProbes = 3
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultIndirectProbes ideal-int
 pkg github.com/hmdsefi/lockstep/cluster, const DefaultJoinRetryInterval = 1000000000
@@ -243,8 +249,14 @@ pkg github.com/hmdsefi/lockstep/cluster, const Suspect = 2
 pkg github.com/hmdsefi/lockstep/cluster, const Suspect MemberState
 pkg github.com/hmdsefi/lockstep/cluster, func DefaultConfig() Config
 pkg github.com/hmdsefi/lockstep/cluster, func Join(*lockstep.System, Config) (*Membership, error)
+pkg github.com/hmdsefi/lockstep/cluster, func NewKind[M any](string, func(string) lockstep.Actor[M], ...KindOption) Kind
 pkg github.com/hmdsefi/lockstep/cluster, func Owner(*View, string, string) (string, bool)
 pkg github.com/hmdsefi/lockstep/cluster, func Score(string, string, string) uint64
+pkg github.com/hmdsefi/lockstep/cluster, func WithActivationOptions(...lockstep.SpawnOption) KindOption
+pkg github.com/hmdsefi/lockstep/cluster, func WithBuffer(int) KindOption
+pkg github.com/hmdsefi/lockstep/cluster, func WithHandoffTimeout(time.Duration) KindOption
+pkg github.com/hmdsefi/lockstep/cluster, func WithHostOptions(...lockstep.SpawnOption) KindOption
+pkg github.com/hmdsefi/lockstep/cluster, func WithIdleTimeout(time.Duration) KindOption
 pkg github.com/hmdsefi/lockstep/cluster, method (*Config) Validate() error
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Leave() error
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Subscribe(lockstep.Address) error
@@ -252,12 +264,14 @@ pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Unsubscribe(lockst
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) View() *View
 pkg github.com/hmdsefi/lockstep/cluster, method (*View) Member(string) (Member, bool)
 pkg github.com/hmdsefi/lockstep/cluster, method (*View) Up() []Member
+pkg github.com/hmdsefi/lockstep/cluster, method (Kind) Name() string
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) String() string
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) Up() bool
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, DeadRetention time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, IndirectProbes int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, JoinRetryInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Kinds []Kind
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, MaxPiggyback int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, ProbeInterval time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, ProbeTimeout time.Duration
@@ -265,6 +279,8 @@ pkg github.com/hmdsefi/lockstep/cluster, type Config struct, RetransmitMult int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Seeds []string
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SuspicionTimeout time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SyncInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Kind struct
+pkg github.com/hmdsefi/lockstep/cluster, type KindOption func(*kindConfig)
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, ID uint32
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct, Incarnation uint64

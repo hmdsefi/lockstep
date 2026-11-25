@@ -69,12 +69,13 @@ func TestHooksUnset(t *testing.T) {
 		}
 	}
 	for name, set := range map[string]bool{
-		"SystemSpawner":  hooks.SystemSpawner != nil,
-		"NodeDown":       hooks.NodeDown != nil,
-		"NodeUp":         hooks.NodeUp != nil,
-		"EngineAddress":  hooks.EngineAddress != nil,
-		"ClaimCluster":   hooks.ClaimCluster != nil,
-		"ReleaseCluster": hooks.ReleaseCluster != nil,
+		"SystemSpawner":     hooks.SystemSpawner != nil,
+		"NodeDown":          hooks.NodeDown != nil,
+		"NodeUp":            hooks.NodeUp != nil,
+		"EngineAddress":     hooks.EngineAddress != nil,
+		"ClaimCluster":      hooks.ClaimCluster != nil,
+		"ReleaseCluster":    hooks.ReleaseCluster != nil,
+		"CheckSpawnOptions": hooks.CheckSpawnOptions != nil,
 	} {
 		if set {
 			t.Errorf("hooks.%s != nil without package lockstep (CLU §4.1)", name)

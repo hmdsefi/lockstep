@@ -7,10 +7,10 @@ import "github.com/hmdsefi/lockstep/internal/engine"
 
 // The declarations below are CLU §4.1: they let package cluster, which may import only lockstep,
 // codec and internal/hooks (DET-080), spawn under the system guardian, end the death watches of a
-// down node, convert addresses for Signal and mark a system joined. Package lockstep sets the six
-// hooks in its init function (ENG-210); each is nil until package lockstep is initialized. Called
-// by cluster; implemented by ACT. Every sys is a *lockstep.System, and a hook panics if it has
-// another type.
+// down node, convert addresses for Signal, mark a system joined and check spawn options. Package
+// lockstep sets the seven hooks in its init function (ENG-210); each is nil until package lockstep
+// is initialized. Called by cluster; implemented by ACT. Every sys is a *lockstep.System, and a
+// hook that takes one panics if it has another type.
 
 // SystemSpawner returns a lockstep.Spawner (as any) whose children live under /system of sys: they
 // are spawned as ACT-030's internal spawnSystem spawns them (parent the system guardian, a reserve
@@ -50,3 +50,11 @@ var ReleaseCluster func(sys any)
 // ValidNodeName is engine.ValidNodeName, for packages that may not import internal/engine: it
 // reports whether name is a valid node name (ACT-020).
 func ValidNodeName(name string) bool { return engine.ValidNodeName(name) }
+
+// CheckSpawnOptions checks opts, each a lockstep.SpawnOption (as any), as lockstep.Spawn would
+// check them, and returns the error a Spawn with these options returns: the error of the first
+// invalid option, in argument order, which wraps lockstep.ErrInvalidOption, or nil. A nil element,
+// or one of another type, is an invalid option too (Spawn itself panics on a nil option). It
+// spawns nothing, so package cluster can check the options of a grain kind when a node joins
+// (VAC-010). Set by package lockstep; nil until it is initialized.
+var CheckSpawnOptions func(opts []any) error

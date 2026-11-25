@@ -346,12 +346,14 @@ func (a *memberActor) applied(ctx *lockstep.Context[memberMsg], c change) {
 		ctl.Record(recordPrefix+"member", "node", c.Node, "id", strconv.FormatUint(uint64(c.ID), 10),
 			"inc", strconv.FormatUint(c.Inc, 10), "from", from, "to", c.To.String(), "source", c.Source)
 	}
-	a.queue.enqueue(toUpdate(c.member()))
+	// The change does not carry the kinds; the entry it produced is in the table (VAC-700).
+	e, _ := a.tbl.Get(c.Node)
+	a.queue.enqueue(toUpdate(e))
 	a.noteTransitions(c)
 	if c.Node == a.tbl.self {
 		return // the own entry has no suspicion and is never reaped
 	}
-	a.armTimers(ctx, c.member())
+	a.armTimers(ctx, e)
 }
 
 // armTimers arms the timers of the entry e after it changed or, at a restart, was rebuilt

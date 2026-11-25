@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hmdsefi/lockstep"
 	"github.com/hmdsefi/lockstep/internal/hooks"
 )
 
@@ -59,6 +60,11 @@ type Config struct {
 	// DeadRetention is how long a dead or departed member is kept in the table after its last
 	// change. Zero means 60s.
 	DeadRetention time.Duration
+	// Kinds lists the grain kinds this node hosts. Empty means a client-only node, which sends to
+	// grains but hosts none. Kind names must be unique. Validate checks the kinds, in order, after
+	// every other field: a kind needs a valid name, a factory, positive IdleTimeout,
+	// HandoffTimeout and Buffer options, and valid spawn options. It does not change Kinds.
+	Kinds []Kind
 }
 
 // DefaultConfig returns a Config with every default filled in and no seeds.
@@ -117,7 +123,53 @@ func (c *Config) Validate() error {
 	case c.DeadRetention <= 0:
 		return invalid("DeadRetention", "%s is not positive", c.DeadRetention)
 	}
+	return c.validateKinds()
+}
+
+// validateKinds checks Kinds in order; the first failing row of a kind returns (VAC-010).
+func (c *Config) validateKinds() error {
+	seen := make(map[string]struct{}, len(c.Kinds))
+	for i, k := range c.Kinds {
+		invalid := func(format string, args ...any) error {
+			return fmt.Errorf("%w: Kinds[%d]: %s", ErrInvalidConfig, i, fmt.Sprintf(format, args...))
+		}
+		if !validKindName(k.name) {
+			return invalid("name %q is not a valid kind name", k.name)
+		}
+		if _, dup := seen[k.name]; dup {
+			return invalid("duplicate kind %q", k.name)
+		}
+		seen[k.name] = struct{}{}
+		switch {
+		case k.spawn == nil:
+			return invalid("nil factory")
+		case k.idle <= 0:
+			return invalid("IdleTimeout %s is not positive", k.idle)
+		case k.handoff <= 0:
+			return invalid("HandoffTimeout %s is not positive", k.handoff)
+		case k.buffer <= 0:
+			return invalid("Buffer %d is not positive", k.buffer)
+		}
+		if err := checkSpawnOptions(k.activation); err != nil {
+			return fmt.Errorf("%w: Kinds[%d]: ActivationOptions: %w", ErrInvalidConfig, i, err)
+		}
+		if err := checkSpawnOptions(k.host); err != nil {
+			return fmt.Errorf("%w: Kinds[%d]: HostOptions: %w", ErrInvalidConfig, i, err)
+		}
+	}
 	return nil
+}
+
+// checkSpawnOptions returns the error a Spawn with opts would return.
+func checkSpawnOptions(opts []lockstep.SpawnOption) error {
+	if len(opts) == 0 {
+		return nil
+	}
+	as := make([]any, len(opts))
+	for i, o := range opts {
+		as[i] = o
+	}
+	return hooks.CheckSpawnOptions(as)
 }
 
 // applyDefaults sets every zero field of c to its default; negative values stay and fail their

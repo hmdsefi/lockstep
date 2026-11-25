@@ -16,6 +16,7 @@ type update struct {
 	ID    uint32
 	Inc   uint64
 	State MemberState
+	Kinds []string // the kinds the member hosts: sorted, unique, valid names; nil for none (VAC-700)
 }
 
 // ping probes a node. From is the sender's own entry.
@@ -94,26 +95,34 @@ func init() { //nolint:gochecknoinits // the wire types must be registered befor
 const (
 	reasonEmptyNode = "empty-node"
 	reasonBadState  = "bad-state"
+	reasonBadKinds  = "bad-kinds"
 )
 
 // validUpdate checks an update received from a peer (CLU-710). It returns an empty reason when
-// the update is valid, otherwise reasonEmptyNode or reasonBadState.
+// the update is valid, otherwise reasonEmptyNode, reasonBadState or reasonBadKinds (Kinds that are
+// not sorted, unique, valid kind names, VAC-700).
 func validUpdate(u update) (reason string) {
 	switch {
 	case u.Node == "":
 		return reasonEmptyNode
 	case u.State < Alive || u.State > Left:
 		return reasonBadState
+	case !validKindList(u.Kinds):
+		return reasonBadKinds
 	}
 	return ""
 }
 
 // toUpdate returns the wire form of the entry m.
 func toUpdate(m Member) update {
-	return update{Node: m.Node, ID: m.ID, Inc: m.Incarnation, State: m.State}
+	return update{Node: m.Node, ID: m.ID, Inc: m.Incarnation, State: m.State, Kinds: m.Kinds}
 }
 
-// member returns the entry the update describes.
+// member returns the entry the update describes; an empty Kinds is nil, as in every Member.
 func (u update) member() Member {
-	return Member{Node: u.Node, ID: u.ID, Incarnation: u.Inc, State: u.State}
+	m := Member{Node: u.Node, ID: u.ID, Incarnation: u.Inc, State: u.State}
+	if len(u.Kinds) > 0 {
+		m.Kinds = u.Kinds
+	}
+	return m
 }
