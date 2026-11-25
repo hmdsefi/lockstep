@@ -23,9 +23,7 @@ const (
 	DefaultRetransmitMult    = 4
 	DefaultMaxPiggyback      = 8
 	DefaultDeadRetention     = time.Minute
-	// DefaultMaxHops is the number of times a grain message may be forwarded from one node to
-	// another before it is dropped.
-	DefaultMaxHops = 3
+	DefaultMaxHops           = 3
 )
 
 // Config configures cluster membership on one node. A zero field means its default; a negative
@@ -70,8 +68,8 @@ type Config struct {
 	// HandoffTimeout and Buffer options, and valid spawn options. It does not change Kinds.
 	Kinds []Kind
 	// MaxHops is the number of times a message for a grain may be forwarded between nodes, which
-	// happens while their views of the cluster disagree about the grain's owner. A message that
-	// has been forwarded MaxHops times is dropped instead. Zero means 3.
+	// happens while their views of the cluster disagree about the grain's owner: a host drops,
+	// instead of forwarding, a message that already made MaxHops hops. Zero means 3.
 	MaxHops int
 	// Registry holds the message types of the grains this node sends to or hosts: a message for a
 	// grain whose owner is another node travels as its wire name and the bytes Codec makes of it,

@@ -361,11 +361,10 @@ func TestHostRestartStartsEmpty(t *testing.T) {
 
 // VAC-310 rules 4 to 7, VAC-500 step 3: a message for a key that another node owns is forwarded to
 // it; an active key that another node owns in a new view is passivated with reason ownership, so
-// its next message is forwarded too; a key this node
-// owns activates; once this node has left, its active keys are passivated with reason leave and
-// every key is dropped with reason no-owner (no up member hosts the kind). The host applies the
-// views the membership actor publishes (CLU-500): HostInfo.Version follows View().Version. n1 and
-// n2 do not know each other.
+// its next message is forwarded too; a key this node owns activates; once this node has left, its
+// active keys are passivated with reason leave and every key is dropped with reason no-owner (no
+// up member hosts the kind). The host applies the views the membership actor publishes (CLU-500):
+// HostInfo.Version follows View().Version. n1 and n2 do not know each other.
 func TestHostRoutingRules(t *testing.T) {
 	sim.Simulate(t, simOpts(2, 3*time.Second), func(s *sim.Sim) {
 		w, tt := s.World(), s.World().T()

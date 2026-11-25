@@ -318,11 +318,11 @@ func (h *host) deliver(ctx *lockstep.Context[hostMsg], key string, g *grain, v a
 }
 
 // activate activates key with no handoff peers and delivers v, the value of a message that made
-// hops hops, to it (VAC-410): it spawns the
-// activation under the host, named by the escaped key, with the kind's activation options and the
-// kind's factory called with key, watches it, records lockstep.grain.activate, delivers and arms
-// the idle timer of the activation's generation (VAC-420). A spawn that fails drops msg with
-// reason activate and leaves the key without state.
+// hops hops, to it (VAC-410): it spawns the activation under the host, named by the escaped key,
+// with the kind's activation options and the kind's factory called with key, watches it, records
+// lockstep.grain.activate, delivers and arms the idle timer of the activation's generation
+// (VAC-420). A spawn that fails drops the message with reason activate and leaves the key without
+// state.
 func (h *host) activate(ctx *lockstep.Context[hostMsg], key string, v any, hops int) {
 	addr, pid, err := h.kind.spawn(ctx, escapeKey(key), key, h.kind.activation)
 	if err == nil {
