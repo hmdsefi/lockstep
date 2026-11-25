@@ -48,7 +48,7 @@ func sameTable(a, b *table) bool {
 	}
 	for i := range a.recs {
 		x, y := &a.recs[i], &b.recs[i]
-		if x.m != y.m || x.tomb != y.tomb || x.tombSeq != y.tombSeq || !x.changed.Equal(y.changed) ||
+		if !sameMember(x.m, y.m) || x.tomb != y.tomb || x.tombSeq != y.tombSeq || !x.changed.Equal(y.changed) ||
 			!slices.Equal(x.retired, y.retired) {
 			return false
 		}
@@ -87,7 +87,7 @@ func mustRetireOnly(t *testing.T, tb *table, u Member, now time.Time) {
 // mustGet fails unless the table's entry of want.Node is want.
 func mustGet(t *testing.T, tb *table, want Member) {
 	t.Helper()
-	if got, ok := tb.Get(want.Node); !ok || got != want {
+	if got, ok := tb.Get(want.Node); !ok || !sameMember(got, want) {
 		t.Fatalf("Get(%q) = %+v, %v, want %+v", want.Node, got, ok, want)
 	}
 }
@@ -144,18 +144,18 @@ func TestViewMemberAndUp(t *testing.T) {
 		Members: []Member{m("a", 1, 2, Dead), m("b", 2, 0, Suspect), m("c", 3, 0, Alive), m("d", 4, 1, Left), m("e", 5, 7, Alive)},
 	}
 	for _, want := range v.Members {
-		if got, ok := v.Member(want.Node); !ok || got != want {
+		if got, ok := v.Member(want.Node); !ok || !sameMember(got, want) {
 			t.Errorf("Member(%q) = %+v, %v, want %+v", want.Node, got, ok, want)
 		}
 	}
 	for _, name := range []string{"", "0", "bb", "f", "C"} {
-		if got, ok := v.Member(name); ok || got != (Member{}) {
+		if got, ok := v.Member(name); ok || !sameMember(got, Member{}) {
 			t.Errorf("Member(%q) = %+v, %v, want none", name, got, ok)
 		}
 	}
 	up := v.Up()
 	want := []Member{m("b", 2, 0, Suspect), m("c", 3, 0, Alive), m("e", 5, 7, Alive)}
-	if !slices.Equal(up, want) {
+	if !slices.EqualFunc(up, want, sameMember) {
 		t.Fatalf("Up() = %+v, want %+v", up, want)
 	}
 	up[0].State = Dead
@@ -232,7 +232,7 @@ func TestATCLU08Precedence(t *testing.T) {
 					if c != wantC {
 						t.Fatalf("change = %+v, want %+v", c, wantC)
 					}
-					if c.member() != upd {
+					if !sameMember(c.member(), upd) {
 						t.Fatalf("change.member() = %+v, want %+v", c.member(), upd)
 					}
 					mustGet(t, tb, upd)
@@ -252,7 +252,7 @@ func TestATCLU08Precedence(t *testing.T) {
 					now := t0.Add(2 * retention)
 					if !want {
 						mustIgnore(t, tb, upd, now)
-						if b, tomb, ok := tb.Belief("x"); !ok || !tomb || b != entry {
+						if b, tomb, ok := tb.Belief("x"); !ok || !tomb || !sameMember(b, entry) {
 							t.Fatalf("Belief = %+v, %v, %v, want the tombstone %+v", b, tomb, ok, entry)
 						}
 						return
@@ -281,7 +281,7 @@ func TestATCLU08Precedence(t *testing.T) {
 func TestATCLU09Identity(t *testing.T) {
 	t.Run("new table", func(t *testing.T) {
 		tb := newTable(selfEntry, retention, t0)
-		if tb.Self() != selfEntry || tb.Len() != 1 || !slices.Equal(tb.Members(), []Member{selfEntry}) {
+		if !sameMember(tb.Self(), selfEntry) || tb.Len() != 1 || !slices.EqualFunc(tb.Members(), []Member{selfEntry}, sameMember) {
 			t.Fatalf("new table: self %+v, len %d, members %+v", tb.Self(), tb.Len(), tb.Members())
 		}
 		mustGet(t, tb, selfEntry)
@@ -300,7 +300,7 @@ func TestATCLU09Identity(t *testing.T) {
 			mustIgnore(t, tb, u, t0)
 		}
 		want := []Member{m("a", 1, 4, Suspect), m("b", 2, 0, Alive), m("c", 3, 0, Alive), selfEntry, m("z", 9, 2, Alive)}
-		if got := tb.Members(); !slices.Equal(got, want) {
+		if got := tb.Members(); !slices.EqualFunc(got, want, sameMember) {
 			t.Fatalf("Members() = %+v, want %+v", got, want)
 		}
 		if tb.Len() != 5 {
@@ -485,7 +485,7 @@ func TestATCLU09Identity(t *testing.T) {
 				}
 			}
 		}
-		if tb.Self() != selfEntry {
+		if !sameMember(tb.Self(), selfEntry) {
 			t.Fatalf("Apply changed the own entry: %+v", tb.Self())
 		}
 		// Another ID of the own name is ignored, and retired only when up; retiring it again
@@ -501,7 +501,7 @@ func TestATCLU09Identity(t *testing.T) {
 		if got := retiredIDs(tb, "self"); !slices.Equal(got, []uint32{7, 8}) {
 			t.Fatalf("retired = %v, want [7 8]", got)
 		}
-		if tb.Self() != selfEntry {
+		if !sameMember(tb.Self(), selfEntry) {
 			t.Fatalf("Apply changed the own entry: %+v", tb.Self())
 		}
 
@@ -566,7 +566,7 @@ func TestATCLU09Identity(t *testing.T) {
 			t.Fatalf("Get(x) found a reaped entry")
 		}
 		want := []Member{selfEntry, m("z", 3, 0, Suspect)}
-		if got := tb.Members(); !slices.Equal(got, want) || tb.Len() != 2 || tb.tombs != 2 {
+		if got := tb.Members(); !slices.EqualFunc(got, want, sameMember) || tb.Len() != 2 || tb.tombs != 2 {
 			t.Fatalf("Members() = %+v (len %d, tombs %d), want %+v", got, tb.Len(), tb.tombs, want)
 		}
 
@@ -599,7 +599,7 @@ func TestATCLU09Identity(t *testing.T) {
 			t.Fatalf("change = %+v, want %+v", c, want)
 		}
 		mustGet(t, tb, m("x", 2, 0, Suspect))
-		if b, tomb, ok := tb.Belief("x"); !ok || tomb || b != m("x", 2, 0, Suspect) {
+		if b, tomb, ok := tb.Belief("x"); !ok || tomb || !sameMember(b, m("x", 2, 0, Suspect)) {
 			t.Fatalf("Belief = %+v, %v, %v", b, tomb, ok)
 		}
 		if tb.tombs != 0 || !slices.Equal(retiredIDs(tb, "x"), []uint32{1}) {
@@ -613,7 +613,7 @@ func TestATCLU09Identity(t *testing.T) {
 			t.Fatalf("Reap failed")
 		}
 		mustIgnore(t, tb, m("x", 1, 99, Alive), now.Add(retention))
-		if b, tomb, ok := tb.Belief("x"); !ok || !tomb || b != m("x", 2, 0, Left) {
+		if b, tomb, ok := tb.Belief("x"); !ok || !tomb || !sameMember(b, m("x", 2, 0, Left)) {
 			t.Fatalf("Belief = %+v, %v, %v", b, tomb, ok)
 		}
 	})
@@ -643,7 +643,7 @@ func TestATCLU09Identity(t *testing.T) {
 			t.Fatalf("Belief(%s) found the evicted tombstone", evicted)
 		}
 		for i := range maxTombstones {
-			if b, tomb, ok := tb.Belief(name(i)); !ok || !tomb || b != m(name(i), 2, 0, Dead) {
+			if b, tomb, ok := tb.Belief(name(i)); !ok || !tomb || !sameMember(b, m(name(i), 2, 0, Dead)) {
 				t.Fatalf("Belief(%s) = %+v, %v, %v", name(i), b, tomb, ok)
 			}
 		}
@@ -687,17 +687,17 @@ func TestATCLU09Identity(t *testing.T) {
 // or else the tombstone, or nothing for an unknown name.
 func TestATCLU10ForcedBelief(t *testing.T) {
 	tb := newTable(selfEntry, retention, t0)
-	if b, tomb, ok := tb.Belief("x"); ok || tomb || b != (Member{}) {
+	if b, tomb, ok := tb.Belief("x"); ok || tomb || !sameMember(b, Member{}) {
 		t.Fatalf("Belief(unknown) = %+v, %v, %v", b, tomb, ok)
 	}
-	if b, tomb, ok := tb.Belief("self"); !ok || tomb || b != selfEntry {
+	if b, tomb, ok := tb.Belief("self"); !ok || tomb || !sameMember(b, selfEntry) {
 		t.Fatalf("Belief(self) = %+v, %v, %v", b, tomb, ok)
 	}
 	for _, s := range allStates {
 		x := m("x", 1, 4, s)
 		tb := newTable(selfEntry, retention, t0)
 		enter(t, tb, x, t0)
-		if b, tomb, ok := tb.Belief("x"); !ok || tomb || b != x {
+		if b, tomb, ok := tb.Belief("x"); !ok || tomb || !sameMember(b, x) {
 			t.Fatalf("Belief(%s entry) = %+v, %v, %v, want the entry", s, b, tomb, ok)
 		}
 		if s.Up() {
@@ -706,7 +706,7 @@ func TestATCLU10ForcedBelief(t *testing.T) {
 		if !tb.Reap("x", 1, 4, s, t0.Add(retention)) {
 			t.Fatalf("Reap failed")
 		}
-		if b, tomb, ok := tb.Belief("x"); !ok || !tomb || b != x {
+		if b, tomb, ok := tb.Belief("x"); !ok || !tomb || !sameMember(b, x) {
 			t.Fatalf("Belief(%s tombstone) = %+v, %v, %v, want the tombstone", s, b, tomb, ok)
 		}
 		if s == Left {
@@ -714,8 +714,15 @@ func TestATCLU10ForcedBelief(t *testing.T) {
 		}
 		// A restored tombstone is an entry again.
 		mustApply(t, tb, m("x", 1, 5, Suspect), t0.Add(2*retention))
-		if b, tomb, ok := tb.Belief("x"); !ok || tomb || b != m("x", 1, 5, Suspect) {
+		if b, tomb, ok := tb.Belief("x"); !ok || tomb || !sameMember(b, m("x", 1, 5, Suspect)) {
 			t.Fatalf("Belief(restored) = %+v, %v, %v, want the entry", b, tomb, ok)
 		}
 	}
+}
+
+// sameMember reports whether a and b are equal field by field. Member holds a slice, so tests
+// cannot compare it with ==.
+func sameMember(a, b Member) bool {
+	return a.Node == b.Node && a.ID == b.ID && a.Incarnation == b.Incarnation && a.State == b.State &&
+		slices.Equal(a.Kinds, b.Kinds)
 }

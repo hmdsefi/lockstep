@@ -151,7 +151,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			if want := (ack{From: toUpdate(self), Seq: 77, Target: "n1", Updates: []update{fromA}}); len(got) != 1 || !equalAck(got[0].msg, want) {
 				tt.Errorf("x received %v, want %+v", got, want)
 			}
-			if m, ok := c.view("n1").Member("x"); !ok || m != fromA.member() {
+			if m, ok := c.view("n1").Member("x"); !ok || !sameMember(m, fromA.member()) {
 				tt.Errorf("n1's view has x %v, %t, want %v", m, ok, fromA.member())
 			}
 
@@ -169,7 +169,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			if a, ok := got[0].msg.(ack); !ok || a.Seq != 78 || a.Target != "n1" || len(a.Updates) == 0 || a.Updates[0] != deadA {
 				tt.Errorf("x received %+v, want an ack of seq 78 whose first update is %+v", got[0].msg, deadA)
 			}
-			if m, _ := c.view("n1").Member("x"); m != deadA.member() {
+			if m, _ := c.view("n1").Member("x"); !sameMember(m, deadA.member()) {
 				tt.Errorf("n1's view has x %v, want %v", m, deadA.member())
 			}
 
@@ -178,7 +178,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			if got = pingFrom(fromB, 79); len(got) != 1 || !equalAckIgnoringUpdates(got[0].msg, ack{From: toUpdate(self), Seq: 79, Target: "n1"}) {
 				tt.Errorf("x received %v, want an ack of seq 79", got)
 			}
-			if m, _ := c.view("n1").Member("x"); m != fromB.member() {
+			if m, _ := c.view("n1").Member("x"); !sameMember(m, fromB.member()) {
 				tt.Errorf("n1's view has x %v, want %v", m, fromB.member())
 			}
 			members := c.recs("n1", "member")
@@ -238,7 +238,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			if got := memberLines(c, start); !slices.Equal(got, want) {
 				tt.Errorf("n1's member records %q, want %q", got, want)
 			}
-			if m, _ := c.view("n1").Member("x"); m != (Member{Node: "x", ID: idB, State: Alive}) {
+			if m, _ := c.view("n1").Member("x"); !sameMember(m, Member{Node: "x", ID: idB, State: Alive}) {
 				tt.Errorf("n1's view has x %v, want ID %d Alive", m, idB)
 			}
 			fails, acks := c.recs("n1", "probe.fail"), c.recs("n1", "ack")
@@ -314,7 +314,7 @@ func TestATCLU05ProbeOrder(t *testing.T) {
 			if got := memberLines(c, start); !slices.Equal(got, want) {
 				tt.Errorf("n1's member records %q, want %q", got, want)
 			}
-			if m, _ := c.view("n1").Member("x"); m != (Member{Node: "x", ID: idB, State: Alive}) {
+			if m, _ := c.view("n1").Member("x"); !sameMember(m, Member{Node: "x", ID: idB, State: Alive}) {
 				tt.Errorf("n1's view has x %v, want ID %d Alive", m, idB)
 			}
 			fails, acks := c.recs("n1", "probe.fail"), c.recs("n1", "ack")
@@ -690,7 +690,7 @@ func TestATCLU11Refute(t *testing.T) {
 		tell("n2", []update{{Node: "n2", ID: id2 + 1, Inc: 4, State: Suspect}})
 		tell("n2", about(1, Dead),
 			"member node=n2 id="+uitoa(id2)+" inc=2 from=alive to=alive source=self", "refute inc=2 about=dead", "view version=4 members=2 up=2")
-		if v := c.view("n2"); v.Self != (Member{Node: "n2", ID: id2, Incarnation: 2, State: Alive}) {
+		if v := c.view("n2"); !sameMember(v.Self, Member{Node: "n2", ID: id2, Incarnation: 2, State: Alive}) {
 			tt.Errorf("n2's view has Self %v, want incarnation 2", v.Self)
 		}
 		w.RunFor(2 * time.Second)

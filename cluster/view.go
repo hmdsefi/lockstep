@@ -49,6 +49,9 @@ type Member struct {
 	Incarnation uint64
 	// State is the member's state.
 	State MemberState
+	// Kinds lists the grain kinds the member hosts, sorted; nil for none. Callers must not modify
+	// it.
+	Kinds []string
 }
 
 // View is an immutable snapshot of the member table. Callers must not modify it.

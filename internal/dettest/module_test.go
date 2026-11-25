@@ -99,7 +99,7 @@ func TestLockstepTables(t *testing.T) {
 			"dedup":             std(),
 			"codec":             std(""),
 			"remote":            std("", "codec", "internal/engine", "internal/hooks", "internal/remoting"),
-			"cluster":           std("", "codec", "internal/hooks"),
+			"cluster":           {Stdlib: true, External: []string{"github.com/hmdsefi/tenure/core"}, Packages: []string{"", "codec", "internal/hooks"}},
 			"cmd/lockstep": {Stdlib: true, External: []string{fl + "/artifact", fl + "/kernel", fl + "/kernel/fault"},
 				Packages: []string{"internal/shrink", "internal/viz"}},
 		}
