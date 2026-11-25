@@ -66,11 +66,17 @@ type fakeHostActor struct{ f *fakeHost }
 // Receive keeps msg and acks a handoffReq when the fake host acks.
 func (a *fakeHostActor) Receive(ctx *lockstep.Context[hostMsg], msg hostMsg) {
 	a.f.got = append(a.f.got, fakeGot{a.f.now(), msg})
-	if req, ok := msg.(handoffReq); ok && a.f.ack {
+	switch req := msg.(type) {
+	case handoffReq:
+		if !a.f.ack {
+			return
+		}
 		ack := handoffAck{Kind: req.Kind, Key: req.Key, From: a.f.node, Seq: req.Seq}
 		if err := lockstep.Send(ctx, hostAt(req.From, req.Kind), hostMsg(ack)); err != nil {
 			panic(err)
 		}
+	case grainEnvelope, handoffAck, handoffTimer, hostCall, idleTick, localGrain, viewChanged:
+		// Only kept.
 	}
 }
 
@@ -107,7 +113,8 @@ func (f *fakeHost) msgs(tt testing.TB) []string {
 			if err != nil {
 				tt.Fatalf("the fake host got an envelope it cannot decode: %v", err)
 			}
-			out = append(out, fmt.Sprintf("env %s %d %d", m.Key, m.Hops, v.(gmsg).N))
+			g, _ := v.(gmsg)
+			out = append(out, fmt.Sprintf("env %s %d %d", m.Key, m.Hops, g.N))
 		default:
 			out = append(out, fmt.Sprintf("%T", m))
 		}
@@ -127,21 +134,21 @@ func (f *fakeHost) lastReq(tt testing.TB, key string) handoffReq {
 	return handoffReq{}
 }
 
-// addMember makes node's membership actor merge an Alive entry of member, with the ID of its
-// current process and hosting kinds, as a syncReq from it would.
-func (c *simCluster) addMember(tt testing.TB, node, member string, kinds ...string) {
+// addMember makes n1's membership actor merge an Alive entry of member, with the ID of its current
+// process and hosting kinds, as a syncReq from it would.
+func (c *simCluster) addMember(tt testing.TB, member string, kinds ...string) {
 	tt.Helper()
 	u := update{Node: member, ID: c.id(member), State: Alive, Kinds: kinds}
-	if err := sim.Send(c.s, node, lockstep.PIDAt[memberMsg](node, actorPath), memberMsg(syncReq{From: u})); err != nil {
+	if err := sim.Send(c.s, "n1", lockstep.PIDAt[memberMsg]("n1", actorPath), memberMsg(syncReq{From: u})); err != nil {
 		tt.Fatal(err)
 	}
 }
 
-// sendHost sends msg to node's host of counter from the node from.
-func sendHost(tt testing.TB, s *sim.Sim, from, node string, msg hostMsg) {
+// sendHost sends msg to n1's host of counter from the node from.
+func sendHost(tt testing.TB, s *sim.Sim, from string, msg hostMsg) {
 	tt.Helper()
-	if err := sim.Send(s, from, hostAt(node, "counter"), msg); err != nil {
-		tt.Fatalf("send %T to %s's host: %v", msg, node, err)
+	if err := sim.Send(s, from, hostAt("n1", "counter"), msg); err != nil {
+		tt.Fatalf("send %T to n1's host: %v", msg, err)
 	}
 }
 
@@ -293,9 +300,9 @@ func TestATVAC29Acquire(t *testing.T) {
 		cfg.Registry = grainRegistry()
 		c.node("n1", cfg)
 		w.RunFor(10 * time.Millisecond)
-		c.addMember(tt, "n1", "n9", "counter")
+		c.addMember(tt, "n9", "counter")
 		w.RunFor(10 * time.Millisecond)
-		if err := s.InjectFail(hostPID("n1", "counter").Address(), errors.New("restart")); err != nil {
+		if err := s.InjectFail(hostAt("n1", "counter").Address(), errors.New("restart")); err != nil {
 			tt.Fatal(err)
 		}
 		w.RunFor(100 * time.Millisecond)
@@ -331,8 +338,8 @@ func TestATVAC29Acquire(t *testing.T) {
 		if at := c.recAt(tt, "n1", "handoff.timeout", "kind=counter key="+kt+" missing=n9"); at != started.Add(2*time.Second) {
 			tt.Errorf("timeout at %v, want HandoffTimeout after the handoff at %v", at, started)
 		}
-		sendHost(tt, s, "n9", "n1", handoffAck{Kind: "counter", Key: kt, From: "n9", Seq: fake.lastReq(tt, kt).Seq})
-		sendHost(tt, s, "n9", "n1", handoffAck{Kind: "counter", Key: ka, From: "n9", Seq: fake.lastReq(tt, ka).Seq})
+		sendHost(tt, s, "n9", handoffAck{Kind: "counter", Key: kt, From: "n9", Seq: fake.lastReq(tt, kt).Seq})
+		sendHost(tt, s, "n9", handoffAck{Kind: "counter", Key: ka, From: "n9", Seq: fake.lastReq(tt, ka).Seq})
 		w.RunFor(100 * time.Millisecond)
 		expectStrings(tt, kt+"'s records", c.keyRecs("n1", kt), []string{
 			"handoff kind=counter key=" + kt + " peers=n9",
@@ -354,12 +361,12 @@ func TestATVAC29Acquire(t *testing.T) {
 			{Kind: "counter", Key: ks + "%", From: "n9", Seq: seq},
 			{Kind: "other", Key: ks, From: "n9", Seq: seq},
 		} {
-			sendHost(tt, s, "n9", "n1", a)
+			sendHost(tt, s, "n9", a)
 		}
 		w.RunFor(100 * time.Millisecond)
 		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
 			Active: sorted(ka, kt), Acquiring: []string{ks}, Buffered: 1})
-		sendHost(tt, s, "n9", "n1", handoffAck{Kind: "counter", Key: ks, From: "n9", Seq: seq})
+		sendHost(tt, s, "n9", handoffAck{Kind: "counter", Key: ks, From: "n9", Seq: seq})
 		w.RunFor(100 * time.Millisecond)
 		expectStrings(tt, ks+"'s records", c.keyRecs("n1", ks), []string{
 			"handoff kind=counter key=" + ks + " peers=n9",
@@ -372,7 +379,7 @@ func TestATVAC29Acquire(t *testing.T) {
 		sendLocal(tt, s, "n1", kr, gmsg{N: 5})
 		w.RunFor(100 * time.Millisecond)
 		lost := fake.lastReq(tt, kr).Seq
-		if err := s.InjectFail(hostPID("n1", "counter").Address(), errors.New("restart")); err != nil {
+		if err := s.InjectFail(hostAt("n1", "counter").Address(), errors.New("restart")); err != nil {
 			tt.Fatal(err)
 		}
 		w.RunFor(100 * time.Millisecond)
@@ -382,11 +389,11 @@ func TestATVAC29Acquire(t *testing.T) {
 		if lost != id|4 || next != id|5 {
 			tt.Errorf("Seq of %s's acquisitions %d and %d, want %d and %d: the counter survives the restart", kr, lost, next, id|4, id|5)
 		}
-		sendHost(tt, s, "n9", "n1", handoffAck{Kind: "counter", Key: kr, From: "n9", Seq: lost})
+		sendHost(tt, s, "n9", handoffAck{Kind: "counter", Key: kr, From: "n9", Seq: lost})
 		w.RunFor(100 * time.Millisecond)
 		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
 			Acquiring: []string{kr}, Buffered: 1})
-		sendHost(tt, s, "n9", "n1", handoffAck{Kind: "counter", Key: kr, From: "n9", Seq: next})
+		sendHost(tt, s, "n9", handoffAck{Kind: "counter", Key: kr, From: "n9", Seq: next})
 		w.RunFor(100 * time.Millisecond)
 		expectStrings(tt, kr+"'s records", c.keyRecs("n1", kr), []string{
 			"handoff kind=counter key=" + kr + " peers=n9",
@@ -463,9 +470,9 @@ func TestATVAC29Requests(t *testing.T) {
 		cfg.Registry = grainRegistry()
 		c.node("n1", cfg)
 		w.RunFor(10 * time.Millisecond)
-		c.addMember(tt, "n1", "n9", "counter")
+		c.addMember(tt, "n9", "counter")
 		w.RunFor(10 * time.Millisecond)
-		if err := s.InjectFail(hostPID("n1", "counter").Address(), errors.New("restart")); err != nil {
+		if err := s.InjectFail(hostAt("n1", "counter").Address(), errors.New("restart")); err != nil {
 			tt.Fatal(err)
 		}
 		w.RunFor(100 * time.Millisecond)
@@ -484,7 +491,7 @@ func TestATVAC29Requests(t *testing.T) {
 			Active: sorted(ka, ks), Acquiring: []string{kq}, Buffered: 2})
 		qseq := peer.lastReq(tt, kq).Seq
 
-		sendHost(tt, s, "n8", "n1", handoffReq{Kind: "counter", Key: ka, From: "n8", Seq: 11})
+		sendHost(tt, s, "n8", handoffReq{Kind: "counter", Key: ka, From: "n8", Seq: 11})
 		w.RunFor(100 * time.Millisecond)
 		// ks stops and holds a message when the request comes, in one turn.
 		callHost(tt, s, func(ctx *lockstep.Context[hostMsg], h *host) {
@@ -492,10 +499,10 @@ func TestATVAC29Requests(t *testing.T) {
 			h.route(ctx, ks, gmsg{N: 2})
 			h.handoffReq(ctx, handoffReq{Kind: "counter", Key: ks, From: "n8", Seq: 12})
 		})
-		sendHost(tt, s, "n8", "n1", handoffReq{Kind: "counter", Key: kq, From: "n8", Seq: 13})
-		sendHost(tt, s, "n8", "n1", handoffReq{Kind: "counter", Key: kz, From: "n8", Seq: 14})
+		sendHost(tt, s, "n8", handoffReq{Kind: "counter", Key: kq, From: "n8", Seq: 13})
+		sendHost(tt, s, "n8", handoffReq{Kind: "counter", Key: kz, From: "n8", Seq: 14})
 		w.RunFor(3 * time.Second) // past kq's HandoffTimeout
-		sendHost(tt, s, "n9", "n1", handoffAck{Kind: "counter", Key: kq, From: "n9", Seq: qseq})
+		sendHost(tt, s, "n9", handoffAck{Kind: "counter", Key: kq, From: "n9", Seq: qseq})
 		w.RunFor(100 * time.Millisecond)
 
 		expectStrings(tt, ka+"'s records", from(c.keyRecs("n1", ka), "yield"), []string{
@@ -538,7 +545,7 @@ func TestATVAC29Requests(t *testing.T) {
 		}
 		w.RunFor(100 * time.Millisecond)
 		version := c.view("n1").Version
-		c.addMember(tt, "n1", "n7")
+		c.addMember(tt, "n7")
 		w.RunFor(100 * time.Millisecond)
 		if c.view("n1").Version == version {
 			tt.Fatal("n1 applied no view without n8")
@@ -557,7 +564,7 @@ func TestATVAC29Requests(t *testing.T) {
 		}
 
 		// A view with an entry for n8 ends the yields: n1 owns the keys and activates them.
-		c.addMember(tt, "n1", "n8", "counter")
+		c.addMember(tt, "n8", "counter")
 		w.RunFor(100 * time.Millisecond)
 		for _, key := range keys {
 			sendLocal(tt, s, "n1", key, gmsg{N: 5})
@@ -602,9 +609,9 @@ func TestApplyViewOrder(t *testing.T) {
 		cfg2.Kinds = []Kind{logKind("counter", l)}
 		c.node("n2", cfg2)
 		w.RunFor(10 * time.Millisecond)
-		c.addMember(tt, "n1", "n9", "counter")
+		c.addMember(tt, "n9", "counter")
 		w.RunFor(10 * time.Millisecond)
-		if err := s.InjectFail(hostPID("n1", "counter").Address(), errors.New("restart")); err != nil {
+		if err := s.InjectFail(hostAt("n1", "counter").Address(), errors.New("restart")); err != nil {
 			tt.Fatal(err)
 		}
 		w.RunFor(100 * time.Millisecond)
@@ -621,13 +628,13 @@ func TestApplyViewOrder(t *testing.T) {
 		peer.ack = false
 		sendLocal(tt, s, "n1", kq, gmsg{N: 1})
 		sendLocal(tt, s, "n1", kq, gmsg{N: 2})
-		sendHost(tt, s, "n8", "n1", handoffReq{Kind: "counter", Key: ky, From: "n8", Seq: 1})
-		sendHost(tt, s, "n6", "n1", handoffReq{Kind: "counter", Key: kz, From: "n6", Seq: 1})
+		sendHost(tt, s, "n8", handoffReq{Kind: "counter", Key: ky, From: "n8", Seq: 1})
+		sendHost(tt, s, "n6", handoffReq{Kind: "counter", Key: kz, From: "n6", Seq: 1})
 		w.RunFor(100 * time.Millisecond)
 		expectHost(tt, c, "n1", HostInfo{Kind: "counter", Version: c.view("n1").Version, Joined: true,
 			Active: []string{ka}, Acquiring: []string{kq}, Buffered: 2})
 
-		c.addMember(tt, "n1", "n8", "counter")
+		c.addMember(tt, "n8", "counter")
 		w.RunFor(100 * time.Millisecond)
 		v := c.view("n1")
 		recs := from(c.grainOnly("n1"), "passivate")

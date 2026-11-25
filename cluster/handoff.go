@@ -4,6 +4,7 @@
 package cluster
 
 import (
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -144,7 +145,7 @@ func (h *host) acquire(ctx *lockstep.Context[hostMsg], key string, msg, v any, h
 // waiting for never matches an acquisition of this one.
 func (h *host) nextSeq() uint64 {
 	*h.seqs++
-	return uint64(h.m.self.ID)<<32 | uint64(uint32(*h.seqs))
+	return uint64(h.m.self.ID)<<32 | *h.seqs&math.MaxUint32
 }
 
 // handoffReq handles a request from req.From to hand the key over (VAC-510): it records
