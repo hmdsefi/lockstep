@@ -32,7 +32,7 @@ import (
 //     activations reaches the host, the ending incarnation or the next one; Stopped closes the
 //     books instead, and the next incarnation is a new host value that starts empty (VAC-450).
 
-// The reasons of lockstep.grain.passivate (§6); 3.4-06 adds handover (VAC-510).
+// The reasons of lockstep.grain.passivate (§6); handoff.go has handover (VAC-510).
 const (
 	reasonIdle      = "idle"
 	reasonOwnership = "ownership"
@@ -157,25 +157,27 @@ func (h *host) sendAck(ctx *lockstep.Context[hostMsg], key string, a pendingAck)
 // Stopped closes the host's books when it stops or restarts (VAC-450). Its activations, its
 // children, have stopped before, and their Terminated never comes: the host records
 // lockstep.grain.stopped for each of them in key order, then drops every held message with reason
-// host: the joining buffer in arrival order, then each key's buffer in key order. Pending acks are
-// lost. It publishes a HostInfo without keys or buffered messages; the next incarnation starts
-// empty and applies the latest view as its first.
+// host: the joining buffer in arrival order, then each key's buffer in key order, the keys that
+// are acquiring included (they have no activation, so no stopped record). Pending acks, yields and
+// acquisitions are lost. It publishes a HostInfo without keys or buffered messages; the next
+// incarnation starts empty and applies the latest view as its first.
 func (h *host) Stopped(ctx *lockstep.Context[hostMsg], _ lockstep.StopReason) {
 	for _, x := range h.joining {
 		h.drop(ctx, x.key, hopsOf(x.msg), dropHost)
 	}
-	keys := slices.Concat(h.active.snapshot(), h.stopping.snapshot())
+	keys := slices.Concat(h.active.snapshot(), h.stopping.snapshot(), h.acquiring.snapshot())
 	slices.Sort(keys)
 	ctl := tracer(ctx)
 	for _, key := range keys {
-		if ctl != nil {
+		g := h.keys[key]
+		if ctl != nil && g.phase != phaseAcquiring {
 			ctl.Record(grainPrefix+"stopped", "kind", h.kind.name, "key", escapeKey(key))
 		}
-		for _, msg := range h.keys[key].held {
+		for _, msg := range g.held {
 			h.drop(ctx, key, hopsOf(msg), dropHost)
 		}
 	}
-	h.joining, h.buffered, h.active, h.stopping = nil, 0, keyList{}, keyList{}
+	h.joining, h.buffered, h.active, h.stopping, h.acquiring, h.yields = nil, 0, keyList{}, keyList{}, keyList{}, nil
 	h.keys = map[string]*grain{}
 	h.publish()
 }

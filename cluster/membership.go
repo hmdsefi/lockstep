@@ -41,6 +41,10 @@ type Membership struct {
 	hostPIDs []lockstep.PID[hostMsg]
 	infos    []atomic.Pointer[HostInfo]
 
+	// seqs counts the acquisitions of each kind's host (VAC-510). Only the host's turns use it; it
+	// lives here so that a restarted host goes on counting.
+	seqs []uint64
+
 	// The fields below are read and written only in the membership actor's turns; they live here
 	// so that a restarted actor keeps them (CLU-520, CLU-620). subs are the subscribers in
 	// subscription order; since only the actor publishes views, signals and subscribes, every
@@ -85,6 +89,7 @@ func Join(sys *lockstep.System, c Config) (*Membership, error) {
 	m := &Membership{sys: sys, cfg: c, self: self}
 	m.hostPIDs = make([]lockstep.PID[hostMsg], len(c.Kinds))
 	m.infos = make([]atomic.Pointer[HostInfo], len(c.Kinds))
+	m.seqs = make([]uint64, len(c.Kinds))
 	for i, k := range c.Kinds {
 		m.hostPIDs[i] = lockstep.PIDAt[hostMsg](self.Node, grainsPath+"/"+k.name)
 		m.infos[i].Store(&HostInfo{Kind: k.name})
