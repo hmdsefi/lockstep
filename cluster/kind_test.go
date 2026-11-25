@@ -7,6 +7,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -251,7 +252,7 @@ func TestATVAC04Closures(t *testing.T) {
 	var keys []string
 	k := NewKind("counter", func(key string) lockstep.Actor[msg] {
 		keys = append(keys, key)
-		return actorFunc[msg](func(_ *lockstep.Context[msg], m msg) { got <- key + ":" + string(rune('0'+m.n)) })
+		return actorFunc[msg](func(_ *lockstep.Context[msg], m msg) { got <- key + ":" + strconv.Itoa(m.n) })
 	})
 	if !k.accepts(msg{1}) || k.accepts(&msg{1}) || k.accepts("x") || k.accepts(nil) {
 		t.Error("accepts must say yes only to an M")
@@ -263,7 +264,11 @@ func TestATVAC04Closures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr.Path() != "/user/a%2Fb" || addr != pid.(lockstep.PID[msg]).Address() {
+	typed, ok := pid.(lockstep.PID[msg])
+	if !ok {
+		t.Fatalf("spawn returned a %T, want a lockstep.PID of the kind's message type", pid)
+	}
+	if addr.Path() != "/user/a%2Fb" || addr != typed.Address() {
 		t.Errorf("activation at %v with pid %v, want /user/a%%2Fb", addr, pid)
 	}
 	if err := k.send(sys, pid, msg{7}); err != nil {

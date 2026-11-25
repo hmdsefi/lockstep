@@ -10,7 +10,10 @@ import "github.com/hmdsefi/lockstep/codec"
 type memberMsg interface{ memberMsg() }
 
 // update is one entry of a node's member table as it travels on the wire. It is also a memberMsg
-// only so that it can be registered on its own; the actor ignores a bare update.
+// only so that it can be registered on its own; the actor ignores a bare update. Nothing modifies
+// the Kinds of an update: the table, the views and the messages share one slice.
+//
+//lockstep:immutable
 type update struct {
 	Node  string
 	ID    uint32
