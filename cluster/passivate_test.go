@@ -42,7 +42,7 @@ func hostStates(s *sim.Sim, c *simCluster, node, kind string) *[]string {
 // callHost runs f in a turn of node's host of counter.
 func callHost(tt testing.TB, s *sim.Sim, node string, f hostCall) {
 	tt.Helper()
-	if err := sim.Send(s, node, hostPID(node, "counter"), hostMsg(f)); err != nil {
+	if err := sim.Send(s, node, lockstep.PIDAt[hostMsg](node, grainsPath+"/counter"), hostMsg(f)); err != nil {
 		tt.Fatalf("send a call to the host: %v", err)
 	}
 }
@@ -93,9 +93,9 @@ func (c *simCluster) deliveries(node, key string) []kernel.Time {
 	return out
 }
 
-// recTimes returns the times of node's lockstep.grain.<kind> records.
-func (c *simCluster) recTimes(node, kind string) []kernel.Time {
-	id := c.n[node].ID()
+// recTimes returns the times of n1's lockstep.grain.<kind> records.
+func (c *simCluster) recTimes(kind string) []kernel.Time {
+	id := c.n["n1"].ID()
 	var out []kernel.Time
 	for _, r := range c.s.World().Sim.Records() {
 		if r.Node == id && r.Kind == grainPrefix+kind {
@@ -143,8 +143,8 @@ func TestATVAC10IdlePassivation(t *testing.T) {
 		if got := l.of("k"); !slices.Equal(got, []int{1, 2, 3, 4}) {
 			tt.Errorf("k got %v, want [1 2 3 4]", got)
 		}
-		del, act := c.deliveries("n1", "k"), c.recTimes("n1", "activate")
-		pass, stop := c.recTimes("n1", "passivate"), c.recTimes("n1", "stopped")
+		del, act := c.deliveries("n1", "k"), c.recTimes("activate")
+		pass, stop := c.recTimes("passivate"), c.recTimes("stopped")
 		if len(del) != 3 || len(act) != 1 || len(pass) != 1 || len(stop) != 1 {
 			tt.Fatalf("deliveries %v, activations %v, passivations %v, stops %v: want 3, 1, 1, 1", del, act, pass, stop)
 		}
@@ -166,7 +166,7 @@ func TestATVAC10IdlePassivation(t *testing.T) {
 		// The next message activates k again; its own timer passivates it IdleTimeout later.
 		send(5)
 		w.RunFor(1500 * time.Millisecond)
-		act, pass = c.recTimes("n1", "activate"), c.recTimes("n1", "passivate")
+		act, pass = c.recTimes("activate"), c.recTimes("passivate")
 		del = c.deliveries("n1", "k")
 		if len(act) != 2 || len(pass) != 2 || len(del) != 4 || pass[1] != del[3].Add(time.Second) {
 			tt.Errorf("second activation: activations %v, passivations %v, deliveries %v: want a passivation IdleTimeout after the 4th delivery", act, pass, del)

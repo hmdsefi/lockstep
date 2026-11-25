@@ -143,7 +143,9 @@ func (h *host) terminated(ctx *lockstep.Context[hostMsg], t lockstep.Terminated)
 // is ignored, and the requester falls back on its HandoffTimeout.
 func (h *host) sendAck(ctx *lockstep.Context[hostMsg], key string, a pendingAck) {
 	to := lockstep.PIDAt[hostMsg](a.to, grainsPath+"/"+h.kind.name)
-	_ = lockstep.Send(ctx, to, hostMsg(handoffAck{Kind: h.kind.name, Key: escapeKey(key), From: h.self, Seq: a.seq}))
+	if err := lockstep.Send(ctx, to, hostMsg(handoffAck{Kind: h.kind.name, Key: escapeKey(key), From: h.self, Seq: a.seq})); err != nil {
+		return // the requester activates at its HandoffTimeout
+	}
 }
 
 // Stopped closes the host's books when it stops or restarts (VAC-450). Its activations, its
