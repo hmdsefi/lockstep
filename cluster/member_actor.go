@@ -74,6 +74,12 @@ type memberActor struct {
 	changed   bool             // the table changed in this turn (CLU-500)
 	trans     []transition     // the node-ups and node-downs of this turn, in change order (CLU-510)
 	probing   prober           // the probing state (CLU-200 to CLU-250)
+
+	// joined is true once the node has joined (CLU-030); a restarted actor takes it from
+	// Membership.joined. newlyJoined is set by the turn that joined, which publishes it at its end
+	// (CLU-500, VAC-300).
+	joined      bool
+	newlyJoined bool
 }
 
 // newMemberActor returns the membership actor of m.
@@ -98,6 +104,7 @@ func (a *memberActor) Started(ctx *lockstep.Context[memberMsg]) {
 		a.tbl = newTable(a.m.self, cfg.DeadRetention, ctx.Now())
 	}
 	a.queue = newBroadcasts()
+	a.joined = a.m.joined.Load()
 	if ctl := tracer(ctx); ctl != nil {
 		self := a.tbl.Self()
 		ctl.Record(recordPrefix+"start", "node", self.Node, "id", strconv.FormatUint(uint64(self.ID), 10),
@@ -106,7 +113,7 @@ func (a *memberActor) Started(ctx *lockstep.Context[memberMsg]) {
 	}
 	a.startProbing(ctx)
 	switch {
-	case a.m.joined:
+	case a.joined:
 		a.startSync(ctx)
 	case len(a.seeds) == 0:
 		a.becomeJoined(ctx)
@@ -125,7 +132,7 @@ func (a *memberActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 			a.send(ctx, msg.From.Node, syncResp{From: toUpdate(a.tbl.Self()), Members: a.entries()})
 		}
 	case syncResp:
-		if a.mergeMessage(ctx, wireSyncResp, msg.From, msg.Members) && !a.m.joined {
+		if a.mergeMessage(ctx, wireSyncResp, msg.From, msg.Members) && !a.joined {
 			a.becomeJoined(ctx)
 		}
 	case ping:
@@ -150,7 +157,7 @@ func (a *memberActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 	case unsubscribeCmd:
 		a.unsubscribe(msg.Addr)
 	case joinTick:
-		if !a.m.joined {
+		if !a.joined {
 			a.joinAttempt(ctx)
 		}
 	case syncTick:
@@ -173,7 +180,7 @@ func (a *memberActor) Receive(ctx *lockstep.Context[memberMsg], msg memberMsg) {
 
 // tracer returns the controls of ctx when tracing is on, else nil, so that records are built only
 // when they are emitted (§8).
-func tracer(ctx *lockstep.Context[memberMsg]) hooks.ActorControl {
+func tracer[M any](ctx *lockstep.Context[M]) hooks.ActorControl {
 	if ctl := hooks.Control(ctx); ctl.TraceEnabled() {
 		return ctl
 	}
@@ -223,9 +230,9 @@ func (a *memberActor) joinAttempt(ctx *lockstep.Context[memberMsg]) {
 }
 
 // becomeJoined marks the node joined, stops the join attempts, records it and starts the periodic
-// syncs (CLU-030).
+// syncs (CLU-030). Membership.joined is set at the end of the turn, after its view (publish).
 func (a *memberActor) becomeJoined(ctx *lockstep.Context[memberMsg]) {
-	a.m.joined = true
+	a.joined, a.newlyJoined = true, true
 	if a.joinTimer != 0 {
 		ctx.CancelTimer(a.joinTimer)
 		a.joinTimer = 0

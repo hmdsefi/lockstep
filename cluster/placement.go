@@ -77,6 +77,56 @@ func lookup(members []core.Member, kind, key string) (owner, runner int) {
 	return owner, runner
 }
 
+// placement is the immutable placement of one published view (VAC-110): for every kind named in
+// the Kinds of an up member, sorted by name, the hosting members (from hosting). The membership
+// actor builds it when it publishes the view, so that Grain.Send and the hosts rank keys with
+// lookup and allocate nothing per message.
+type placement struct {
+	kinds   []string
+	members [][]core.Member
+}
+
+// newPlacement returns the placement of the members ms, sorted by node.
+func newPlacement(ms []Member) *placement {
+	var kinds []string
+	for _, m := range ms {
+		if m.State.Up() {
+			kinds = append(kinds, m.Kinds...)
+		}
+	}
+	slices.Sort(kinds)
+	kinds = slices.Compact(kinds)
+	p := &placement{kinds: kinds, members: make([][]core.Member, len(kinds))}
+	for i, k := range kinds {
+		p.members[i] = hosting(ms, k)
+	}
+	return p
+}
+
+// hosts returns the hosting members of kind, sorted by node, or nil when no up member hosts it.
+// The slice is shared: callers must not modify it. A nil placement hosts nothing.
+func (p *placement) hosts(kind string) []core.Member {
+	if p == nil {
+		return nil
+	}
+	i, ok := slices.BinarySearch(p.kinds, kind)
+	if !ok {
+		return nil
+	}
+	return p.members[i]
+}
+
+// owner returns the owner of key of kind, as Owner does for the view of p, and false when no up
+// member hosts kind. It allocates nothing.
+func (p *placement) owner(kind, key string) (string, bool) {
+	ms := p.hosts(kind)
+	o, _ := lookup(ms, kind, key)
+	if o < 0 {
+		return "", false
+	}
+	return ms[o].ID, true
+}
+
 const (
 	maxKeyLen = 256
 	upperHex  = "0123456789ABCDEF"

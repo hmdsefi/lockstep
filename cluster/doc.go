@@ -58,4 +58,17 @@
 // see it as Left, not Dead, and their subscribers get NodeDown with Left set. When the membership
 // actor fails and restarts, it keeps the member table of the last published view and its
 // subscribers.
+//
+// A node can also host grains: virtual actors addressed by a kind and a key, which exist whenever
+// a message is sent to them. Config.Kinds lists the kinds a node hosts, each made by NewKind with
+// the factory of its activations. Join starts a host per kind under /system/grains; the owner of a
+// key is chosen among the up members that host its kind (Owner), and the owner's host activates
+// the key on its first message:
+//
+//	g := cluster.GrainOf[CounterMsg](m, "counter", "user-42")
+//	if err := g.Send(sys, Add{N: 1}); err != nil {
+//		return err
+//	}
+//
+// Membership.Host describes the host of a kind on this node.
 package cluster

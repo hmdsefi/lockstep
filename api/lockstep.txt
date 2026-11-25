@@ -247,7 +247,9 @@ pkg github.com/hmdsefi/lockstep/cluster, const Left = 4
 pkg github.com/hmdsefi/lockstep/cluster, const Left MemberState
 pkg github.com/hmdsefi/lockstep/cluster, const Suspect = 2
 pkg github.com/hmdsefi/lockstep/cluster, const Suspect MemberState
+pkg github.com/hmdsefi/lockstep/cluster, func Ask[R any, M any](lockstep.Sender, Grain[M], func(lockstep.ReplyTo[R]) M, ...lockstep.AskOption) *lockstep.Reply[R]
 pkg github.com/hmdsefi/lockstep/cluster, func DefaultConfig() Config
+pkg github.com/hmdsefi/lockstep/cluster, func GrainOf[M any](*Membership, string, string) Grain[M]
 pkg github.com/hmdsefi/lockstep/cluster, func Join(*lockstep.System, Config) (*Membership, error)
 pkg github.com/hmdsefi/lockstep/cluster, func NewKind[M any](string, func(string) lockstep.Actor[M], ...KindOption) Kind
 pkg github.com/hmdsefi/lockstep/cluster, func Owner(*View, string, string) (string, bool)
@@ -258,12 +260,16 @@ pkg github.com/hmdsefi/lockstep/cluster, func WithHandoffTimeout(time.Duration) 
 pkg github.com/hmdsefi/lockstep/cluster, func WithHostOptions(...lockstep.SpawnOption) KindOption
 pkg github.com/hmdsefi/lockstep/cluster, func WithIdleTimeout(time.Duration) KindOption
 pkg github.com/hmdsefi/lockstep/cluster, method (*Config) Validate() error
+pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Host(string) (HostInfo, bool)
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Leave() error
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Subscribe(lockstep.Address) error
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) Unsubscribe(lockstep.Address)
 pkg github.com/hmdsefi/lockstep/cluster, method (*Membership) View() *View
 pkg github.com/hmdsefi/lockstep/cluster, method (*View) Member(string) (Member, bool)
 pkg github.com/hmdsefi/lockstep/cluster, method (*View) Up() []Member
+pkg github.com/hmdsefi/lockstep/cluster, method (Grain[M]) Key() string
+pkg github.com/hmdsefi/lockstep/cluster, method (Grain[M]) Kind() string
+pkg github.com/hmdsefi/lockstep/cluster, method (Grain[M]) Send(lockstep.Sender, M) error
 pkg github.com/hmdsefi/lockstep/cluster, method (Kind) Name() string
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) String() string
 pkg github.com/hmdsefi/lockstep/cluster, method (MemberState) Up() bool
@@ -279,6 +285,15 @@ pkg github.com/hmdsefi/lockstep/cluster, type Config struct, RetransmitMult int
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, Seeds []string
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SuspicionTimeout time.Duration
 pkg github.com/hmdsefi/lockstep/cluster, type Config struct, SyncInterval time.Duration
+pkg github.com/hmdsefi/lockstep/cluster, type Grain[M any] struct
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Acquiring []string
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Active []string
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Buffered int
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Joined bool
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Kind string
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Stopping []string
+pkg github.com/hmdsefi/lockstep/cluster, type HostInfo struct, Version uint64
 pkg github.com/hmdsefi/lockstep/cluster, type Kind struct
 pkg github.com/hmdsefi/lockstep/cluster, type KindOption func(*kindConfig)
 pkg github.com/hmdsefi/lockstep/cluster, type Member struct
@@ -295,8 +310,11 @@ pkg github.com/hmdsefi/lockstep/cluster, type View struct, Self Member
 pkg github.com/hmdsefi/lockstep/cluster, type View struct, Version uint64
 pkg github.com/hmdsefi/lockstep/cluster, var ErrAlreadyJoined error
 pkg github.com/hmdsefi/lockstep/cluster, var ErrInvalidConfig error
+pkg github.com/hmdsefi/lockstep/cluster, var ErrInvalidKey error
 pkg github.com/hmdsefi/lockstep/cluster, var ErrLeft error
+pkg github.com/hmdsefi/lockstep/cluster, var ErrNoOwner error
 pkg github.com/hmdsefi/lockstep/cluster, var ErrNodeDown error
+pkg github.com/hmdsefi/lockstep/cluster, var ErrNotJoined error
 pkg github.com/hmdsefi/lockstep/codec, func Default() *Registry
 pkg github.com/hmdsefi/lockstep/codec, func NewRegistry() *Registry
 pkg github.com/hmdsefi/lockstep/codec, func RegisterIn[T any](*Registry, string)

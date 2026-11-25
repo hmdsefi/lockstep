@@ -62,6 +62,16 @@ type View struct {
 	Self Member
 	// Members holds every entry of the table, Self included, sorted by Node.
 	Members []Member
+
+	// place is the placement of the view, built when it is published (VAC-110); nil for a View
+	// that was not published by a Membership.
+	place *placement
+}
+
+// newView returns the view to publish with version, self and members (sorted by node), with its
+// placement.
+func newView(version uint64, self Member, members []Member) *View {
+	return &View{Version: version, Self: self, Members: members, place: newPlacement(members)}
 }
 
 // Member returns the entry of node, and whether the view has one.
