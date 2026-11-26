@@ -76,10 +76,12 @@ type Config struct {
 	IdleTimeout time.Duration
 	// DialTimeout bounds one dial. Zero means 5s.
 	DialTimeout time.Duration
-	// RedialMin is the first wait before a redial. Zero means 100ms.
+	// RedialMin is the base of the wait before the first redial. After f failures in a row the
+	// base is b = min(RedialMax, RedialMin << (f-1)), and the wait is drawn uniformly from
+	// [b/2, b]. Zero means 100ms.
 	RedialMin time.Duration
-	// RedialMax is the longest wait before a redial. It must not be less than RedialMin. Zero
-	// means 10s.
+	// RedialMax is the largest base of the wait before a redial. It must not be less than
+	// RedialMin. Zero means 10s.
 	RedialMax time.Duration
 }
 

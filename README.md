@@ -57,6 +57,16 @@ lockstep includes:
   needs: a `Window` of idempotency keys and tombstones, a `Replies` cache of first replies, and a
   `Versions` gate per entity. Each value is bounded by age and count, and a persistent actor keeps
   it in its snapshots.
+- **Remoting.** `remote.Enable` connects systems on different nodes over TCP, optionally with TLS.
+  Sends, asks, replies, lookups and death watches work across nodes, in send order between one
+  sender and one receiver. `lockstep/codec` encodes the messages: deterministic JSON by default, or
+  protocol buffers from the nested module `codec/protobuf`.
+- **Cluster membership.** `cluster.Join` runs a gossip membership protocol in the style of SWIM:
+  probes, indirect probes, suspicion and refutation. A node reads the members from a `View` and
+  subscribes actors to `NodeUp` and `NodeDown` signals.
+- **Virtual actors.** A grain is an actor named by a kind and a key that exists whenever a message
+  is sent to it. Rendezvous hashing picks its owner among the up members, the owner activates it
+  on its first message and passivates it when it is idle, and ownership moves with membership.
 - **Deterministic simulation testing** in `lockstep/sim`, built on
   [faultline](https://github.com/hmdsefi/faultline): multiple nodes, network partitions, message
   drops and delays, crashes and restarts, memory pressure, and exact replay from a seed.
@@ -329,6 +339,7 @@ final check runs when the run ends:
 package main
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -336,8 +347,16 @@ import (
 	"github.com/hmdsefi/faultline"
 	"github.com/hmdsefi/faultline/kernel/fault"
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/codec"
+	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
+
+// Add and Get cross nodes in the test, so they have wire names.
+func init() {
+	codec.Register[Add]("counter.Add")
+	codec.Register[Get]("counter.Get")
+}
 
 func TestCounter(t *testing.T) {
 	opts := sim.Options{Options: faultline.Options{Seeds: 50, Duration: 10 * time.Second}}
@@ -360,6 +379,9 @@ func TestCounter(t *testing.T) {
 		}
 		w.RunFor(4 * time.Second) // faults stop at 7.5s, a quarter before the end
 		total, err := sim.Ask(s, "c1", counter, getTotal)
+		if errors.Is(err, remote.ErrPeerRestarted) { // the first ask after a restart can fail
+			total, err = sim.Ask(s, "c1", counter, getTotal)
+		}
 		w.Final("every add counted", func() error {
 			if err != nil {
 				return err
@@ -373,6 +395,12 @@ func TestCounter(t *testing.T) {
 }
 ```
 
+Nodes in a simulation talk as production nodes do, so a message to another node is encoded:
+`init` registers `Add` and `Get` under wire names, and the answer, an `int`, needs no
+registration. [Send messages across nodes](#send-messages-across-nodes) explains this. When a node
+restarts, an ask that `c1` sent before it learned of the restart fails with an error that matches
+`remote.ErrPeerRestarted`, so the test asks once more.
+
 The test imports faultline directly, so add it to `go.mod` and run the test:
 
 ```sh
@@ -382,13 +410,13 @@ go test .
 
 ```text
 --- FAIL: TestCounter (0.01s)
-    counter_test.go:16: faultline: running 50 seeds from base 0x64b5629963419063 (test name)
+    counter_test.go:25: faultline: running 50 seeds from base 0x64b5629963419063 (test name)
     --- FAIL: TestCounter/seed=0x870af07a512d3866 (0.01s)
         faultline: final check "every add counted" failed after the run at t=10.000000000s
           total is 0 after 20 adds
         replay:    FAULTLINE_SEED=0x870af07a512d3866 go test -v -run '^TestCounter$' example.com/counter
         artifacts: $TMPDIR/faultline-501/example.com_counter/TestCounter/870af07a512d3866/
-    counter_test.go:16: faultline: stopping after failing seed 0x870af07a512d3866; 48 of 50 seeds not run (set Options.KeepGoing to run all)
+    counter_test.go:25: faultline: stopping after failing seed 0x870af07a512d3866; 48 of 50 seeds not run (set Options.KeepGoing to run all)
 FAIL
 FAIL	example.com/counter	0.330s
 FAIL
@@ -407,7 +435,7 @@ FAULTLINE_SEED=0x870af07a512d3866 go test -v -run '^TestCounter$' example.com/co
 
 ```text
 === RUN   TestCounter
-    counter_test.go:16: faultline: FAULTLINE_SEED=0x870af07a512d3866: running 1 seed
+    counter_test.go:25: faultline: FAULTLINE_SEED=0x870af07a512d3866: running 1 seed
 === RUN   TestCounter/seed=0x870af07a512d3866
     faultline: final check "every add counted" failed after the run at t=10.000000000s
       total is 0 after 20 adds
@@ -421,7 +449,7 @@ FAIL
 ```
 
 The replay fails the same check at the same virtual time, and its `report.json` holds the same
-trace hash (a hash of every event in the run) as the first run: `0x56d752b8033ec3c3`. faultline
+trace hash (a hash of every event in the run) as the first run: `0x619b75850de90f63`. faultline
 writes the artifacts under `os.TempDir()`, shown here as `$TMPDIR`; they include `trace.jsonl`,
 `timeline.txt`, and a self-contained `timeline.html`.
 
@@ -569,6 +597,7 @@ faultline directly:
 package main
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -577,10 +606,15 @@ import (
 	"github.com/hmdsefi/faultline/kernel/fault"
 	"github.com/hmdsefi/faultline/kernel/simdisk"
 	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/codec"
 	"github.com/hmdsefi/lockstep/persist"
 	"github.com/hmdsefi/lockstep/persist/filestore"
+	"github.com/hmdsefi/lockstep/remote"
 	"github.com/hmdsefi/lockstep/sim"
 )
+
+// Deposit crosses nodes in the test, so it has a wire name.
+func init() { codec.Register[Deposit]("account.Deposit") }
 
 func TestAccount(t *testing.T) {
 	opts := sim.Options{Options: faultline.Options{Seeds: 50, Duration: 20 * time.Second}}
@@ -609,6 +643,9 @@ func TestAccount(t *testing.T) {
 		}
 		w.RunFor(10 * time.Second) // faults stop at 15s, a quarter before the end
 		balance, err := sim.Ask(s, "c1", account, deposit(0))
+		if errors.Is(err, remote.ErrPeerRestarted) { // the first ask after a restart can fail
+			balance, err = sim.Ask(s, "c1", account, deposit(0))
+		}
 		w.Final("no acknowledged deposit is lost", func() error {
 			if err != nil {
 				return err
@@ -631,6 +668,430 @@ seed with `lockstep/misuse`, and a file that an actor leaves open when it stops 
 it with `lockstep/leak`. A `Store` closes every file before a call returns, so only code that opens
 files itself can leak one. [Architecture](docs/architecture.md#persistence) describes the journal
 format, the fsync order, and how recovery tells a torn write from corruption.
+
+## Send messages across nodes
+
+A PID names its node, so the same `Send`, `Ask` and `Watch` reach an actor on another node. Package
+`remote` carries those messages between systems over TCP, and package `codec` turns each message
+into bytes and back. The following program runs two nodes, `a` and `b`, in one process and asks a
+greeter on `b` from `a`. In production each node is its own process, and the code of each is the
+same:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/codec"
+	"github.com/hmdsefi/lockstep/remote"
+)
+
+// Greet asks for a greeting for Name.
+type Greet struct {
+	Name  string
+	Reply lockstep.ReplyTo[string]
+}
+
+// Greet crosses nodes, so it has a wire name, the same on every node.
+func init() { codec.Register[Greet]("example.Greet") }
+
+// Greeter answers every Greet with the name of the node it runs on.
+type Greeter struct{}
+
+func (Greeter) Receive(ctx *lockstep.Context[Greet], g Greet) {
+	g.Reply.Send(ctx, "hello "+g.Name+" from "+ctx.Self().Address().Node())
+}
+
+func newGreeter() lockstep.Actor[Greet] { return Greeter{} }
+
+func greet(name string) func(lockstep.ReplyTo[string]) Greet {
+	return func(r lockstep.ReplyTo[string]) Greet { return Greet{Name: name, Reply: r} }
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Node b runs the greeter and listens on 127.0.0.1:7102.
+	b := lockstep.New(lockstep.WithNodeName("b"))
+	if err := remote.Enable(b, remote.Config{Listen: "127.0.0.1:7102"}); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := lockstep.Spawn(b, "greeter", newGreeter); err != nil {
+		log.Fatal(err)
+	}
+
+	// Node a knows b's address and dials it on the first message.
+	a := lockstep.New(lockstep.WithNodeName("a"))
+	if err := remote.Enable(a, remote.Config{
+		Listen: "127.0.0.1:7101",
+		Peers:  map[string]string{"b": "127.0.0.1:7102"},
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	greeter, err := remote.Lookup[Greet](ctx, a, "b", "/user/greeter")
+	if err != nil {
+		log.Fatal(err)
+	}
+	answer, err := lockstep.Ask(a, greeter, greet("a")).Await(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(answer)
+
+	for _, sys := range []*lockstep.System{a, b} {
+		if err := sys.Shutdown(ctx); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+```
+
+```text
+hello a from b
+```
+
+`remote.Enable` switches remoting on for a system that `lockstep.New` built. The system listens on
+`Listen` and dials a peer when it first sends to it: at the address `Peers` names, else the one
+`Resolve` returns, else the address the peer announced when it connected. Here `b` has no address
+for `a`, because `a` announced its own when it dialed. `remote.Lookup` asks `b` for the actor at a
+path and returns its PID. `lockstep.PIDAt[Greet]("b", "/user/greeter")` names the same actor
+without a round trip: a message to it reaches whichever actor is registered at the path when the
+message arrives.
+
+Messages from one sender to one receiver arrive in send order and at most once, across nodes as on
+one node. A message can be lost when its connection breaks, and lockstep does not retry it. A
+failure that the other node reports, such as a `remote.Lookup` of a path where no actor is
+registered, comes back as a `*remote.Error`, and `errors.Is` matches it with the lockstep error its
+code stands for, here `lockstep.ErrNotFound`. When a peer's process restarts, the asks that wait
+on the old process fail with an error that matches `remote.ErrPeerRestarted`, and death watches of
+its actors end. `Shutdown` closes the connections once the last actor has stopped. `Config.TLS`
+makes both the listener and the dialer use TLS.
+
+### Wire names and codecs
+
+A message to another node travels as a wire name and the bytes of its value. The wire name tells
+the receiving node which Go type to decode, so every type that crosses nodes is registered under
+one name, the same on every node, before the first message of that type is sent. The program above
+does this in `init`. A name is 1 to 255 bytes: an ASCII letter, then letters, digits, `.`, `_`,
+`/` and `-`. Names that start with `lockstep.` are reserved, except those that start with
+`lockstep.cluster.`, which package `cluster` uses. Registering one name for two types, or one type
+under two names, panics. A message whose type is not registered makes `Send` return an error, and
+nothing is sent.
+
+Plain values need no registration. `bool`, `int` and `uint` and their sized forms, `float32`,
+`float64`, `string`, `[]byte`, `struct{}`, `time.Duration`, `time.Time` and `lockstep.Address` are
+built in, so the `string` answer above crosses without one. A `PID` or a `ReplyTo` travels as a
+field of a registered message.
+
+The default codec, `codec.JSON`, encodes with `encoding/json`, and equal values give equal bytes.
+Its check rejects a type that `encoding/json` would encode lossily or not at all, such as a struct
+with an interface field or an unexported field. `remote.Enable` runs the check over every
+registered type, so such a type fails when the system starts rather than at its first message.
+Every node uses the same codec, and two nodes with different codecs refuse to connect.
+
+For messages that are already protocol buffers, the nested module `codec/protobuf` has a codec for
+generated message types. It is a module of its own, so that lockstep itself never requires
+`google.golang.org/protobuf`:
+
+```sh
+go get github.com/hmdsefi/lockstep/codec/protobuf@v0.3.0
+```
+
+Register each generated message type as its pointer type, `*M`, and set `Codec: protobuf.Codec{}`
+in the `remote.Config` of every node. A node that joins a cluster keeps `codec.JSON` for remoting,
+because the cluster's own messages are plain structs, and sets the protobuf codec for its grains in
+`cluster.Config.Codec` instead. [Distribution](docs/distribution.md) describes both codecs, the
+connections between nodes, and the errors in more detail.
+
+## Cluster membership
+
+`cluster.Join` makes a system a member of a cluster, a group of nodes that track which of them are
+up. It starts the system actor `/system/cluster`, which joins through the seed nodes and keeps the
+member table, and returns a `*cluster.Membership`. The members talk through remoting, so a
+production system enables it before it joins. Node `n1` joins a cluster of three nodes, `n1`, `n2`
+and `n3`, and subscribes an actor to the members that come up and go down. `n2` and `n3` run the
+same code with their own names and addresses:
+
+```go
+// Watcher logs every member that comes up or goes down.
+type Watcher struct{}
+
+func (Watcher) Receive(*lockstep.Context[struct{}], struct{}) {}
+
+func (Watcher) Signal(ctx *lockstep.Context[struct{}], sig lockstep.Signal) {
+	switch s := sig.(type) {
+	case lockstep.NodeUp:
+		ctx.Logf("%s is up", s.Node)
+	case lockstep.NodeDown:
+		ctx.Logf("%s is down (left: %t)", s.Node, s.Left)
+	}
+}
+
+func newWatcher() lockstep.Actor[struct{}] { return Watcher{} }
+```
+
+```go
+// In main:
+sys := lockstep.New(lockstep.WithNodeName("n1"))
+if err := remote.Enable(sys, remote.Config{
+	Listen: "10.0.0.1:7000",
+	Peers:  map[string]string{"n2": "10.0.0.2:7000", "n3": "10.0.0.3:7000"},
+}); err != nil {
+	log.Fatal(err)
+}
+m, err := cluster.Join(sys, cluster.Config{Seeds: []string{"n1", "n2", "n3"}})
+if err != nil {
+	log.Fatal(err)
+}
+watcher, err := lockstep.Spawn(sys, "watcher", newWatcher)
+if err != nil {
+	log.Fatal(err)
+}
+if err := m.Subscribe(watcher.Address()); err != nil {
+	log.Fatal(err)
+}
+```
+
+Every second, each node probes one other member. A member that does not answer in time is probed
+again through up to three other members, and a member that still has not answered at the next
+probe becomes `Suspect`. A suspected member that does not refute the suspicion within 5 seconds
+becomes `Dead`. News about members travels on the probes, and nodes exchange their whole member
+tables now and then, so the two sides of a healed partition learn of each other.
+`cluster.Config` sets each of these intervals.
+
+`m.View()` returns the latest view, an immutable snapshot of the member table, without sending a
+message. A member is `Alive`, `Suspect`, `Dead` or `Left`. `Alive` and `Suspect` members are up,
+and `View.Up` lists them. A member's `ID` is the incarnation of its process, so a node that
+restarts comes back as a new member under its old name.
+
+A subscriber receives a `lockstep.NodeUp` for every other member that is up when it subscribes,
+then `NodeUp` and `NodeDown` signals in the order of the views. A death watch of an actor on a node
+that goes down ends with a failure that wraps `cluster.ErrNodeDown`. `m.Leave()` and `Shutdown`
+leave the cluster: the other members see the node as `Left`, not `Dead`, and their subscribers get
+a `NodeDown` with `Left` set.
+
+## Virtual actors: grains
+
+A grain is an actor named by a kind and a key, such as `counter` and `user-42`, that exists
+whenever a message is sent to it: no code spawns or stops it. A node lists the kinds it hosts in
+`cluster.Config.Kinds`, each made by `cluster.NewKind` with the factory of its activations, the
+actors that run the grains. `Join` starts a host for each kind. The following program hosts the
+kind `counter` on a cluster of one node, sends the grain `user-42` three `Add` messages, and asks
+for its total:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/cluster"
+	"github.com/hmdsefi/lockstep/codec"
+)
+
+// CounterMsg is every message a counter grain accepts.
+type CounterMsg interface{ isCounterMsg() }
+
+// Add adds N to the grain's total.
+type Add struct{ N int }
+
+// Get asks for the grain's total.
+type Get struct{ Reply lockstep.ReplyTo[int] }
+
+func (Add) isCounterMsg() {}
+func (Get) isCounterMsg() {}
+
+// Messages for a grain on another node cross nodes, so they have wire names.
+func init() {
+	codec.Register[Add]("example.Add")
+	codec.Register[Get]("example.Get")
+}
+
+// Counter is the activation of one counter grain: the actor that runs it on its owner.
+type Counter struct{ total int }
+
+func (c *Counter) Receive(ctx *lockstep.Context[CounterMsg], msg CounterMsg) {
+	switch m := msg.(type) {
+	case Add:
+		c.total += m.N
+	case Get:
+		m.Reply.Send(ctx, c.total)
+	}
+}
+
+// counterKind returns the kind of the counter grains. Its factory gets the grain's key.
+func counterKind() cluster.Kind {
+	return cluster.NewKind("counter", func(key string) lockstep.Actor[CounterMsg] {
+		return &Counter{}
+	}, cluster.WithIdleTimeout(time.Minute))
+}
+
+func getTotal(r lockstep.ReplyTo[int]) CounterMsg { return Get{Reply: r} }
+
+func main() {
+	sys := lockstep.New(lockstep.WithNodeName("n1"))
+	m, err := cluster.Join(sys, cluster.Config{Kinds: []cluster.Kind{counterKind()}})
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Grain messages are refused until the node has joined, which takes one turn.
+	for h, _ := m.Host("counter"); !h.Joined; h, _ = m.Host("counter") {
+		time.Sleep(time.Millisecond)
+	}
+
+	counter := cluster.GrainOf[CounterMsg](m, "counter", "user-42")
+	for _, n := range []int{1, 2, 3} {
+		if err := counter.Send(sys, Add{N: n}); err != nil {
+			log.Fatal(err)
+		}
+	}
+	total, err := cluster.Ask(sys, counter, getTotal).Await(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	h, _ := m.Host("counter")
+	fmt.Println("total:", total, "active:", h.Active)
+
+	if err := sys.Shutdown(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+```text
+total: 6 active: [user-42]
+```
+
+`cluster.GrainOf` returns a `Grain[M]`, a small value that holds no state of the grain, so any code
+can build one. `Grain.Send` and `cluster.Ask` route a message to the grain's owner: among the up
+members that host the kind, the one with the highest rendezvous hash of the kind, the key and its
+node name, so every node computes the same owner from the same view. The owner's host activates
+the grain on its first message, by calling the factory with the key, and delivers every message for
+the key to that activation. `Membership.Host` describes the host of a kind on this node: its active
+keys, the keys it is stopping or waiting for, and the number of messages it holds.
+
+`Send` returns an error when the message cannot be routed: before the node has joined
+(`cluster.ErrNotJoined`, which is why the program waits for the host to see a joined view), when no
+up member hosts the kind (`ErrNoOwner`), for a key that is not 1 to 256 bytes long
+(`ErrInvalidKey`), after `Leave` (`ErrLeft`), and when this node hosts the kind with another
+message type. It also returns the encoding error when another node owns the grain and the message
+cannot be encoded, and the error of the send itself, wrapped, such as `lockstep.ErrMailboxFull`
+from this node's host. A message that a host later cannot hold, deliver or forward is dropped and
+traced, and `Send` does not report it; an ask then resolves at its timeout. A node with no kinds
+in its `Config` hosts no grains but sends to them.
+
+A message for a grain that another node owns is encoded with `Config.Registry` and `Config.Codec`,
+so its type is registered on every node that sends to or hosts the kind. While the owner does not
+change and nothing is dropped, messages from one sender reach the activation in send order. An
+activation that gets no message for the kind's idle timeout, 10 minutes unless `WithIdleTimeout`
+sets it, is stopped, and the next message activates the grain again with a new actor from the
+factory.
+
+When the members change, so do the owners of some keys. A node that becomes the owner of a key that
+other nodes may still run first asks those nodes to stop their activations, and holds the key's
+messages meanwhile. It activates the key when every such node has answered, or when the kind's
+handoff timeout has passed. While the views of two nodes disagree about an owner, a host forwards
+a message to the owner it sees, at most `Config.MaxHops` times. Once the views of the nodes agree
+and every host has applied its node's view, no key is in the active set of two nodes. An activation
+that the change passivated may still be stopping, and after a handoff timeout it can run beside the
+new one. While the views disagree, for example during a partition, two nodes can each run an
+activation of the same key. [Distribution](docs/distribution.md#virtual-actors) describes
+placement, handoff, and the limits of this guarantee.
+
+### The same cluster in simulation
+
+In `lockstep/sim`, every node runs remoting. Its frames travel as datagrams on faultline's simulated
+network, where partitions and lossy links apply to them, and every message between nodes is
+encoded as in production. `sim.Options.Remote` holds the protocol settings, the codec and the
+registry of every node. Its network fields, such as `Listen`, are ignored, and a node's setup may
+call `remote.Enable` as production code does. `cluster.Join` runs unchanged: its probes, its timers
+and its random choices come from the seed, so a run of a cluster replays exactly too.
+
+The following test runs three nodes that host the counter grains and a client node `c1` that hosts
+none. `c1` sends one grain 20 `Add` messages while faultline crashes nodes and cuts the network,
+and a final check asks the grain for its total after the faults have stopped. It adds to the
+program above:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/hmdsefi/faultline"
+	"github.com/hmdsefi/faultline/kernel/fault"
+	"github.com/hmdsefi/lockstep"
+	"github.com/hmdsefi/lockstep/cluster"
+	"github.com/hmdsefi/lockstep/sim"
+)
+
+func TestCounterGrain(t *testing.T) {
+	opts := sim.Options{Options: faultline.Options{Seeds: 20, Duration: 50 * time.Second}}
+	sim.Simulate(t, opts, func(s *sim.Sim) {
+		w := s.World()
+		nodes := []string{"n1", "n2", "n3"}
+		for _, name := range nodes {
+			s.Node(name, func(sys *lockstep.System) {
+				if _, err := cluster.Join(sys, cluster.Config{Seeds: nodes, Kinds: []cluster.Kind{counterKind()}}); err != nil {
+					panic(err)
+				}
+			})
+		}
+		var m *cluster.Membership
+		s.Client("c1", func(sys *lockstep.System) {
+			var err error
+			if m, err = cluster.Join(sys, cluster.Config{Seeds: nodes}); err != nil { // hosts no kind
+				panic(err)
+			}
+		})
+		w.Plan(&fault.Random{MaxDown: 1, Quiet: 25 * time.Second, Rules: []fault.Rule{
+			{Kind: fault.KindCrash, Every: 10 * time.Second, MaxFor: 3 * time.Second},
+			{Kind: fault.KindPartition, Every: 10 * time.Second, MaxFor: 3 * time.Second},
+		}}) // faults stop at 25s, when the Adds end
+
+		w.RunFor(5 * time.Second)
+		counter := cluster.GrainOf[CounterMsg](m, "counter", "user-42")
+		for range 20 {
+			w.RunFor(time.Second)
+			_ = counter.Send(s.System("c1"), Add{N: 1}) // the Add may be lost
+		}
+		w.RunFor(w.RecoveryStart().Sub(w.Sim.Now()) + 10*time.Second) // time to recover
+		reply := cluster.Ask(s.System("c1"), counter, getTotal)
+		w.RunFor(6 * time.Second) // longer than the ask's timeout, so the reply has resolved
+		total, err := reply.Await(context.Background())
+		w.Final("the grain answers, and no Add counts twice", func() error {
+			if err != nil {
+				return err
+			}
+			if total > 20 {
+				return fmt.Errorf("total is %d after 20 adds", total)
+			}
+			return nil
+		})
+	})
+}
+```
+
+The test passes, but on many seeds the total is less than 20. The grain keeps its total in memory,
+so a crash of its owner loses it, and an `Add` sent into a cut or to a node that is down is lost:
+grains get lockstep's delivery, at most once, and nothing more. A check for `total == 20` fails on
+one of the first seeds, and its seed replays like the counter's above.
+
+`Reply.Await` never waits in a simulation, so the test runs the world past the ask's timeout before
+it reads the reply. For the same reason, `remote.Lookup` of another node from a test body fails the
+seed; address the actor with `lockstep.PIDAt` instead.
 
 ## Static analysis: lockstep-vet and golangci-lint
 
@@ -788,11 +1249,21 @@ github.com/hmdsefi/lockstep          actor runtime
 ├── lockstep/persist                 event-sourced actors
 │   └── persist/filestore            their journal and snapshot store, in files
 ├── lockstep/dedup                   state for duplicate and stale messages
+├── lockstep/codec                   wire names and the JSON codec
+├── lockstep/remote                  messages between nodes, over TCP
+├── lockstep/cluster ──imports──▶ github.com/hmdsefi/tenure/core (v0.2.0)
 └── lockstep/sim ──imports──▶ github.com/hmdsefi/faultline (v0.1.2)
+
+github.com/hmdsefi/lockstep/codec/protobuf   protocol buffer codec, a module of its own
+└── imports ──▶ google.golang.org/protobuf
 ```
 
-`persist`, `persist/filestore` and `dedup` do not import faultline either. `sim` gives the first two
-a simulated disk through `(*Sim).Volume`.
+`persist`, `persist/filestore`, `dedup`, `codec`, `remote` and `cluster` do not import faultline
+either. `sim` gives the first two a simulated disk through `(*Sim).Volume`, and runs the remoting
+of `remote` on its simulated network. `cluster` imports the package `core` of
+[tenure](https://github.com/hmdsefi/tenure) for the rendezvous hashing that places grains; tenure
+requires no other module. `codec/protobuf` is a nested module, so only a program that uses it
+requires `google.golang.org/protobuf`.
 
 ## Benchmarks
 
@@ -882,14 +1353,36 @@ benchmarks measure. A single run of the command above is therefore not how the b
 
 ## Limitations
 
-lockstep runs local actors in one process, plus the multi-node simulation in `lockstep/sim`. It
-cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does not free
-the worker. There is no remoting or clustering, so actors on different nodes talk only in
-simulation, and lockstep ships no tracing or metrics adapter. The reference store in
+lockstep cannot preempt a turn, so the watchdog reports a stuck turn and isolates its actor but does
+not free the worker. lockstep ships no tracing or metrics adapter. The reference store in
 `persist/filestore` keeps files on a local disk; a journal or snapshot store of another kind
 implements `persist.Journal` and `persist.SnapshotStore`. Use one `filestore.Store` per directory:
 two Stores on the same directory, in one process or in two, are not detected and can overwrite each
 other's committed events.
+
+Remoting, membership and grains have these limits:
+
+- A grain has one activation only once the nodes agree on the members and every host has applied
+  its node's view. During a partition, or while news of a crash or a join spreads, two nodes can
+  each run an activation of the same key, and after a handoff timeout the new activation can run
+  beside an old one that is still stopping.
+- Passivation stops an activation with `lockstep.Stop`, which runs before the messages already in
+  its mailbox. When an activation is passivated, for example because its key moved to another
+  node, those messages become dead letters, and the host records no grain drop for them.
+- A grain message from another node that finds the host's mailbox full is lost. The receiving node
+  counts and traces a full mailbox, but records no grain drop, and the sender's `Send` has already
+  returned nil.
+- A subscriber misses the `NodeUp` and `NodeDown` signals sent while it is restarting, and those
+  sent while it is suspended after a failure when its supervisor then restarts or stops it. After
+  a restart, read `View` for the current members.
+- A `Shutdown` while the membership actor is between two incarnations of a restart does not leave
+  the cluster: the other members see the node as `Dead`, not `Left`.
+- A message queued for a peer that this node has not connected to yet can reach a later process of
+  that peer, when the peer restarts before the connection comes up.
+- A cluster member's remoting uses `codec.Default()` and a codec that encodes plain structs, such as
+  `codec.JSON`. Package `cluster` registers its own messages only in the default registry, and
+  `protobuf.Codec` cannot encode them, so `remote.Enable` with it fails on a program that imports
+  `cluster`.
 
 The API can change before v1.0. The [roadmap](https://github.com/hmdsefi/lockstep/issues/232)
 tracks what comes next.
@@ -909,5 +1402,7 @@ lockstep is licensed under the [Mozilla Public License 2.0](LICENSE).
   something else.
 - [Architecture](docs/architecture.md): the runtime, its two engines, and how simulation maps onto
   faultline.
+- [Distribution](docs/distribution.md): codecs, remoting, cluster membership and grains, and how
+  to test them under faults.
 - [The actor model](docs/actor-model.md): where actors came from, how they work, and what lockstep
   adds.

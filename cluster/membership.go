@@ -129,18 +129,19 @@ func (m *Membership) View() *View { return m.view.Load() }
 // Signal method (lockstep.SignalReceiver). addr must name one actor, with its UID, as the Address
 // of a PID that Spawn returned does. Subscribe returns before the subscription takes effect: the
 // membership actor adds the subscriber in its next turn and then sends it one lockstep.NodeUp for
-// every member other than this node that is up in the latest View, in node name order. After
-// that, whenever a published View shows a member other than this node come up, the subscriber
-// receives NodeUp, and whenever one goes down, NodeDown, with Left set when the member left
-// gracefully; a member that restarted under a new ID gives NodeDown of the old ID, then NodeUp of
-// the new one. Every subscriber receives the signals in the order of the Views, so for a
-// subscriber that stays running the signals about each node name alternate, starting with NodeUp.
-// A signal that arrives while the subscriber is not running (suspended, or between the
-// incarnations of a restart) is dropped, as the runtime drops other signals then, and the
-// alternation may break for that subscriber. A subscriber that restarts keeps its UID and stays
-// subscribed, and subscribing it again does nothing, so after a restart it reads View for the
-// current members. An actor that does not implement SignalReceiver stays subscribed and ignores
-// the signals.
+// every member other than this node that is up in the latest View, in node name order. After that,
+// whenever a published View shows a member other than this node come up, the subscriber receives
+// NodeUp, and whenever one goes down, NodeDown, with Left set when the member left gracefully; a
+// member that restarted under a new ID gives NodeDown of the old ID, then NodeUp of the new one.
+// Every subscriber receives the signals in the order of the Views, so for a subscriber that stays
+// running the signals about each node name alternate, starting with NodeUp. A signal that arrives
+// while the subscriber is suspended after a failure is kept and delivered when its supervisor
+// resumes it, and dropped if the supervisor restarts or stops it instead; a signal that arrives
+// between the incarnations of a restart is dropped. The runtime treats other signals the same way,
+// and a dropped signal may break the alternation for that subscriber. A subscriber that restarts
+// keeps its UID and stays subscribed, and subscribing it again does nothing, so after a restart it
+// reads View for the current members. An actor that does not implement SignalReceiver stays
+// subscribed and ignores the signals.
 //
 // A subscriber is removed, or not added, when a signal cannot be delivered to it because no actor
 // is alive at addr. Subscribe returns an error wrapping lockstep.ErrNotFound for the zero Address

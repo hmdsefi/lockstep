@@ -90,7 +90,8 @@ An actor is known only by its address, so the code that sends a message doesn't 
 message travels. Akka builds on this; its docs on
 [location transparency](https://doc.akka.io/libraries/akka-core/current/general/remoting.html)
 describe its functions as working the same in a single JVM or on a cluster. lockstep keeps
-addresses but not the cluster, as [Where lockstep fits](#where-lockstep-fits) explains.
+addresses and adds remoting, a cluster membership and virtual actors, as
+[Where lockstep fits](#where-lockstep-fits) explains.
 
 ## How actors work
 
@@ -174,9 +175,11 @@ lockstep is the actor model in Go, with typed messages and a simulator:
   an account that expects the deposit first, is the kind of bug this finds. Each seed tries an
   order, and a failing seed replays exactly.
 
-Location transparency is where lockstep is limited. A `PID` names the node its actor lives on, and
-`lockstep/sim` delivers messages between nodes over a simulated network. lockstep has no remoting
-or clustering, so outside `lockstep/sim`, actors on different nodes don't talk.
+A `PID` names the node its actor lives on. Package `remote` delivers messages between nodes over
+TCP, and `lockstep/sim` delivers the same frames over a simulated network, so a send looks the same
+whether its receiver is local or not. Package `cluster` adds membership and virtual actors in the
+style of Orleans: grains that exist whenever a message is sent to them, on a node that the members
+agree on. [Distribution](distribution.md) describes both, and the limits of each.
 
 ## Next steps
 
