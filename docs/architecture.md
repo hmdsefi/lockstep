@@ -839,12 +839,13 @@ replays the protocol exactly.
 A grain is a virtual actor named by a kind and a key. Its owner is the up member that hosts the
 kind with the highest rendezvous score for the key, which
 [tenure](https://github.com/hmdsefi/tenure) computes, so every node finds the same owner in the
-same view. `Join` starts one host per kind
-under `/system/grains`; the owner's host activates a grain on its first message and passivates it
-when it is idle. A host forwards a message for a grain that another node owns, a bounded number of
-times, and a node that takes over a grain asks the previous owners to stop their activations
-first. Once the views of the nodes agree, no grain is active on two nodes; while they disagree,
-two can be.
+same view. `Join` starts one host per kind under `/system/grains`; the owner's host activates a
+grain on its first message and passivates it when it is idle. A host forwards a message for a
+grain that another node owns, a bounded number of times, and a node that takes over a grain asks
+the nodes that may still run it to stop their activations first. Once the views of the nodes
+agree and every host has applied its node's view, no grain is in the active set of two nodes. An
+activation that the change passivated may still be stopping, and after a handoff timeout it can
+run beside the new one; while the views disagree, two activations can run.
 
 ## Static analysis
 

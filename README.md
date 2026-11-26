@@ -778,14 +778,15 @@ A message to another node travels as a wire name and the bytes of its value. The
 the receiving node which Go type to decode, so every type that crosses nodes is registered under
 one name, the same on every node, before the first message of that type is sent. The program above
 does this in `init`. A name is 1 to 255 bytes: an ASCII letter, then letters, digits, `.`, `_`,
-`/` and `-`. Names that start with `lockstep.` are reserved. Registering one name for two types,
-or one type under two names, panics. A message whose type is not registered makes `Send` return an
-error, and nothing is sent.
+`/` and `-`. Names that start with `lockstep.` are reserved, except those that start with
+`lockstep.cluster.`, which package `cluster` uses. Registering one name for two types, or one type
+under two names, panics. A message whose type is not registered makes `Send` return an error, and
+nothing is sent.
 
-Plain values need no registration. `bool`, the integer and floating-point types, `string`,
-`[]byte`, `struct{}`, `time.Duration`, `time.Time` and `lockstep.Address` are built in, so the
-`string` answer above crosses without one. A `PID` or a `ReplyTo` travels as a field of a
-registered message.
+Plain values need no registration. `bool`, `int` and `uint` and their sized forms, `float32`,
+`float64`, `string`, `[]byte`, `struct{}`, `time.Duration`, `time.Time` and `lockstep.Address` are
+built in, so the `string` answer above crosses without one. A `PID` or a `ReplyTo` travels as a
+field of a registered message.
 
 The default codec, `codec.JSON`, encodes with `encoding/json`, and equal values give equal bytes.
 Its check rejects a type that `encoding/json` would encode lossily or not at all, such as a struct
@@ -982,9 +983,11 @@ keys, the keys it is stopping or waiting for, and the number of messages it hold
 (`cluster.ErrNotJoined`, which is why the program waits for the host to see a joined view), when no
 up member hosts the kind (`ErrNoOwner`), for a key that is not 1 to 256 bytes long
 (`ErrInvalidKey`), after `Leave` (`ErrLeft`), and when this node hosts the kind with another
-message type. A message that a host later cannot hold, deliver or forward is dropped and traced,
-and `Send` does not report it; an ask then resolves at its timeout. A node with no kinds in its
-`Config` hosts no grains but sends to them.
+message type. It also returns the encoding error when another node owns the grain and the message
+cannot be encoded, and the error of the send itself, wrapped, such as `lockstep.ErrMailboxFull`
+from this node's host. A message that a host later cannot hold, deliver or forward is dropped and
+traced, and `Send` does not report it; an ask then resolves at its timeout. A node with no kinds
+in its `Config` hosts no grains but sends to them.
 
 A message for a grain that another node owns is encoded with `Config.Registry` and `Config.Codec`,
 so its type is registered on every node that sends to or hosts the kind. While the owner does not
@@ -994,13 +997,15 @@ sets it, is stopped, and the next message activates the grain again with a new a
 factory.
 
 When the members change, so do the owners of some keys. A node that becomes the owner of a key that
-another node may still run first asks that node to stop its activation, and holds the key's
+other nodes may still run first asks those nodes to stop their activations, and holds the key's
 messages meanwhile. It activates the key when every such node has answered, or when the kind's
 handoff timeout has passed. While the views of two nodes disagree about an owner, a host forwards
-a message to the owner it sees, at most `Config.MaxHops` times. Once the views of the nodes agree,
-no key is active on two nodes. While they disagree, for example during a partition, two nodes can
-each run an activation of the same key. [Distribution](docs/distribution.md#virtual-actors)
-describes placement, handoff, and the limits of this guarantee.
+a message to the owner it sees, at most `Config.MaxHops` times. Once the views of the nodes agree
+and every host has applied its node's view, no key is in the active set of two nodes. An activation
+that the change passivated may still be stopping, and after a handoff timeout it can run beside the
+new one. While the views disagree, for example during a partition, two nodes can each run an
+activation of the same key. [Distribution](docs/distribution.md#virtual-actors) describes
+placement, handoff, and the limits of this guarantee.
 
 ### The same cluster in simulation
 
@@ -1357,8 +1362,10 @@ other's committed events.
 
 Remoting, membership and grains have these limits:
 
-- A grain has one activation only while the nodes agree on the members. During a partition, or
-  while news of a crash or a join spreads, two nodes can each run an activation of the same key.
+- A grain has one activation only once the nodes agree on the members and every host has applied
+  its node's view. During a partition, or while news of a crash or a join spreads, two nodes can
+  each run an activation of the same key, and after a handoff timeout the new activation can run
+  beside an old one that is still stopping.
 - Passivation stops an activation with `lockstep.Stop`, which runs before the messages already in
   its mailbox. When an activation is passivated, for example because its key moved to another
   node, those messages become dead letters, and the host records no grain drop for them.

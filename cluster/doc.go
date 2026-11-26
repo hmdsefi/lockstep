@@ -79,10 +79,14 @@
 // does not activate it at once when another node may still run it (the key's previous owner, or
 // the runner-up of the ranking after this node joined): it first asks those nodes to stop their
 // activation, holds the key's messages, and activates the key when every one of them has
-// answered, or when the kind's HandoffTimeout has passed. A node that is asked stops its
-// activation, answers once it has stopped, and sends the messages it holds or receives for the key
-// to the new owner until its own view of the members shows that node. So once the views of the
-// nodes agree, no key is active on two nodes.
+// answered, or when the kind's HandoffTimeout has passed. A node that is asked answers at once
+// when its view shows the asking node down. Otherwise it sends the messages it holds for the key
+// to the new owner, stops its activation, answers once it has stopped, and while its view has no
+// entry for the new owner's process, sends it every later message for the key. A handoff can
+// reorder the messages of one sender. Once the views of the nodes agree and every host has
+// applied its node's view, no key is in the active set of two nodes; an activation that the
+// change passivated may still be stopping, and after a HandoffTimeout the new activation can run
+// beside it.
 //
 // Membership.Host describes the host of a kind on this node.
 package cluster

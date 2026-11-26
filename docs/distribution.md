@@ -60,12 +60,14 @@ needs a name of its own.
 A wire name is 1 to 255 bytes long. Its first byte is an ASCII letter, and the rest are ASCII
 letters, digits, `.`, `_`, `/` and `-`. Names are case-sensitive. A prefix such as `orders.` or
 `orders/v2.` keeps the names of different packages apart. Names that start with `lockstep.` are
-reserved for lockstep's own types, which include the built-in types and the messages of the
-membership protocol and the grain hosts.
+reserved for lockstep's own types, such as the built-in types, except names that start with
+`lockstep.cluster.`, which can be registered: package `cluster` registers the messages of the
+membership protocol and the grain hosts under them.
 
 Every registry starts with 19 built-in types, so a plain value, such as the `int64` answer to an
-ask, crosses nodes without registration: `bool`, `string`, every integer type, `float32`,
-`float64`, `[]byte`, `struct{}`, `time.Duration`, `time.Time` and `lockstep.Address`. A `time.Time`
+ask, crosses nodes without registration: `bool`, `string`, `int`, `int8` to `int64`, `uint`,
+`uint8` to `uint64`, `float32`, `float64`, `[]byte`, `struct{}`, `time.Duration`, `time.Time` and
+`lockstep.Address`. `uintptr` is not one of them. A `time.Time`
 keeps only its instant: the monotonic clock reading and the location are lost, so compare a
 received time with `Time.Equal`. `PID` and `ReplyTo` are generic, so no built-in covers them; they
 cross nodes as fields of registered messages.
@@ -186,7 +188,7 @@ wraps `lockstep.ErrStopped` on a system that is shutting down.
 | `Heartbeat` | 1s | the interval between pings |
 | `IdleTimeout` | 10s | how long a connection may stay silent; at least twice `Heartbeat` |
 | `DialTimeout` | 5s | the bound on one dial and its handshake |
-| `RedialMin`, `RedialMax` | 100ms, 10s | the shortest and longest wait before a redial |
+| `RedialMin`, `RedialMax` | 100ms, 10s | the bounds of the redial base, see below |
 
 A node finds a peer's address in `Peers`, else asks `Resolve`, else uses the address the peer
 announced when it last connected. `Resolve` is called while remoting holds a lock that every send
@@ -213,8 +215,9 @@ connection.
 An outgoing connection that has written nothing, or received nothing, for one `Heartbeat` writes a
 ping, and every ping gets an answer. A connection that has received nothing for `IdleTimeout`
 closes. A failed dial, a refused handshake or a dial that takes longer than `DialTimeout` is
-retried after a wait that doubles with each failure in a row, from `RedialMin` up to `RedialMax`,
-with a random part drawn from the system's random stream. A node redials only while it has
+retried after a wait. After `f` failures in a row, the base is `b = min(RedialMax, RedialMin <<
+(f-1))`, and the wait is drawn uniformly from `[b/2, b]` from remoting's own random stream for
+this node and process, so in a simulation the seed decides it. A node redials only while it has
 messages queued for the peer or watches of the peer's actors.
 
 ### Order, loss and dead letters
@@ -239,9 +242,16 @@ dead letter on the sending node, with a reason:
 | `shutdown` | the frame was still queued when the system shut down |
 | `wrong-type` | on the receiving node, the actor there does not take the message's type |
 
-An ask whose request becomes a dead letter on the sending node fails with an error that wraps
-`remote.ErrUnreachable`, or, for `too-large-for-peer`, with the frame size error. Queued messages
-wait across a reconnect.
+An ask whose request becomes a dead letter on the sending node fails, with an error that depends
+on the reason:
+
+- `unknown-node` and `queue-full`: an error that wraps `remote.ErrUnreachable`.
+- `too-large-for-peer`: the frame size error, which wraps `remote.ErrFrameTooLarge`.
+- `peer-restarted`: the restart error, which matches both `remote.ErrPeerRestarted` and
+  `lockstep.ErrTerminated`, as for every ask that waits on the old process.
+- `shutdown`: the system's shutdown fails its pending asks with `lockstep.ErrStopped`.
+
+Queued messages wait across a reconnect.
 
 ### Asks, lookups and watches
 
@@ -278,8 +288,10 @@ fails the seed with `lockstep/misuse`.
 `remote.Lookup[M](ctx, sys, node, path)` asks a node for the actor registered at a path and returns
 its PID, with its uid, when its message type is exactly `M`. Otherwise it returns a `*remote.Error`
 with `CodeNotFound` or `CodeWrongType`. It waits as `Reply.Await` does, with the deadline of `ctx`
-as its timeout. `lockstep.PIDAt` needs no lookup: a path PID reaches whichever actor is registered
-at its path when a message arrives.
+as its timeout. On the system's own node it is `lockstep.Lookup`, and returns that function's
+errors, `lockstep.ErrNotFound` and `lockstep.ErrWrongType`, without a `*remote.Error`.
+`lockstep.PIDAt` needs no lookup: a path PID reaches whichever actor is registered at its path when
+a message arrives.
 
 `lockstep.Watch` of an actor on another node registers the watch with that node, and the
 `Terminated` signal comes back with the actor's stop reason. `Unwatch` cancels it. Watches are sent
@@ -372,8 +384,9 @@ down and the new one comes up. A member is in one of four states. `Alive` and `S
 up; `Dead` and `Left` members are down.
 
 Each member also has an incarnation number, which only the member itself raises. News about a
-member wins over what a node believes when it says more: `Left` beats everything, `Suspect` and
-`Dead` beat `Alive` at the same incarnation number, and `Alive` beats both only with a higher one.
+member wins over what a node believes when it says more: `Left` beats everything, `Suspect` beats
+`Alive` and `Dead` beats both at the same incarnation number, and `Alive` beats `Suspect` or `Dead`
+only with a higher one.
 So a member that hears it is suspected raises its own number and announces itself `Alive` again,
 which refutes the suspicion everywhere. Nothing brings back a member that left under the same ID.
 A dead or departed member stays in the table for `DeadRetention` and is then removed. A record of
@@ -382,7 +395,8 @@ the removed entry stays behind, so old news about that process does not add it a
 ### Probes and suspicion
 
 Every `ProbeInterval`, a node probes one other up member. It takes them in a new random order each
-round, so it probes every one of them at least once in any two rounds. A probe without an answer
+round, so while the members stay the same, it probes each of the other N-1 members at least once
+in any `2*(N-1)` consecutive intervals. A probe without an answer
 after `ProbeTimeout` is sent again through up to `IndirectProbes` other `Alive` members, which
 probe the target and pass its answer back. A member that has answered neither by the next interval
 becomes `Suspect`. It becomes `Dead` `SuspicionTimeout` later, unless it refuted the suspicion
@@ -398,24 +412,28 @@ seconds for three nodes with the defaults.
 ### Gossip and state exchange
 
 News about members travels on the probe traffic: each probe, indirect probe and answer carries up
-to `MaxPiggyback` recent updates. Each update goes out on `RetransmitMult` times as many messages
-as the member count has bits, 8 for three members with the defaults, and is then dropped from the
-queue. A message also always carries the sender's belief about the recipient when that belief is
-`Suspect` or `Dead`, so a suspected member learns of it from the next message it gets.
+to `MaxPiggyback` queued updates, those sent the fewest times first. Each update goes out on
+`RetransmitMult` times as many messages as the member count has bits, 8 for three members with
+the defaults, and is then dropped from the queue. A message also carries the sender's belief about
+the recipient when that belief is `Suspect` or `Dead`, or the recipient's entry was removed, and
+this update does not count against `MaxPiggyback`. So a suspected member learns of it from the next
+message it gets.
 
 Members also send each other their whole tables: when a node joins, every `SyncInterval` to one
-member chosen at random, and at the same interval to every dead member and to every seed that is
-not up. That last exchange is how the two sides of a healed partition learn of each other again.
+`Alive` member chosen at random (never a `Suspect` one), and at the same interval to every dead
+member and to every seed that is not up. That last exchange is how the two sides of a healed
+partition learn of each other again.
 
-The membership actor reads time only from its timers and randomness only from `ctx.Rand`, so a
-simulation replays every probe order and every choice of helper exactly.
+The membership actor reads time only from `ctx.Now` and its timers, and randomness only from
+`ctx.Rand`, so a simulation replays every probe order and every choice of helper exactly.
 
 ### Views and signals
 
-`Membership.View` returns the last published view: an immutable snapshot of the member table,
-sorted by node name, with a `Version` that grows by one with every change and the node's own entry
-in `Self`. Reading it sends no message. `View.Up` lists the up members, and `View.Member` finds one
-by name. The first view, published before `Join` returns, holds only the node itself.
+`Membership.View` returns the last published view: an immutable snapshot of the member table, sorted
+by node name, with a `Version` that grows by one with every published view and the node's own entry
+in `Self`. A turn of the membership actor that changes the table publishes one view, however many
+entries it changed. Reading it sends no message. `View.Up` lists the up members, and `View.Member`
+finds one by name. The first view, published before `Join` returns, holds only the node itself.
 
 `Membership.Subscribe(addr)` makes a local actor a subscriber. Its `Signal` method receives a
 `lockstep.NodeUp` for every other member that is up when the subscription takes effect, in node
@@ -445,10 +463,11 @@ the cluster, because no incarnation runs to send the news: the other members see
 
 ## Virtual actors
 
-A grain is a virtual actor in the style of
-[Orleans](https://www.microsoft.com/en-us/research/publication/orleans-distributed-virtual-actors-for-programmability-and-scalability/):
-it is named by a kind and a key and exists whenever a message is sent to it. The running actor of
-one grain is its activation. No code spawns or stops activations; the hosts do.
+A grain is a virtual actor in the style of [Orleans][orleans]: it is named by a kind and a key and
+exists whenever a message is sent to it. The running actor of one grain is its activation. No code
+spawns or stops activations; the hosts do.
+
+[orleans]: https://www.microsoft.com/en-us/research/publication/orleans-distributed-virtual-actors-for-programmability-and-scalability/
 
 ### Kinds and keys
 
@@ -506,8 +525,9 @@ key follows the first rule that applies:
 3. While the key is waiting for a handoff or its activation is stopping, it holds the message.
 4. When another node owns the key in its view, it forwards the message there.
 5. When the key is active, it delivers the message to the activation.
-6. When this node owns the key, it activates the key, or first asks the previous owners to hand it
-   over, and holds the message until the activation runs.
+6. When this node owns the key, it activates the key and delivers the message to the new
+   activation at once when it has nobody to ask, or else first asks the nodes that may still run
+   the key to hand it over, and holds the message until the activation runs.
 7. Otherwise no member hosts the kind, and it drops the message.
 
 All the messages that a host holds for a kind count against the kind's buffer, and a message that
@@ -550,21 +570,43 @@ local `Send` to a full host returns an error that wraps `lockstep.ErrMailboxFull
 ### Handoff
 
 When the members change, the owners of some keys change too. A node that becomes the owner of a key
-does not activate it at once when another node may still run it: the key's previous owner, or the
-runner-up of the ranking after this node joined. It asks those nodes to hand the key over, holds the
-key's messages, and activates the key when every one of them has answered, or when the kind's
-handoff timeout has passed.
+it has no activation for first asks the nodes that may still run the key to hand it over. Who it
+asks depends on the view its host applied before the current one:
 
-A node that is asked stops its activation of the key, if it has one, and answers once the
-activation has stopped. Until its own view shows the new owner, it sends every message it holds or
-receives for the key to that owner. A handoff completed by answers keeps the order of each sender's
-messages; one completed by the timeout does not.
+- none, or one in which the node had not joined: the key's runner-up in the current view;
+- one in which this node already owned the key: nobody;
+- otherwise: the key's owner in that earlier view and its runner-up in the current one.
+
+Nodes that are down or absent in the current view, or that do not host the kind, are left out.
+With nobody to ask, the key is activated at once. Otherwise the node holds the key's messages, and
+activates the key when every node it asked has answered, or when the kind's handoff timeout has
+passed.
+
+What an asked node does depends on its own view of the requester's process. When that view shows
+the requester down, it answers at once and changes nothing. Otherwise it sends the messages it
+holds for the key to the requester, stops its activation of the key if it has one, and answers once
+the activation has stopped; a key that it was itself waiting to take over is given up and answered
+at once. While its view has no entry for the requester's process, it also forwards every later
+message for the key to the requester.
+
+A handoff can reorder one sender's messages. The new owner holds the messages that reach it first,
+and the messages that the old owner held are forwarded to it later and queue behind them. The
+messages of one sender reach the activation in send order only while the owner does not change and
+nothing is dropped.
 
 ### The guarantee and its limits
 
-Once the views of the nodes agree, no key is active on two nodes. lockstep's own simulation tests
-check this after every event, over random crashes, restarts, partitions and pauses, and check that
-the activations of a key on different nodes never overlap when nodes join one at a time.
+Once the views of the nodes agree and every host has applied its node's latest view, no key is in
+the active set (`HostInfo.Active`) of two nodes. A host applies a view a turn after the membership
+actor publishes it, so the guarantee starts only then. It covers running activations that are not
+stopping: an activation that a view change passivated may still be stopping, and if the new
+owner's handoff timeout passes first, the new activation runs beside it until the stop completes.
+
+lockstep's own simulation tests check the active sets after every event, whenever the views agree
+and every host has applied its view, over random crashes, restarts, partitions and pauses. A stop
+takes no virtual time in a simulation, so these tests cannot see an old activation that is still
+stopping. For nodes that join one at a time with no faults, the tests also check that the
+activations of a key on different nodes never overlap in the trace.
 
 While the views disagree, nothing prevents two activations of one key. A partition is the clearest
 case: each side sees the members of the other side go down and activates their keys, while those
