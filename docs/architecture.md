@@ -268,7 +268,7 @@ in the same order.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/sim-replay-dark.gif">
-    <img alt="Animation of the README counter test on seed 0x870af07a512d3866, drawn from its trace. c1 sends Add to the counter on n1 every 250 ms of virtual time and the total reaches 19. faultline crashes n1 at 4.866 s, the 20th Add is dropped while n1 is down, and n1 restarts at 5.710 s with a new counter whose total is 0. At 9 s c1 asks for the total and gets 0, and the final check 'every add counted' fails at 10 s with trace hash 0x56d752b8033ec3c3. Running FAULTLINE_SEED=0x870af07a512d3866 go test again replays the same 183 trace records with the same hash and the same failure. From https://github.com/hmdsefi/lockstep." src="assets/sim-replay-light.gif">
+    <img alt="Animation of the README counter test on seed 0x870af07a512d3866, drawn from its trace. c1 sends Add to the counter on n1 every 250 ms of virtual time and the total reaches 19. faultline crashes n1 at 4.866 s, the 20th Add is dropped while n1 is down, and n1 restarts at 5.710 s with a new counter whose total is 0. At 9 s c1 asks for the total. Its first ask fails with remote.ErrPeerRestarted because n1 restarted, and the retry gets 0. The final check 'every add counted' fails at 10 s with trace hash 0x619b75850de90f63. Running FAULTLINE_SEED=0x870af07a512d3866 go test again replays the same 280 trace records with the same hash and the same failure. From https://github.com/hmdsefi/lockstep." src="assets/sim-replay-light.gif">
   </picture>
 </p>
 
