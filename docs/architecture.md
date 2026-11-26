@@ -36,6 +36,15 @@ messages needs, as plain actor state: a window of keys, a cache of first replies
 gate. It uses only the standard library, and no runtime package imports it.
 [Message delivery](delivery.md) says where those messages come from and how `dedup` handles them.
 
+Three packages take actors across nodes. `lockstep/codec` maps the Go types of messages to wire
+names and encodes them, with deterministic JSON by default; the nested module
+`lockstep/codec/protobuf` adds a protocol buffer codec. `lockstep/remote` attaches a transport to
+a system, so that a message to another node travels over TCP. `lockstep/cluster` runs a membership
+protocol and hosts virtual actors, grains, on the members. The runtime reaches remoting through the
+same engine seam as everything else, and the simulation engine runs the same remoting code over
+faultline's simulated network. [Distribution](#distribution) below summarizes them, and the
+[distribution page](distribution.md) has the details.
+
 ## Nondeterminism goes through the runtime
 
 A simulation can replay a run exactly only if nothing in it depends on the real world. lockstep
@@ -220,8 +229,8 @@ starve the others. The [README](../README.md#configure-the-production-engine) li
 that configure the pool.
 
 The production engine reads the wall clock and seeds each actor's random stream from
-`crypto/rand`. It has no transport to other processes, so actors on different nodes talk only in
-simulation.
+`crypto/rand`. It has no transport of its own: `remote.Enable` attaches one, which carries
+messages to other processes over TCP.
 
 <p align="center">
   <picture>
@@ -240,9 +249,10 @@ kernel:
 
 - A turn is one kernel event on the actor's node.
 - A timer is a kernel timer on the node's local clock, which faultline can skew and jump.
-- A send to another node goes through faultline's simulated network. lockstep makes the links
-  first-in, first-out, numbers the messages of each sender and receiver pair, and treats a gap as
-  a loss, so faults can drop and partition but never reorder within a pair.
+- A send to another node goes through the system's remoting, as in production, and its encoded
+  frames travel as datagrams on faultline's simulated network. lockstep makes the links
+  first-in, first-out, and remoting numbers the frames of each connection and treats a gap as a
+  loss, so faults can drop and partition but never reorder within a pair.
 - An effect calls its handler in a kernel event and delivers the result after the handler's
   latency.
 - `ctx.Rand` returns the faultline stream `lockstep/<node>/<epoch>/<path>/<incarnation>`, so each
@@ -557,7 +567,7 @@ each value of the label.
 | `lockstep_mailbox_full_total` | `policy`: `fail-send`, `drop-newest`, `drop-oldest`, `block-sender` | `Sends that found the target mailbox full.` |
 | `lockstep_shed_total` | `policy`: as for `lockstep_mailbox_full_total` | `User messages shed by admission control.` |
 | `lockstep_drops_total` | `reason`: `drop-newest`, `drop-oldest`, `late-reply`, `cancelled-effect` | `Messages and results discarded.` |
-| `lockstep_deadletters_total` | `reason`: `stopped`, `not-found`, `unreachable` | `Messages sent to dead letters.` |
+| `lockstep_deadletters_total` | `reason`: `stopped`, `not-found`, `unreachable`, `queue-full`, `unknown-node`, `too-large-for-peer`, `peer-restarted`, `shutdown`, `wrong-type` | `Messages sent to dead letters.` |
 | `lockstep_admission_transitions_total` | `to`: `refusing`, `admitting` | `Admission control state changes.` |
 | `lockstep_stuck_turns_total` | none | `Turns reported by the watchdog.` |
 
@@ -574,6 +584,9 @@ A counter counts whether or not its log event is enabled: a logger at Info does 
   `lockstep_shed_total` and to no other counter, whatever the actor's mailbox holds.
 - `lockstep_admission_transitions_total` counts each change of state under the label `to`:
   `refusing` when admission control starts to refuse work, and `admitting` when it resumes.
+- The dead letter reasons after `unreachable` come from remoting, which
+  [Distribution](distribution.md#order-loss-and-dead-letters) describes. `remote.Enable` registers
+  seven series of its own, listed in [Logs and metrics](distribution.md#logs-and-metrics) there.
 
 ### Gauges
 
@@ -777,6 +790,62 @@ When that incarnation stops or restarts with the file open, the seed fails with 
 and a `lockstep.leak` record names the file. The `Store` closes every file before a call returns,
 so only code that bypasses it leaks one.
 
+## Distribution
+
+This section summarizes how messages leave a node. The [distribution page](distribution.md)
+describes each part in full.
+
+### Codecs
+
+A message to another node travels as a wire name and the bytes of its value. A `codec.Registry`
+maps each Go type that crosses nodes to one wire name, the same on every node, and holds 19
+built-in types, such as `int64`, `string` and `time.Time`, from the start. A `codec.Codec` turns a
+registered value into bytes: equal values must give equal bytes, so a trace that holds encoded
+frames stays the same from run to run. `codec.JSON` is the default, and the nested module
+`codec/protobuf` encodes protocol buffer messages. A codec's `Supports` check runs over every
+registered type when remoting starts, so a type it cannot encode fails then, not at its first
+message.
+
+### Remoting
+
+`remote.Enable` attaches a transport to a system through the engine seam. A send to an address on
+another node encodes the message in the sender's call and puts it in a bounded queue for that peer;
+the receiving node decodes it and hands it to its runtime, which delivers it as it delivers a local
+message. A node keeps one outgoing TCP connection per peer, dialed on the first message, and
+messages flow only on outgoing connections. A handshake checks the node names, the protocol
+version and the codec, and tells each side the other's process incarnation and largest frame.
+Heartbeats keep a connection alive, and a lost one is redialed with backoff.
+
+Frames are numbered on each connection, and the receiver accepts them in order and treats a gap as
+a loss, so messages between one sender and one receiver arrive in send order and at most once, as
+on one node. Asks carry the address of their reply on the asking node; a failure on the other node
+returns as a `*remote.Error` whose code unwraps to a lockstep error. Death watches register with
+the node of the watched actor, and a restart of that node, which the next handshake shows, fails
+the asks and ends the watches that waited on its old process.
+
+### Membership
+
+`cluster.Join` starts the system actor `/system/cluster`, which keeps a member table and runs a
+gossip protocol in the style of SWIM: it probes one member per interval, asks other members to
+probe one that did not answer, suspects one that answers neither, and declares it dead when the
+suspicion is not refuted in time. Updates ride on the probes, and members exchange their whole
+tables now and then so that partitions heal. Each change publishes an immutable `View`, which
+`Membership.View` reads without a message, and sends `NodeUp` and `NodeDown` signals to the
+subscribed actors. The actor's timers and random choices come from the runtime, so a simulation
+replays the protocol exactly.
+
+### Grains
+
+A grain is a virtual actor named by a kind and a key. Its owner is the up member that hosts the
+kind with the highest rendezvous score for the key, which
+[tenure](https://github.com/hmdsefi/tenure) computes, so every node finds the same owner in the
+same view. `Join` starts one host per kind
+under `/system/grains`; the owner's host activates a grain on its first message and passivates it
+when it is idle. A host forwards a message for a grain that another node owns, a bounded number of
+times, and a node that takes over a grain asks the previous owners to stop their activations
+first. Once the views of the nodes agree, no grain is active on two nodes; while they disagree,
+two can be.
+
 ## Static analysis
 
 `lockstep-vet` lives in the nested module `github.com/hmdsefi/lockstep/analysis`, because it needs
@@ -841,8 +910,9 @@ The same analyzers run in golangci-lint as a module plugin.
 The repository holds six Go modules:
 
 - `github.com/hmdsefi/lockstep`, the root module: the runtime, `sim`, `persist`,
-  `persist/filestore`, `dedup`, and internal packages for the engine seam, the production engine,
-  mailboxes, supervision, the registry and overload state.
+  `persist/filestore`, `dedup`, `codec`, `remote`, `cluster`, and internal packages for the engine
+  seam, the production engine, the remoting core, mailboxes, supervision, the registry and overload
+  state.
 - `github.com/hmdsefi/lockstep/analysis`: `lockstep-vet` and the golangci-lint plugin.
 - `github.com/hmdsefi/lockstep/bench`: the benchmark suite. It has its own `go.mod`, and the root
   module never imports it.
@@ -852,21 +922,25 @@ The repository holds six Go modules:
 - `github.com/hmdsefi/lockstep/examples/orders`: the order service example of
   [Message delivery](delivery.md).
 
-Only `sim` imports faultline. A program that imports `lockstep`, `persist`, `persist/filestore`
-and `dedup` and not `sim` never links faultline or gograph; CI checks this with `go list -deps`
-over the production packages. `sim` reaches the simulated disk through `Volume`,
-which returns a `filestore.FS`, so `persist` and `filestore` never name a faultline type. faultline
-and gograph still appear in your `go.mod`, because the root module requires them for `sim`.
+Only `sim` imports faultline. A program that imports `lockstep`, `persist`, `persist/filestore`,
+`dedup`, `codec`, `remote` and `cluster` and not `sim` never links faultline or gograph; CI checks
+this with `go list -deps` over the production packages. `sim` reaches the simulated disk through
+`Volume`, which returns a `filestore.FS`, so `persist` and `filestore` never name a faultline type,
+and it runs the same remoting core as `remote` over its own datagram driver. faultline and gograph
+still appear in your `go.mod`, because the root module requires them for `sim`. `cluster` imports
+`github.com/hmdsefi/tenure/core` for rendezvous placement, and tenure requires no other module.
 
 lockstep's own simulation path follows faultline's determinism rules, and CI checks it in three
 ways. Setting `LOCKSTEP_CHECK_DETERMINISM=1` runs every simulation test twice and compares the
 trace hashes. Small actor systems have golden trace hashes pinned in the repository. A lint
-reports goroutines, wall-clock reads and unsorted map iteration in the runtime and persistence
-packages that the simulation calls.
+reports goroutines, wall-clock reads and unsorted map iteration in the runtime, persistence, codec,
+remoting core and cluster packages that the simulation calls.
 
 ## Next steps
 
 - [Why lockstep](why-lockstep.md): the problem lockstep solves and when to use it.
+- [Distribution](distribution.md): codecs, remoting, cluster membership and grains, and how to
+  test them in simulation.
 - [The Raft example](../examples/raft/README.md): a larger lockstep program under partitions and
   crashes.
 - [Package documentation](https://pkg.go.dev/github.com/hmdsefi/lockstep): the full API.

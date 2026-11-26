@@ -202,8 +202,9 @@ lockstep asks you to write the system as actors. That trade does not pay off eve
 - One piece of state that many cores must update at once: an actor handles one message at a time,
   so its work runs on one worker at a time. Parallelism comes from having many actors, not from
   one.
-- Actors on several machines in production: lockstep has no remoting or clustering; actors on
-  different nodes talk only in simulation.
+- A cluster that must never run one grain twice: lockstep's grains have one activation only while
+  the nodes agree on the members, and a partition can run two. [Distribution](distribution.md)
+  describes what remoting, membership and grains guarantee.
 - Erlang/OTP compatibility: lockstep borrows OTP's supervision model, not its protocols.
 
 [Limitations](../README.md#limitations) lists the rest.
